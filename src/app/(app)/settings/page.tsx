@@ -7,6 +7,8 @@ import { Card, CardHeader, CardTitle } from "@/components/ui/Card";
 import { CompanySettingsForm } from "@/components/settings/CompanySettingsForm";
 import { AddStaffForm } from "@/components/settings/AddStaffForm";
 import { StaffList } from "@/components/settings/StaffList";
+import { MetalPuritySettingsPanel } from "@/components/settings/MetalPuritySettingsPanel";
+import { listMetalPurities } from "@/lib/jewellery/reports";
 
 export const metadata: Metadata = {
   title: "Settings · ZYNORALUXE",
@@ -18,13 +20,14 @@ export default async function SettingsPage() {
   // is fetched or rendered.
   await requireOwner();
 
-  const [companySettings, staff] = await Promise.all([
+  const [companySettings, staff, metalPurities] = await Promise.all([
     prisma.companySettings.findUnique({ where: { id: "default" } }),
     prisma.user.findMany({
       where: { role: "STAFF" },
       orderBy: { createdAt: "asc" },
       select: { id: true, name: true, email: true, isActive: true },
     }),
+    listMetalPurities(true),
   ]);
 
   return (
@@ -73,6 +76,16 @@ export default async function SettingsPage() {
           </div>
         </CardHeader>
       </Card>
+
+      <MetalPuritySettingsPanel
+        purities={metalPurities.map((p) => ({
+          id: p.id,
+          metalType: p.metalType,
+          displayName: p.displayName,
+          finenessPercent: p.finenessPercent.toString(),
+          isActive: p.isActive,
+        }))}
+      />
     </div>
   );
 }

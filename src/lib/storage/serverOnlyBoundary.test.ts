@@ -70,8 +70,21 @@ describe("SUPABASE_SECRET_KEY / diamondMedia server-only boundary", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("no 'use client' file imports a runtime value (only types) from src/lib/storage/jewelleryMedia", () => {
+    const offenders = clientFiles.filter((f) => {
+      const source = fs.readFileSync(f, "utf8");
+      return !importsAreTypeOnly(source, "@/lib/storage/jewelleryMedia");
+    });
+    expect(offenders).toEqual([]);
+  });
+
   it("diamondMedia.ts itself is marked server-only", () => {
     const source = fs.readFileSync(path.resolve(__dirname, "diamondMedia.ts"), "utf8");
+    expect(source.trimStart().startsWith('import "server-only";')).toBe(true);
+  });
+
+  it("jewelleryMedia.ts itself is marked server-only", () => {
+    const source = fs.readFileSync(path.resolve(__dirname, "jewelleryMedia.ts"), "utf8");
     expect(source.trimStart().startsWith('import "server-only";')).toBe(true);
   });
 });

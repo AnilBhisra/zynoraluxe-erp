@@ -212,4 +212,24 @@ describe("cancelVoucherAction permissions", () => {
     expect(result?.error).toBeTruthy();
     expect(mocks.cancelVoucher).not.toHaveBeenCalled();
   });
+
+  it("redirects a JEWELLERY_ISSUE voucher to the Jewellery Jobs page instead of cancelling it generically", async () => {
+    mocks.voucherFindUnique.mockResolvedValue({ voucherType: "JEWELLERY_ISSUE" });
+    const result = await cancelVoucherAction(
+      undefined,
+      formData({ voucherId: "v1", cancellationReason: "Wrong Karigar entirely" })
+    );
+    expect(result?.error).toMatch(/Jewellery Jobs page/i);
+    expect(mocks.cancelVoucher).not.toHaveBeenCalled();
+  });
+
+  it("rejects cancelling a JEWELLERY_RECEIPT voucher outright — not reversible in Phase 4", async () => {
+    mocks.voucherFindUnique.mockResolvedValue({ voucherType: "JEWELLERY_RECEIPT" });
+    const result = await cancelVoucherAction(
+      undefined,
+      formData({ voucherId: "v1", cancellationReason: "Made a mistake" })
+    );
+    expect(result?.error).toMatch(/cannot be cancelled/i);
+    expect(mocks.cancelVoucher).not.toHaveBeenCalled();
+  });
 });

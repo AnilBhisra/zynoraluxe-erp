@@ -175,6 +175,11 @@ export function createFakeDiamondTx() {
         return row;
       },
       findUnique: async ({ where }: { where: { id: string } }) => polishedDiamonds.get(where.id) ?? null,
+      findMany: async ({ where }: { where?: Row } = {}) => {
+        const rows = [...polishedDiamonds.values()];
+        if (!where) return rows;
+        return rows.filter((r) => matchesWhere(r, where));
+      },
       update: async ({ where, data }: { where: { id: string }; data: Row }) => {
         const row = polishedDiamonds.get(where.id);
         if (!row) throw new Error("polished diamond not found");

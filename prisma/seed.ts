@@ -47,6 +47,29 @@ const SYSTEM_ACCOUNTS: AccountSeed[] = [
     name: "Polished Diamond Inventory",
     type: "ASSET",
   },
+  { code: SYSTEM_ACCOUNT_CODES.METAL_INVENTORY, name: "Metal Inventory", type: "ASSET" },
+  { code: SYSTEM_ACCOUNT_CODES.SCRAP_METAL_INVENTORY, name: "Scrap Metal Inventory", type: "ASSET" },
+  { code: SYSTEM_ACCOUNT_CODES.JEWELLERY_WIP, name: "Jewellery WIP", type: "ASSET" },
+  {
+    code: SYSTEM_ACCOUNT_CODES.FINISHED_JEWELLERY_INVENTORY,
+    name: "Finished Jewellery Inventory",
+    type: "ASSET",
+  },
+];
+
+// Starter Metal/Purity master — standard, widely-known fineness
+// percentages offered as an editable STARTING POINT, never a hardcoded
+// legal assumption baked into calculation code: every fine-weight
+// calculation reads the percentage from this table (or a snapshot copied
+// from it), and Owner can add/edit/deactivate rows freely from Settings.
+const STARTER_METAL_PURITIES: { metalType: "GOLD" | "SILVER" | "PLATINUM"; displayName: string; finenessPercent: string }[] = [
+  { metalType: "GOLD", displayName: "10K", finenessPercent: "41.700" },
+  { metalType: "GOLD", displayName: "14K", finenessPercent: "58.500" },
+  { metalType: "GOLD", displayName: "18K", finenessPercent: "75.000" },
+  { metalType: "GOLD", displayName: "22K", finenessPercent: "91.600" },
+  { metalType: "GOLD", displayName: "24K", finenessPercent: "99.900" },
+  { metalType: "SILVER", displayName: "925 Silver", finenessPercent: "92.500" },
+  { metalType: "PLATINUM", displayName: "950 Platinum", finenessPercent: "95.000" },
 ];
 
 // Starter GST rate choices, editable/extendable by the Owner. These are
@@ -108,6 +131,22 @@ async function seedAccountingMaster(prisma: PrismaClient) {
   console.log(`Starter GST rates ready: ${STARTER_GST_RATES.length}.`);
 }
 
+async function seedMetalPurityMaster(prisma: PrismaClient, ownerId: string) {
+  for (const purity of STARTER_METAL_PURITIES) {
+    await prisma.metalPurity.upsert({
+      where: { metalType_displayName: { metalType: purity.metalType, displayName: purity.displayName } },
+      update: { finenessPercent: purity.finenessPercent },
+      create: {
+        metalType: purity.metalType,
+        displayName: purity.displayName,
+        finenessPercent: purity.finenessPercent,
+        createdByUserId: ownerId,
+      },
+    });
+  }
+  console.log(`Metal/Purity master ready: ${STARTER_METAL_PURITIES.length} starter purities.`);
+}
+
 async function main() {
   const email = process.env.OWNER_EMAIL;
   const name = process.env.OWNER_NAME;
@@ -141,6 +180,7 @@ async function main() {
   console.log(`Owner account ready: ${owner.email} (id: ${owner.id})`);
 
   await seedAccountingMaster(prisma);
+  await seedMetalPurityMaster(prisma, owner.id);
 
   await prisma.$disconnect();
 }

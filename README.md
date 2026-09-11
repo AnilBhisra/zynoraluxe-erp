@@ -5,17 +5,25 @@ dashboard, navigation, responsive layout, basic company settings.
 Phase 2: a full double-entry Accounting module — Parties, Transactions
 (Purchase/Sale/Payment Given/Payment Received/Expense), Ledger, Reports,
 GST, and Dashboard integration.
-Phase 3 (this branch, `phase-3-diamond`): Rough-to-Polished Diamond
-Manufacturing — Rough purchase/stock, Issue Rough to Karigar, Cutting-
-Polishing Jobs, Receive Polished (yield/loss, multi-output), Polished
-Stock, all fully integrated into the Phase 2 accounting engine.
+Phase 3: Rough-to-Polished Diamond Manufacturing — Rough purchase/stock,
+Issue Rough to Karigar, Cutting-Polishing Jobs, Receive Polished (yield/
+loss, multi-output), Polished Stock, all fully integrated into the
+Phase 2 accounting engine.
+Phase 4 (this branch, `phase-4-jewellery-jobs`): Jewellery Jobs and
+Manufacturing — Metal/Purity master, Metal Stock (purchase, opening,
+issue, return/scrap, authorized adjustment), Jewellery Job creation,
+Issue Materials (metal + real Phase 3 polished diamonds + manual other
+material), Receive Finished Jewellery (partial receipts, multi-output,
+fine-weight/diamond reconciliation), cancellation/reversal, all fully
+integrated into the Phase 2 accounting engine and Phase 3's diamond
+stock.
 
 Full Phase 1–6 scope is defined in
 `../ZYNORALUXE_JEWELLERY_ERP_MASTER_PLAN.md` (the locked source of truth).
-This build implements **Phase 1 + Phase 2 + Phase 3 only** — Jewellery
-Jobs and Costing are still route foundations, not working business logic.
-See `PHASE_2_VERIFICATION.md` and `PHASE_3_VERIFICATION.md` for the
-detailed verification reports.
+This build implements **Phase 1 + Phase 2 + Phase 3 + Phase 4 only** —
+Costing (selling price/profit) is still a route foundation, not working
+business logic. See `PHASE_2_VERIFICATION.md`, `PHASE_3_VERIFICATION.md`,
+and `PHASE_4_VERIFICATION.md` for the detailed verification reports.
 
 ## Stack
 
@@ -51,6 +59,11 @@ Fill in:
   **optional.** Only needed to enable Diamond-module photo/certificate
   uploads (Phase 3) — everything else works without them. See "Media
   storage" under Diamond Manufacturing workflow below.
+- `SUPABASE_JEWELLERY_BUCKET` — **optional.** Only needed if Jewellery
+  Job photo uploads (Phase 4) should use a dedicated bucket instead of
+  reusing the Diamond bucket above under jewellery-specific path
+  prefixes (the default). See "Media storage" under Jewellery
+  Manufacturing workflow below.
 
 ## 3. Set up the database
 
@@ -194,8 +207,56 @@ same Decimal-everywhere rule (carat columns use `Decimal(10,3)`, money
   incremented via the same atomic-upsert pattern as `voucher_sequences`,
   but keyed by calendar year, matching the master plan's own examples).
 
-Phase 4–5 tables (jewellery jobs, costing) are intentionally **not**
-created yet.
+**Phase 4 tables** (migration `20260911110642_phase4_jewellery_jobs`),
+same Decimal-everywhere rule (weight columns `Decimal(10,3)`, fineness
+`Decimal(6,3)`, money `Decimal(14,2)`):
+
+- **`metal_purities`** — Metal type + display name (unique together),
+  fineness percentage, active flag, audit fields. Every transaction that
+  uses a purity snapshots its fineness at that moment — editing here
+  never rewrites history.
+- **`metal_purchases`** — one purchase: supplier, metal/purity,
+  gross/fine weight, `finenessPercentSnapshot`, rate/rate basis (record-
+  only — `totalPurchaseCost` is authoritative), currency+exchange rate,
+  optional GST, linked accounting voucher, `purchaseCode`
+  (`ZL-MP-2026-000001`).
+- **`metal_stock_movements`** — the immutable, weight-based audit ledger
+  every Metal Stock figure derives from (mirrors `stock_movements`'
+  role for Phase 3, but for fungible weight instead of discrete pieces):
+  `PURCHASE_IN`, `OPENING_IN`, `ISSUE_OUT`, `ISSUE_CANCEL_IN`,
+  `RETURN_IN`, `SCRAP_RETURN_IN`, `CONSUMED_OUT`, `ADJUSTMENT_IN`,
+  `ADJUSTMENT_OUT` — never edited or deleted after insert.
+- **`jewellery_jobs`** — one job from creation through completion:
+  customer (optional)/Karigar, jewellery type, design name/image,
+  quantity, optional target metal/purity/weight, cumulative issued/
+  received/returned/scrap fine weight and cost, `remainingWipCost`
+  (metal-only WIP pool — diamonds resolve separately by their own
+  `costAtIssue`, never this shared pool), status (`DRAFT`→
+  `MATERIALS_ISSUED`→`IN_PROGRESS`→`PARTIALLY_RECEIVED`→`COMPLETED`, or
+  `NEEDS_CORRECTION`/`CANCELLED`), linked WIP-transfer voucher, `jobCode`
+  (`ZL-JJOB-2026-000001` — deliberately distinct from Phase 3's
+  `ZL-JOB-` prefix, so the two can never collide or look alike).
+- **`jewellery_metal_issue_lines`** / **`jewellery_diamond_issue_lines`**
+  / **`jewellery_other_material_lines`** — the materials issued to one
+  job: metal lines (weight/cost + fineness snapshot), diamond lines (one
+  row per real Phase 3 `polished_diamonds` row issued, `costAtIssue`
+  copied at issue time, `resolvedAs` set exactly once on
+  set/return/damaged-lost), and manual other-material lines
+  (non-stock-tracked, cost for display only).
+- **`jewellery_receipts`** — one Receive-Finished event (a job may have
+  several, for partial receipts): returned/scrap fine weight, this
+  receipt's `processLossFineWeight`, abnormal-loss flag+reason, labour/
+  making/setting/plating/other charges, linked accounting voucher,
+  `receiptCode` (`ZL-JREC-2026-000001`).
+- **`finished_jewellery`** — one output per finished piece: type,
+  quantity, gross/net/fine metal weight, `finenessPercentSnapshot`,
+  allocated metal/diamond/other-material/labour cost and total, QC
+  status, `finishedCode` (`ZL-FJ-2026-000001`).
+- **`jewellery_sequences`** — concurrency-safe numbering for the four
+  human-readable Phase 4 code types (same atomic-upsert pattern as
+  `diamond_sequences`, its own table so Phase 3's is never touched).
+
+Phase 5 tables (costing) are intentionally **not** created yet.
 
 ## Accounting workflow (Phase 2)
 
@@ -376,6 +437,173 @@ short-lived signed URL before it ever crosses into a Client Component
 values elsewhere in this codebase), so a page never holds a permanent or
 public link to private storage.
 
+## Jewellery Manufacturing workflow (Phase 4)
+
+The `/jewellery-jobs` page has exactly two tabs (`?tab=jobs|metal`) — no
+new item was added to the main navigation, per the master plan. Metal
+Stock lives as a secondary tab *inside* this page, not its own route.
+Business model: ZYNORALUXE buys/holds **metal** (Gold/Silver/Platinum,
+by purity) as fungible weight-based stock, issues metal and Phase 3
+polished diamonds to a Karigar to manufacture jewellery, and receives
+finished pieces back.
+
+- **Metal/Purity master** (Owner-only, Settings page) — Metal type
+  (Gold/Silver/Platinum/Other), a display name (e.g. `18K`, `925
+  Silver`), and a **fineness percentage** used for every fine-weight
+  calculation: `Fine Weight = Gross Weight × Fineness % ÷ 100`, always
+  computed server-side with `Decimal` math. Every transaction that uses a
+  purity **snapshots** its fineness percentage at that moment
+  (`finenessPercentSnapshot` columns throughout) — editing a purity later
+  never changes the fine-weight/cost figures on jobs already issued or
+  received. Seeded idempotently with 7 starter purities (Gold 10K/14K/
+  18K/22K/24K, 925 Silver, 950 Platinum).
+- **Metal Stock** (the `?tab=metal` tab) — fungible, weight-based, and
+  **derived purely from an immutable `MetalStockMovement` ledger**, never
+  a manually-editable balance (same principle as Phase 3's rough/polished
+  stock, applied to a fungible material instead of discrete pieces). "New
+  Metal Purchase" records gross weight, fineness-derived fine weight, one
+  of 3 rate bases (per gross gram / per fine gram / fixed total — the rate
+  itself is a reference field; the **total purchase cost** the user
+  enters is always the authoritative posted amount), optional GST,
+  optional immediate payment. Issuing metal to a job **resolves at the
+  current weighted-average cost per gram** for that purity's pool
+  (`costPerGram = pool.costValue ÷ pool.grossWeight`, computed fresh at
+  issue time) — unlike Phase 3's discrete, individually-costed rough
+  pieces. Owner-only: **Opening Metal Stock** (a starting balance, not a
+  purchase) and an audited **Adjustment** (with a mandatory reason);
+  both, like every movement, can never drive a purity's stock negative.
+- **Jewellery Jobs** (the `?tab=jobs` tab, 5 views — All/Pending/In
+  Progress/Completed/Cancelled) — "New Jewellery Job" creates a `Draft`
+  job (customer optional, Karigar required, jewellery type, design name,
+  optional design photo, quantity, optional target metal/purity/weight —
+  no accounting/stock impact yet). **"Issue Materials" is a one-time,
+  single consolidated action** (not a repeatable multi-call flow like
+  Phase 3's rough issue): one or more metal lines (any mix of purities),
+  zero or more real Phase 3 **Available** polished diamonds (each
+  resolves by its own individual `costAtIssue` — a diamond is discrete
+  and already costed; it is never drawn from metal's shared weighted-
+  average pool), and optional manual "other material" lines (Moissanite,
+  findings, alloy — cost tracked for job-costing display only, see
+  "Known Phase 4 limitations"). This posts one balanced WIP-transfer
+  voucher and flips the job to `Materials Issued`. "Mark In Progress" is
+  a label-only change. **Receive Finished Jewellery** supports one or
+  many outputs per receipt, each with its own metal/purity/net weight,
+  any of the job's still-issued diamonds set into it, QC status, and an
+  optional finished photo — partial receipts are fully supported, exactly
+  like Phase 3's polished receive.
+
+### Material reconciliation (metal, by fine weight — and diamonds, individually)
+
+For metal: `Issued Fine + Karigar-Added Fine = Finished Fine + Returned
+Fine + Scrap Fine + Process-Loss Fine` — reconciled **by fine weight**,
+never by comparing unlike-purity gross weights directly (a job that
+issues 22K and finishes at 18K reconciles correctly because both convert
+through their own fineness snapshot). Exactly like Phase 3's rough/
+polished gap logic: a partial receipt's un-accounted gap is **never**
+auto-treated as loss — only when the gap is already zero or the user
+explicitly checks "This completes the job" does the remainder become
+recognized `processLossFineWeight`, and by default that loss cost stays
+silently absorbed inside the surviving finished jewellery's carrying
+cost (matching Phase 3's diamond weight-loss treatment). An Owner may
+instead explicitly check "Classify this loss as abnormal" (with a
+mandatory reason) to carve that specific loss's cost out to Business
+Expenses instead. For diamonds: every issued polished diamond must end
+in exactly one state — `SET` (into a specific output, using its own
+`costAtIssue`), `RETURNED` (back to `Available`, cost returned to WIP),
+or `DAMAGED_LOST` (Owner-only, mandatory reason, cost posted to Business
+Expenses) — **completion additionally requires every issued diamond to
+be resolved**, even once the metal side's gap has reached zero. Once a
+job reaches `Completed`, its detail page relabels the "Pending with
+Karigar" figure to "Metal loss (final)" (same value — the same gap
+that meant "still outstanding" while open now means "recognized as
+final loss," exactly mirroring Phase 3's diamond job detail page); a
+real bug found during verification had Phase 4 always showing "Pending
+with Karigar" even after completion, which read as if metal were still
+outstanding on a job that was, in fact, fully done.
+
+### Cost allocation
+
+A receipt's resolved metal cost (plus labour/making/setting/plating/
+other charges) is split **proportionally by each output's fine metal
+weight** across multiple outputs in one receipt (same deterministic
+rounding-remainder pattern as Phase 3). Each output's diamond cost is
+the exact sum of its own set diamonds' `costAtIssue` — never allocated
+by ratio. Owner may adjust a receipt's output costs afterward with a
+mandatory reason, requiring the new totals to sum exactly back to the
+receipt's locked total.
+
+The job-level **other-material cost** (display-only, never posted to
+the ledger) is allocated separately from the above, and across the
+job's **entire output history**, not just one receipt: every time a
+new output is created, the full issued other-material cost for the job
+is re-split proportionally by finished gross weight across every
+output the job has ever received (this receipt's new outputs plus all
+prior receipts' existing outputs), using the same deterministic
+rounding-remainder pattern — and prior outputs' stored
+`otherMaterialCost`/`totalCost` are updated in place when their share
+changes. This keeps the allocation fair across partial receipts (an
+early small output no longer permanently keeps 100% of the cost just
+because it happened first) while guaranteeing that once the job stops
+producing new outputs, the sum of every output's allocated share
+equals the job's total issued other-material cost exactly, remainder
+included. A job that never receives any output has nothing to allocate
+against and the cost simply stays unallocated (an explicit rule, not a
+crash).
+
+### Accounting integration
+
+Four new asset accounts back this module — `1300` Metal Inventory,
+`1310` Scrap Metal Inventory, `1320` Jewellery WIP, `1330` Finished
+Jewellery Inventory (seeded idempotently). **Karigar labour AND
+Karigar-added-material payable both reuse the existing Accounts Payable
+control account** (`2000`, by `partyId`), the same reasoning as Phase
+3's labour payable. Every posting happens inside one
+`prisma.$transaction` alongside its stock-state changes, with the same
+idempotency-key duplicate-submission protection as every other module.
+`receiveFinishedJewelleryAction`, `issueMaterialsAction`, and
+`cancelJewelleryJobAction` pass an explicit 20-second
+`{ timeout: 20000 }` to their `prisma.$transaction` call — per-line,
+per-purity, and per-output posting can require enough sequential
+round trips against the real database that Prisma's 5-second default
+interactive-transaction timeout was measured to be exceeded under real
+network latency (see the "real bugs found" note in
+`PHASE_4_VERIFICATION.md`).
+
+### Karigar balances — two, never mixed
+
+Same principle as Phase 3: **material balance** (metal fine weight +
+diamonds still with a Karigar, across open jobs) is shown on the Jobs
+tab, computed purely from job/movement state; **money balance** (labour
++ added-material payable) is the ordinary Accounts Payable balance for
+that Karigar, visible on the Outstanding report exactly like Phase 3's.
+
+### Cancellation and reversal
+
+A `Draft` job cancels with zero stock/accounting impact. A
+`Materials Issued`/`In Progress` job (nothing received yet) can be
+cancelled Owner-only: every issued metal line returns to stock, every
+issued diamond returns to `Available`, and the WIP-transfer voucher is
+reversed through the same generic `cancelVoucher()` engine every other
+module uses. The moment any finished jewellery has been received against
+a job, cancellation is rejected outright — matching Phase 3's rule for
+polished receipts. The generic Accounting-tab "Cancel voucher" button
+also explicitly refuses to touch a `JEWELLERY_ISSUE`/`JEWELLERY_RECEIPT`
+voucher.
+
+### Media storage
+
+`src/lib/storage/jewelleryMedia.ts` is a deliberately **separate,
+duplicated** module (not shared with `diamondMedia.ts`) — same
+security properties (private bucket, server-only secret API key,
+magic-byte content-sniffing, random object paths, 10 MB cap, short-lived
+signed URLs), duplicated specifically to avoid any risk of regressing
+Phase 3's already-verified storage code. By default it reuses the
+Diamond bucket (`SUPABASE_DIAMOND_BUCKET`) under jewellery-specific path
+prefixes (`jewellery-design/`, `jewellery-finished/`) — set
+`SUPABASE_JEWELLERY_BUCKET` to use a dedicated bucket instead. Wired
+into the job's design-image field and each finished output's photo
+field.
+
 ## Posting / cancellation rules
 
 Every voucher type posts a balanced set of journal lines inside one DB
@@ -396,6 +624,9 @@ partially-saved entry cannot exist. In brief:
 | Rough Purchase | Dr Rough Diamond Inventory + Dr Input GST · Cr Accounts Payable (supplier) [+ Dr Accounts Payable · Cr payment account if paid now] |
 | Issue Rough to Karigar | Dr Diamond WIP · Cr Rough Diamond Inventory |
 | Receive Polished | Dr Polished Diamond Inventory (resolved cost + labour) [+ Dr Rough Diamond Inventory for any returned carat] · Cr Diamond WIP (resolved cost) [+ Cr Accounts Payable (Karigar) for labour] |
+| Metal Purchase | Dr Metal Inventory + Dr Input GST · Cr Accounts Payable (supplier) [+ Dr Accounts Payable · Cr payment account if paid now] |
+| Issue Materials to Job | Dr Jewellery WIP · Cr Metal Inventory [+ Cr Polished Diamond Inventory for any diamonds issued] |
+| Receive Finished Jewellery | Dr Finished Jewellery Inventory (resolved metal + labour/charges + set-diamond cost) [+ Dr Metal Inventory for returned metal] [+ Dr Scrap Metal Inventory for scrap] [+ Dr Polished Diamond Inventory for returned diamonds] [+ Dr Business Expenses for abnormal loss / damaged-lost diamonds] · Cr Jewellery WIP (resolved metal + set/returned/damaged-lost diamond cost) [+ Cr Accounts Payable (Karigar) for charges + Karigar-added material] |
 
 **Cancellation is Owner-only** and never deletes or edits the original: it
 posts a new `REVERSAL` voucher with every journal line's debit/credit
@@ -451,6 +682,28 @@ Every rule above is enforced **inside the Server Action itself**
 (`requireUser()`/`requireOwner()` from the Phase 1 DAL), not just by hiding
 a button — a Staff request that reaches `cancelVoucherAction` directly is
 rejected the same way a Staff click would be.
+
+## Permissions (Phase 4 additions)
+
+- **Owner**: everything Staff can do, plus purchase/open metal stock and
+  make audited stock adjustments, cancel an eligible Jewellery Job
+  (reversing both stock and accounting), classify a receipt's loss as
+  abnormal, mark a diamond damaged/lost, manage the Metal/Purity master,
+  and make audited cost-allocation overrides on a receipt's outputs.
+  Sees every cost/carrying-value figure and the Karigar money (labour +
+  material payable) balance.
+- **Staff**: create Jewellery Jobs, issue materials, and receive finished
+  jewellery — the same day-to-day operational permission level as every
+  other module's create/issue/receive actions. Sees material weights,
+  statuses, and codes throughout, but **never** a cost, carrying value,
+  or the Karigar's money balance. Cannot cancel a job, cannot classify a
+  loss as abnormal, cannot mark a diamond damaged/lost, cannot make a
+  cost-allocation override, cannot purchase/open metal stock or adjust it
+  — enforced **inside the Server Action itself**
+  (`requireUser()`/`requireOwner()`), not just by which buttons a page
+  renders; `receiveFinishedJewelleryAction` independently re-checks the
+  abnormal-loss and damaged-lost flags server-side even if a Staff
+  request somehow reached it directly with those fields set.
 
 ## Known Phase 2 limitations
 
@@ -526,6 +779,67 @@ rejected the same way a Staff click would be.
   small-shop data volumes, not built for pagination at scale, matching the
   same known limitation already documented for Phase 2's report queries.
 
+## Known Phase 4 limitations
+
+- **"Other material" cost is a job-costing display figure only — never
+  posted to the accounting ledger.** Moissanite/findings/alloy/other
+  manual material lines have no real stock account backing them (per
+  the master plan's own "do not falsely present manual material as fully
+  inventory-traced" instruction), so their cost shows on the job/output
+  cost breakdown but never gets its own Dr/Cr journal line.
+- **Other-material cost is provisional and recalculated across every
+  output the job has received so far, whenever a new output appears** —
+  proportionally by fine metal weight (deterministic rounding-remainder,
+  same pattern as every other proportional split in this codebase). A
+  job whose outputs are spread across several partial receipts has
+  earlier outputs' `otherMaterialCost` retroactively corrected each time
+  a later receipt adds more outputs, so the total across every output
+  for the job always sums exactly to the job's total issued
+  other-material cost once the job stops receiving new outputs. If a
+  job never receives any output at all (e.g. it resolves entirely via
+  return/scrap), the cost simply has nowhere to display and stays
+  unallocated — an explicit, documented rule, not a silent drop.
+- **Return and scrap lines must each explicitly name their own metal
+  purity** — no default is ever silently chosen. A job that issued only
+  one purity still needs exactly one line per return/scrap amount (kept
+  simple: one pre-filled row, no extra picking required); a job that
+  issued more than one purity gets an explicit "+ Add another purity"
+  control per return/scrap section, and the server independently
+  validates each line's purity was actually issued to that job **and**
+  that the requested weight doesn't exceed what's still outstanding for
+  that *specific* purity — derived purely from the immutable
+  `MetalStockMovement` ledger (job + purity), never a stored balance, so
+  a job issuing 22K and 18K together can't have a return/scrap amount
+  from one purity silently absorbed against the other's remaining
+  balance. **A finished output's own metal purity is restricted the
+  same way** — it must be one of the job's issued purities too, using
+  that job's own fineness snapshot rather than a fresh Metal/Purity
+  master lookup — because the informational `CONSUMED_OUT` movement for
+  the metal that becomes finished jewellery is posted against exactly
+  that purity: accepting any real purity in the system at large here
+  (as an earlier version of this fix did, before being caught during
+  this same verification pass) would let an output recorded in a
+  purity the job never issued silently drain a real, unrelated
+  purity's Metal Stock balance for metal it never actually gave out.
+  The finished portion is attributed to each output's own real (issued)
+  purity; any recognized process loss, which has no output of its own to
+  attach to, is split proportionally across the job's actually-issued
+  purities by their issued fine-weight share — never dumped on one
+  arbitrarily "first" line either.
+- **A polished diamond issued to a Jewellery Job resolves by its own
+  exact `costAtIssue`, never Phase 3's proportional-allocation ratio** —
+  correct, since it's the same real, already-costed Phase 3 record, not
+  a new allocation event.
+- Metal Stock's per-purity balance is a simple weighted-average cost pool
+  (recomputed fresh from the immutable movement ledger at issue time) —
+  there is no FIFO/LIFO lot-tracking option, matching the master plan's
+  "fungible metal" model.
+- Reports/lists cap at a few hundred rows (`take: 200`–`500`), matching
+  the same known limitation already documented for Phase 2/3.
+- **No Costing or selling-price/profit functionality** — by explicit
+  instruction, Phase 4 stops at manufacturing cost; Phase 5 owns
+  Costing/selling-price/profit.
+
 ## Authentication & authorization model
 
 - `src/lib/auth/password.ts` — bcrypt hashing (12 rounds).
@@ -560,8 +874,7 @@ trade is not worth it for a transitive, dev-only, unreachable code path.
 
 ## What's deliberately not built yet
 
-Accounting and Diamond are real, working business logic. Jewellery Jobs
-and Costing (`/jewellery-jobs`, `/costing`) are still route foundations
-only — each renders a page explaining which Phase will implement it. No
-jewellery-job transactions or costing calculations exist yet, real or
-fake.
+Accounting, Diamond, and Jewellery Jobs are real, working business
+logic. Costing (`/costing`) is still a route foundation only — it
+renders a page explaining Phase 5 will implement it. No selling-price or
+profit calculation exists yet, real or fake.

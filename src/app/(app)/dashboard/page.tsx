@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { requireUser } from "@/lib/auth/dal";
 import { getCashBankSummary, getReceivablePayableSummary } from "@/lib/accounting/reports";
 import { getDashboardDiamondSummary } from "@/lib/diamond/reports";
+import { getPendingJewelleryJobsCount } from "@/lib/jewellery/reports";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { SummaryCard } from "@/components/dashboard/SummaryCard";
 import { QuickActionButton } from "@/components/dashboard/QuickActionButton";
@@ -22,19 +23,15 @@ function carat(value: { toFixed: (n: number) => string }) {
   return `${value.toFixed(3)}`;
 }
 
-const PLACEHOLDER_CARDS = [{ label: "Pending jewellery jobs", phase: 4 }];
-
-const PLACEHOLDER_ACTIONS = [
-  { label: "New Jewellery Job", href: "/jewellery-jobs", phase: 4 },
-  { label: "New Costing", href: "/costing", phase: 5 },
-];
+const PLACEHOLDER_ACTIONS = [{ label: "New Costing", href: "/costing", phase: 5 }];
 
 export default async function DashboardPage() {
   const user = await requireUser();
-  const [cashBank, receivablePayable, diamondSummary] = await Promise.all([
+  const [cashBank, receivablePayable, diamondSummary, pendingJewelleryJobs] = await Promise.all([
     getCashBankSummary(),
     getReceivablePayableSummary(),
     getDashboardDiamondSummary(),
+    getPendingJewelleryJobsCount(),
   ]);
 
   return (
@@ -52,9 +49,7 @@ export default async function DashboardPage() {
         <SummaryCard label="Rough stock" value={carat(diamondSummary.roughStockCarat)} unit="carat" />
         <SummaryCard label="Polished stock" value={carat(diamondSummary.polishedStockCarat)} unit="carat" />
         <SummaryCard label="Material with Karigar" value={carat(diamondSummary.materialWithKarigarCarat)} unit="carat" />
-        {PLACEHOLDER_CARDS.map((card) => (
-          <SummaryCard key={card.label} {...card} />
-        ))}
+        <SummaryCard label="Pending jewellery jobs" value={String(pendingJewelleryJobs)} />
       </section>
 
       <section aria-label="Quick actions" className="mt-8">
@@ -74,6 +69,7 @@ export default async function DashboardPage() {
           />
           <QuickActionButton label="Issue Rough" href="/diamond?tab=jobs&issue=1" enabled />
           <QuickActionButton label="Receive Polished" href="/diamond?tab=jobs" enabled />
+          <QuickActionButton label="New Jewellery Job" href="/jewellery-jobs?tab=jobs&issue=1" enabled />
           {PLACEHOLDER_ACTIONS.map((action) => (
             <QuickActionButton key={action.label} {...action} />
           ))}

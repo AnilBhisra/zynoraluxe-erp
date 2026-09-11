@@ -23,6 +23,13 @@ export const SYSTEM_ACCOUNT_CODES = {
   ROUGH_DIAMOND_INVENTORY: "1200",
   DIAMOND_WIP: "1210",
   POLISHED_DIAMOND_INVENTORY: "1220",
+  // Phase 4 — Jewellery Jobs. Karigar labour AND added-material payable
+  // again deliberately reuse ACCOUNTS_PAYABLE above (by partyId) rather
+  // than a dedicated account, for the same reason as Phase 3.
+  METAL_INVENTORY: "1300",
+  SCRAP_METAL_INVENTORY: "1310",
+  JEWELLERY_WIP: "1320",
+  FINISHED_JEWELLERY_INVENTORY: "1330",
 } as const;
 
 /**

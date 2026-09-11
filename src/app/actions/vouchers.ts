@@ -457,6 +457,13 @@ export async function cancelVoucherAction(
   if (target?.voucherType === "DIAMOND_RECEIPT") {
     return { error: "Polished receipts cannot be cancelled in Phase 3." };
   }
+  // Same integrity risk, same fix, for Phase 4 Jewellery Job vouchers.
+  if (target?.voucherType === "JEWELLERY_ISSUE") {
+    return { error: "Cancel this from the Jewellery Jobs page's job detail view instead, so stock stays in sync." };
+  }
+  if (target?.voucherType === "JEWELLERY_RECEIPT") {
+    return { error: "Jewellery receipts cannot be cancelled in Phase 4." };
+  }
 
   try {
     await prisma.$transaction((tx) =>

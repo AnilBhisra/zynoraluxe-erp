@@ -4,15 +4,30 @@
 // Phase 2: double-entry accounting — Chart of Accounts, Parties
 // (Customer/Supplier/Karigar), Vouchers, Journal Entries, Invoice Lines,
 // Payment Accounts, GST rates, voucher numbering sequences.
-// Phase 3 (this update): rough-to-polished diamond manufacturing — Rough
-// Lots/Pieces, Diamond (cutting-polishing) Jobs, Polished Receipts,
-// Polished Diamonds, an immutable Stock Movement ledger, and a diamond
-// code-numbering sequence — all integrated into the Phase 2 accounting
-// engine (new Rough/WIP/Polished inventory accounts; Karigar labour
-// payable reuses the existing Accounts Payable control account by party).
+// Phase 3: rough-to-polished diamond manufacturing — Rough Lots/Pieces,
+// Diamond (cutting-polishing) Jobs, Polished Receipts, Polished Diamonds,
+// an immutable Stock Movement ledger, and a diamond code-numbering
+// sequence — all integrated into the Phase 2 accounting engine (new
+// Rough/WIP/Polished inventory accounts; Karigar labour payable reuses
+// the existing Accounts Payable control account by party).
+// Phase 4 (this update): Jewellery Jobs and Jewellery Manufacturing — a
+// minimal fungible Metal Stock foundation (Metal/Purity master, Metal
+// Purchases, an immutable weight-based Metal Stock Movement ledger),
+// Jewellery Jobs that issue metal + Phase 3 polished diamonds + optional
+// manual "other material" lines to a Karigar, Jewellery Receipts
+// (partial-receipt-safe, multi-output), and Finished Jewellery records —
+// all integrated into the same Phase 2/3 accounting and stock-movement
+// architecture (new Metal/Scrap/Jewellery-WIP/Finished inventory
+// accounts; Karigar labour and added-material payable again reuses the
+// existing Accounts Payable control account by party). Polished
+// Diamonds gain 3 new terminal statuses for jewellery use
+// (ISSUED_TO_JEWELLERY / SET_IN_JEWELLERY / DAMAGED_LOST) and the
+// existing Phase 3 StockMovement ledger gains an additive, nullable link
+// to a JewelleryJob so a diamond's complete lifecycle stays in ONE
+// ledger regardless of which module consumed it.
 //
-// Phase 4+ models (jewellery jobs, costing) are intentionally NOT created
-// yet — see ZYNORALUXE_JEWELLERY_ERP_MASTER_PLAN.md section 9, rule 2.
+// Phase 5+ models (costing, selling price, profit) are intentionally NOT
+// created yet — see ZYNORALUXE_JEWELLERY_ERP_MASTER_PLAN.md section 9, rule 2.
 //
 // Forward-compat convention: any field representing money, carat, or weight
 // MUST use Prisma's `Decimal` type (maps to PostgreSQL NUMERIC), never
@@ -50,14 +65,25 @@ model User {
   vouchersCreated        Voucher[]         @relation("VoucherCreatedBy")
   vouchersCancelled      Voucher[]         @relation("VoucherCancelledBy")
 
-  roughLotsCreated        RoughLot[]        @relation("RoughLotCreatedBy")
-  roughPiecesCreated      RoughPiece[]      @relation("RoughPieceCreatedBy")
-  diamondJobsCreated      DiamondJob[]      @relation("DiamondJobCreatedBy")
-  diamondJobsCancelled    DiamondJob[]      @relation("DiamondJobCancelledBy")
-  polishedReceiptsCreated PolishedReceipt[] @relation("PolishedReceiptCreatedBy")
-  polishedDiamondsCreated PolishedDiamond[] @relation("PolishedDiamondCreatedBy")
-  polishedDiamondsRecut   PolishedDiamond[] @relation("PolishedDiamondRecutBy")
-  stockMovementsCreated   StockMovement[]   @relation("StockMovementCreatedBy")
+  roughLotsCreated           RoughLot[]        @relation("RoughLotCreatedBy")
+  roughPiecesCreated         RoughPiece[]      @relation("RoughPieceCreatedBy")
+  diamondJobsCreated         DiamondJob[]      @relation("DiamondJobCreatedBy")
+  diamondJobsCancelled       DiamondJob[]      @relation("DiamondJobCancelledBy")
+  polishedReceiptsCreated    PolishedReceipt[] @relation("PolishedReceiptCreatedBy")
+  polishedDiamondsCreated    PolishedDiamond[] @relation("PolishedDiamondCreatedBy")
+  polishedDiamondsRecut      PolishedDiamond[] @relation("PolishedDiamondRecutBy")
+  polishedDiamondsMarkedLost PolishedDiamond[] @relation("PolishedDiamondDamagedLostBy")
+  stockMovementsCreated      StockMovement[]   @relation("StockMovementCreatedBy")
+
+  metalPuritiesCreated       MetalPurity[]                @relation("MetalPurityCreatedBy")
+  metalPuritiesUpdated       MetalPurity[]                @relation("MetalPurityUpdatedBy")
+  metalPurchasesCreated      MetalPurchase[]              @relation("MetalPurchaseCreatedBy")
+  metalStockMovementsCreated MetalStockMovement[]         @relation("MetalStockMovementCreatedBy")
+  jewelleryJobsCreated       JewelleryJob[]               @relation("JewelleryJobCreatedBy")
+  jewelleryJobsCancelled     JewelleryJob[]               @relation("JewelleryJobCancelledBy")
+  otherMaterialLinesCreated  JewelleryOtherMaterialLine[] @relation("OtherMaterialLineCreatedBy")
+  jewelleryReceiptsCreated   JewelleryReceipt[]           @relation("JewelleryReceiptCreatedBy")
+  finishedJewelleryCreated   FinishedJewellery[]          @relation("FinishedJewelleryCreatedBy")
 
   @@map("users")
 }
@@ -138,6 +164,10 @@ model Party {
   roughLotsAsSupplier  RoughLot[]     @relation("RoughLotSupplier")
   diamondJobsAsKarigar DiamondJob[]   @relation("DiamondJobKarigar")
 
+  metalPurchasesAsSupplier MetalPurchase[] @relation("MetalPurchaseSupplier")
+  jewelleryJobsAsCustomer  JewelleryJob[]  @relation("JewelleryJobCustomer")
+  jewelleryJobsAsKarigar   JewelleryJob[]  @relation("JewelleryJobKarigar")
+
   @@index([type])
   @@index([name])
   @@map("parties")
@@ -211,8 +241,9 @@ model GstRate {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  invoiceLines InvoiceLine[]
-  roughLots    RoughLot[]
+  invoiceLines   InvoiceLine[]
+  roughLots      RoughLot[]
+  metalPurchases MetalPurchase[]
 
   @@map("gst_rates")
 }
@@ -227,6 +258,8 @@ enum VoucherType {
   REVERSAL
   DIAMOND_ISSUE
   DIAMOND_RECEIPT
+  JEWELLERY_ISSUE
+  JEWELLERY_RECEIPT
 }
 
 // Concurrency-safe voucher numbering: one row per (type, financial year),
@@ -309,6 +342,10 @@ model Voucher {
   roughLot            RoughLot?
   diamondJobIssue     DiamondJob?
   polishedReceiptPost PolishedReceipt? @relation("PolishedReceiptPosting")
+
+  metalPurchase        MetalPurchase?
+  jewelleryJobIssue    JewelleryJob?
+  jewelleryReceiptPost JewelleryReceipt? @relation("JewelleryReceiptPosting")
 
   @@index([voucherType])
   @@index([partyId])
@@ -454,9 +491,14 @@ enum CertificateStatus {
 // master plan requires every status to be backed by a real linked
 // transaction, and Sale-of-polished / Jewellery-issue don't exist until
 // later phases. RECUT is implemented (Owner-only, no reverse rough flow).
+// ISSUED_TO_JEWELLERY / SET_IN_JEWELLERY / DAMAGED_LOST added in Phase 4
+// (additive enum values — existing AVAILABLE/RECUT rows are unaffected).
 enum PolishedDiamondStatus {
   AVAILABLE
   RECUT
+  ISSUED_TO_JEWELLERY
+  SET_IN_JEWELLERY
+  DAMAGED_LOST
 }
 
 // One row per (entityType, calendar year) for human-readable diamond
@@ -739,19 +781,30 @@ model PolishedDiamond {
   recutBy       User?     @relation("PolishedDiamondRecutBy", fields: [recutByUserId], references: [id])
   recutReason   String?
 
+  // Phase 4: Owner-only abnormal-loss classification during a Jewellery
+  // Receipt reconciliation — never set from Phase 3 alone.
+  damagedLostAt       DateTime?
+  damagedLostByUserId String?
+  damagedLostBy       User?     @relation("PolishedDiamondDamagedLostBy", fields: [damagedLostByUserId], references: [id])
+  damagedLostReason   String?
+
   createdByUserId String
   createdBy       User   @relation("PolishedDiamondCreatedBy", fields: [createdByUserId], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  stockMovements StockMovement[]
+  stockMovements      StockMovement[]
+  jewelleryIssueLines JewelleryDiamondIssueLine[]
 
   @@index([jobId])
   @@index([status])
   @@map("polished_diamonds")
 }
 
+// JEWELLERY_* values added in Phase 4 — a polished diamond's complete
+// lifecycle (Phase 3 manufacturing through Phase 4 jewellery use) stays
+// in this ONE ledger regardless of which module consumed it.
 enum StockMovementType {
   ROUGH_PURCHASE_IN
   ROUGH_ISSUE_OUT
@@ -760,6 +813,11 @@ enum StockMovementType {
   ROUGH_RETURN_IN
   POLISHED_RECEIVE_IN
   POLISHED_RECUT_OUT
+  JEWELLERY_ISSUE_OUT
+  JEWELLERY_ISSUE_CANCEL_IN
+  JEWELLERY_RETURN_IN
+  JEWELLERY_SET_OUT
+  JEWELLERY_DAMAGED_LOSS_OUT
 }
 
 // Immutable audit ledger. Never updated or deleted after insert — a
@@ -782,6 +840,9 @@ model StockMovement {
   diamondJobId String?
   diamondJob   DiamondJob? @relation(fields: [diamondJobId], references: [id])
 
+  jewelleryJobId String?
+  jewelleryJob   JewelleryJob? @relation(fields: [jewelleryJobId], references: [id])
+
   pieces    Int     @default(1)
   carat     Decimal @db.Decimal(10, 3)
   costValue Decimal @db.Decimal(14, 2)
@@ -802,4 +863,477 @@ model StockMovement {
   @@index([diamondJobId])
   @@index([type])
   @@map("stock_movements")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 — Jewellery Jobs and Jewellery Manufacturing
+// ---------------------------------------------------------------------------
+//
+// A Jewellery Job issues metal (fungible, weight-based stock — see the
+// Metal Stock section below), Phase 3 Polished Diamonds (discrete,
+// individually tracked — reuses PolishedDiamond/StockMovement above),
+// and optional non-stock-tracked "other material" lines to a Karigar,
+// then receives back one or more Finished Jewellery outputs. Workflow:
+// Create Job (Draft, no accounting impact) -> Issue Materials (one
+// atomic event; posts Dr Jewellery WIP / Cr Metal+Polished Inventory) ->
+// Mark In Progress (label only) -> Receive Finished Jewellery (partial
+// receipts supported; posts Dr Finished Jewellery Inventory + returns to
+// Metal/Scrap/Polished Inventory / Cr Jewellery WIP + Karigar Payable
+// for labour) -> Completed once every issued material is resolved.
+
+enum MetalType {
+  GOLD
+  SILVER
+  PLATINUM
+  OTHER
+}
+
+// Configurable, never a hardcoded legal/purity assumption in code — every
+// fine-weight calculation reads `finenessPercent` from this table (or
+// from a snapshot column that copied it at the time), never a constant.
+// Owner-only to create/edit/deactivate; deactivating never deletes it
+// (existing jobs/purchases keep referencing it for history).
+model MetalPurity {
+  id              String    @id @default(cuid())
+  metalType       MetalType
+  displayName     String
+  finenessPercent Decimal   @db.Decimal(6, 3)
+  isActive        Boolean   @default(true)
+
+  createdByUserId String
+  createdBy       User    @relation("MetalPurityCreatedBy", fields: [createdByUserId], references: [id])
+  updatedByUserId String?
+  updatedBy       User?   @relation("MetalPurityUpdatedBy", fields: [updatedByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  metalPurchases      MetalPurchase[]
+  metalStockMovements MetalStockMovement[]
+  jobsAsTargetPurity  JewelleryJob[]            @relation("JewelleryJobTargetPurity")
+  metalIssueLines     JewelleryMetalIssueLine[]
+  finishedJewellery   FinishedJewellery[]
+
+  @@unique([metalType, displayName])
+  @@map("metal_purities")
+}
+
+enum MetalRateBasis {
+  PER_GROSS_GRAM
+  PER_FINE_GRAM
+  FIXED_TOTAL
+}
+
+// One purchase/receipt event. `fineWeight` is always
+// `grossWeight * finenessPercentSnapshot / 100`, computed server-side —
+// see src/lib/jewellery/allocation.ts. `finenessPercentSnapshot` is
+// copied from MetalPurity at purchase time so a later edit to the master
+// never rewrites this purchase's history.
+model MetalPurchase {
+  id           String   @id @default(cuid())
+  purchaseCode String   @unique
+  supplierId   String
+  supplier     Party    @relation("MetalPurchaseSupplier", fields: [supplierId], references: [id])
+  purchaseDate DateTime
+
+  metalType               MetalType
+  purityId                String
+  purity                  MetalPurity @relation(fields: [purityId], references: [id])
+  finenessPercentSnapshot Decimal     @db.Decimal(6, 3)
+  grossWeight             Decimal     @db.Decimal(10, 3)
+  fineWeight              Decimal     @db.Decimal(10, 3)
+
+  rateBasis    MetalRateBasis
+  rate         Decimal        @db.Decimal(14, 4)
+  currencyCode String         @default("INR")
+  exchangeRate Decimal        @default(1) @db.Decimal(10, 4)
+
+  totalPurchaseCost Decimal @db.Decimal(14, 2)
+
+  gstTreatment   GstTreatment @default(NONE)
+  gstRateId      String?
+  gstRate        GstRate?     @relation(fields: [gstRateId], references: [id])
+  gstRatePercent Decimal?     @db.Decimal(5, 2)
+
+  referenceNumber String?
+  notes           String?
+
+  voucherId String?  @unique
+  voucher   Voucher? @relation(fields: [voucherId], references: [id])
+
+  idempotencyKey String? @unique
+
+  createdByUserId String
+  createdBy       User   @relation("MetalPurchaseCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([supplierId])
+  @@index([purchaseDate])
+  @@index([metalType, purityId])
+  @@map("metal_purchases")
+}
+
+enum MetalStockMovementType {
+  PURCHASE_IN
+  OPENING_IN
+  ISSUE_OUT
+  ISSUE_CANCEL_IN
+  RETURN_IN
+  SCRAP_RETURN_IN
+  CONSUMED_OUT
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+}
+
+// Immutable, weight-based audit ledger — metal is fungible (unlike
+// discrete Diamond pieces), so stock is derived by summing movements
+// grouped by (metalType, purityId), never a manually-editable balance
+// column. `grossWeight`/`fineWeight`/`costValue` are always positive
+// magnitudes; direction is implied by `type` (…_IN adds to stock,
+// …_OUT removes it) — see src/lib/jewellery/reports.ts.
+model MetalStockMovement {
+  id   String                 @id @default(cuid())
+  type MetalStockMovementType
+
+  metalType MetalType
+  purityId  String
+  purity    MetalPurity @relation(fields: [purityId], references: [id])
+
+  grossWeight Decimal @db.Decimal(10, 3)
+  fineWeight  Decimal @db.Decimal(10, 3)
+  costValue   Decimal @db.Decimal(14, 2)
+
+  sourceDocument String
+
+  jewelleryJobId String?
+  jewelleryJob   JewelleryJob? @relation(fields: [jewelleryJobId], references: [id])
+
+  reversalOfMovementId String?             @unique
+  reversalOfMovement   MetalStockMovement? @relation("MetalMovementReversal", fields: [reversalOfMovementId], references: [id])
+  reversedByMovement   MetalStockMovement? @relation("MetalMovementReversal")
+
+  createdByUserId String
+  createdBy       User   @relation("MetalStockMovementCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([metalType, purityId])
+  @@index([jewelleryJobId])
+  @@index([type])
+  @@map("metal_stock_movements")
+}
+
+enum JewelleryType {
+  RING
+  EARRINGS
+  PENDANT
+  NECKLACE
+  BRACELET
+  BANGLE
+  CHAIN
+  COUPLE_RING
+  CUSTOM
+}
+
+enum JewelleryJobStatus {
+  DRAFT
+  MATERIALS_ISSUED
+  IN_PROGRESS
+  PARTIALLY_RECEIVED
+  NEEDS_CORRECTION
+  COMPLETED
+  CANCELLED
+}
+
+// jobCode uses prefix "ZL-JJOB-" (not "ZL-JOB-") deliberately — Phase 3's
+// DiamondJob already owns "ZL-JOB-" with its own independent counter;
+// reusing the same display prefix here would let a Diamond Job and a
+// Jewellery Job show the identical human-readable code, which is exactly
+// the kind of ambiguity these codes exist to prevent. See
+// src/lib/jewellery/numbering.ts.
+model JewelleryJob {
+  id      String @id @default(cuid())
+  jobCode String @unique
+
+  customerId        String?
+  customer          Party?  @relation("JewelleryJobCustomer", fields: [customerId], references: [id])
+  customerReference String?
+
+  jewelleryType      JewelleryType
+  designName         String
+  designImageAssetId String?
+
+  karigarId String
+  karigar   Party  @relation("JewelleryJobKarigar", fields: [karigarId], references: [id])
+
+  issueDate            DateTime
+  expectedDeliveryDate DateTime?
+  notes                String?
+
+  jewellerySize        String?
+  quantity             Int          @default(1)
+  targetMetalType      MetalType?
+  targetPurityId       String?
+  targetPurity         MetalPurity? @relation("JewelleryJobTargetPurity", fields: [targetPurityId], references: [id])
+  targetFinishedWeight Decimal?     @db.Decimal(10, 3)
+  specialInstructions  String?
+
+  status JewelleryJobStatus @default(DRAFT)
+
+  // Cumulative snapshots at issue time (never recomputed later).
+  issuedMetalFineWeight Decimal @default(0) @db.Decimal(10, 3)
+  issuedMetalCost       Decimal @default(0) @db.Decimal(14, 2)
+  issuedDiamondCost     Decimal @default(0) @db.Decimal(14, 2)
+  otherMaterialCost     Decimal @default(0) @db.Decimal(14, 2)
+
+  // Cumulative, updated atomically by each receipt.
+  receivedFineWeight      Decimal @default(0) @db.Decimal(10, 3)
+  returnedMetalFineWeight Decimal @default(0) @db.Decimal(10, 3)
+  scrapFineWeight         Decimal @default(0) @db.Decimal(10, 3)
+  karigarAddedFineWeight  Decimal @default(0) @db.Decimal(10, 3)
+  karigarAddedCost        Decimal @default(0) @db.Decimal(14, 2)
+
+  // Drains to exactly 0 as receipts resolve it — mirrors DiamondJob's
+  // remainingWipCost (see src/lib/diamond/posting.ts for the pattern).
+  remainingWipCost  Decimal @default(0) @db.Decimal(14, 2)
+  totalLabourCharge Decimal @default(0) @db.Decimal(14, 2)
+
+  cancelledAt        DateTime?
+  cancelledByUserId  String?
+  cancelledBy        User?     @relation("JewelleryJobCancelledBy", fields: [cancelledByUserId], references: [id])
+  cancellationReason String?
+
+  // The Dr Jewellery WIP / Cr Metal+Polished Inventory transfer voucher,
+  // posted once at Issue Materials time.
+  wipVoucherId String?  @unique
+  wipVoucher   Voucher? @relation(fields: [wipVoucherId], references: [id])
+
+  idempotencyKey String? @unique
+
+  createdByUserId String
+  createdBy       User   @relation("JewelleryJobCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  metalIssueLines     JewelleryMetalIssueLine[]
+  diamondIssueLines   JewelleryDiamondIssueLine[]
+  otherMaterialLines  JewelleryOtherMaterialLine[]
+  receipts            JewelleryReceipt[]
+  finishedJewellery   FinishedJewellery[]
+  metalStockMovements MetalStockMovement[]
+  stockMovements      StockMovement[]
+
+  @@index([karigarId])
+  @@index([customerId])
+  @@index([status])
+  @@map("jewellery_jobs")
+}
+
+// One row per metal line issued to a job. A job may hold several (e.g.
+// main metal + alloy) — the normal form shows one; "Add material" adds
+// more. Fungible, so unlike a Diamond piece there is no per-line return;
+// returns/scrap are tracked cumulatively at the job level instead.
+model JewelleryMetalIssueLine {
+  id    String       @id @default(cuid())
+  jobId String
+  job   JewelleryJob @relation(fields: [jobId], references: [id])
+
+  metalType               MetalType
+  purityId                String
+  purity                  MetalPurity @relation(fields: [purityId], references: [id])
+  finenessPercentSnapshot Decimal     @db.Decimal(6, 3)
+  grossWeight             Decimal     @db.Decimal(10, 3)
+  fineWeight              Decimal     @db.Decimal(10, 3)
+  costValue               Decimal     @db.Decimal(14, 2)
+
+  issueDate DateTime
+  createdAt DateTime @default(now())
+
+  @@index([jobId])
+  @@map("jewellery_metal_issue_lines")
+}
+
+enum JewelleryDiamondResolution {
+  SET
+  RETURNED
+  DAMAGED_LOST
+}
+
+// Join table so a diamond's full issue/return/reissue history survives
+// even across a cancel-and-reissue-elsewhere cycle — same reasoning as
+// Phase 3's DiamondJobPiece. `resolvedAs` stays null while the diamond
+// is still with the Karigar, unresolved; once set, it can never change
+// again (each diamond ends in EXACTLY one terminal state).
+model JewelleryDiamondIssueLine {
+  id    String       @id @default(cuid())
+  jobId String
+  job   JewelleryJob @relation(fields: [jobId], references: [id])
+
+  polishedDiamondId String
+  polishedDiamond   PolishedDiamond @relation(fields: [polishedDiamondId], references: [id])
+
+  caratAtIssue Decimal @db.Decimal(10, 3)
+  costAtIssue  Decimal @db.Decimal(14, 2)
+
+  resolvedAs JewelleryDiamondResolution?
+  resolvedAt DateTime?
+
+  setInFinishedJewelleryId String?
+  setInFinishedJewellery   FinishedJewellery? @relation(fields: [setInFinishedJewelleryId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@unique([jobId, polishedDiamondId])
+  @@index([jobId])
+  @@index([polishedDiamondId])
+  @@map("jewellery_diamond_issue_lines")
+}
+
+// Explicitly NOT stock-tracked (no movement ledger) — a simple manual
+// cost/documentation line for material that has no real inventory
+// system yet (moissanite, small stones, findings, alloy, etc.). Never
+// presented in the UI as if it were inventory-traced.
+model JewelleryOtherMaterialLine {
+  id    String       @id @default(cuid())
+  jobId String
+  job   JewelleryJob @relation(fields: [jobId], references: [id])
+
+  description String
+  quantity    Decimal     @db.Decimal(10, 3)
+  unit        InvoiceUnit @default(PCS)
+  weight      Decimal?    @db.Decimal(10, 3)
+  cost        Decimal     @db.Decimal(14, 2)
+  note        String?
+
+  createdByUserId String
+  createdBy       User   @relation("OtherMaterialLineCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([jobId])
+  @@map("jewellery_other_material_lines")
+}
+
+model JewelleryReceipt {
+  id          String       @id @default(cuid())
+  receiptCode String       @unique
+  jobId       String
+  job         JewelleryJob @relation(fields: [jobId], references: [id])
+  receiveDate DateTime
+
+  returnedMetalGrossWeight Decimal @default(0) @db.Decimal(10, 3)
+  returnedMetalFineWeight  Decimal @default(0) @db.Decimal(10, 3)
+  scrapGrossWeight         Decimal @default(0) @db.Decimal(10, 3)
+  scrapFineWeight          Decimal @default(0) @db.Decimal(10, 3)
+  // Only meaningful/non-zero on the receipt that resolves the job's
+  // material completely — see the gap/isFinal pattern in
+  // src/lib/jewellery/posting.ts (same design as Phase 3's weight loss).
+  processLossFineWeight    Decimal @default(0) @db.Decimal(10, 3)
+  isAbnormalLoss           Boolean @default(false)
+  abnormalLossReason       String?
+
+  karigarAddedFineWeight Decimal @default(0) @db.Decimal(10, 3)
+  karigarAddedCost       Decimal @default(0) @db.Decimal(14, 2)
+
+  labourCharge  Decimal @default(0) @db.Decimal(14, 2)
+  makingCharge  Decimal @default(0) @db.Decimal(14, 2)
+  settingCharge Decimal @default(0) @db.Decimal(14, 2)
+  platingCharge Decimal @default(0) @db.Decimal(14, 2)
+  otherExpense  Decimal @default(0) @db.Decimal(14, 2)
+
+  notes String?
+
+  postingVoucherId String?  @unique
+  postingVoucher   Voucher? @relation("JewelleryReceiptPosting", fields: [postingVoucherId], references: [id])
+
+  idempotencyKey String? @unique
+
+  createdByUserId String
+  createdBy       User   @relation("JewelleryReceiptCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  outputs FinishedJewellery[]
+
+  @@index([jobId])
+  @@map("jewellery_receipts")
+}
+
+enum QcStatus {
+  PASSED
+  NEEDS_CORRECTION
+  REJECTED
+}
+
+// Completed jewellery output. Phase 5 will connect this to Sale/COGS —
+// no Sold/selling-price/profit fields exist here yet, deliberately.
+model FinishedJewellery {
+  id           String @id @default(cuid())
+  finishedCode String @unique
+
+  receiptId String
+  receipt   JewelleryReceipt @relation(fields: [receiptId], references: [id])
+  jobId     String
+  job       JewelleryJob     @relation(fields: [jobId], references: [id])
+
+  jewelleryType JewelleryType
+  description   String?
+  quantity      Int           @default(1)
+  grossWeight   Decimal?      @db.Decimal(10, 3)
+
+  netMetalWeight          Decimal     @db.Decimal(10, 3)
+  metalType               MetalType
+  purityId                String
+  purity                  MetalPurity @relation(fields: [purityId], references: [id])
+  finenessPercentSnapshot Decimal     @db.Decimal(6, 3)
+  fineMetalWeight         Decimal     @db.Decimal(10, 3)
+
+  // Allocated across outputs when a receipt has more than one — see
+  // src/lib/jewellery/allocation.ts. Always sums exactly back to the
+  // receipt's resolved total.
+  metalCost         Decimal @default(0) @db.Decimal(14, 2)
+  diamondCost       Decimal @default(0) @db.Decimal(14, 2)
+  otherMaterialCost Decimal @default(0) @db.Decimal(14, 2)
+  labourAllocated   Decimal @default(0) @db.Decimal(14, 2)
+  totalCost         Decimal @default(0) @db.Decimal(14, 2)
+
+  photoAssetId String?
+  qcStatus     QcStatus @default(PASSED)
+  notes        String?
+
+  createdByUserId String
+  createdBy       User   @relation("FinishedJewelleryCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  diamonds JewelleryDiamondIssueLine[]
+
+  @@index([jobId])
+  @@index([receiptId])
+  @@map("finished_jewellery")
+}
+
+// One row per (entityType, calendar year) for human-readable Phase 4
+// codes — same atomic-upsert pattern as VoucherSequence/DiamondSequence,
+// kept as its own table so Phase 3's DiamondSequence stays untouched.
+enum JewellerySequenceType {
+  METAL_PURCHASE
+  JEWELLERY_JOB
+  JEWELLERY_RECEIPT
+  FINISHED_JEWELLERY
+}
+
+model JewellerySequence {
+  id           String                @id @default(cuid())
+  sequenceType JewellerySequenceType
+  yearLabel    String
+  lastNumber   Int                   @default(0)
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([sequenceType, yearLabel])
+  @@map("jewellery_sequences")
 }

@@ -11,6 +11,8 @@ const PREFIX_BY_TYPE: Record<VoucherType, string> = {
   REVERSAL: "REV",
   DIAMOND_ISSUE: "DIA-ISS",
   DIAMOND_RECEIPT: "DIA-REC",
+  JEWELLERY_ISSUE: "JWL-ISS",
+  JEWELLERY_RECEIPT: "JWL-REC",
 };
 
 /**
