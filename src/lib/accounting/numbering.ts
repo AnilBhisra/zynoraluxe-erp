@@ -9,6 +9,8 @@ const PREFIX_BY_TYPE: Record<VoucherType, string> = {
   EXPENSE: "EXP",
   OPENING: "OPEN",
   REVERSAL: "REV",
+  DIAMOND_ISSUE: "DIA-ISS",
+  DIAMOND_RECEIPT: "DIA-REC",
 };
 
 /**

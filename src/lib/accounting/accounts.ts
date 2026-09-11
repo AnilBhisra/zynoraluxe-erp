@@ -17,6 +17,12 @@ export const SYSTEM_ACCOUNT_CODES = {
   OUTPUT_SGST: "7002",
   OUTPUT_IGST: "7003",
   ROUND_OFF: "8000",
+  // Phase 3 — Diamond Manufacturing. Karigar labour payable deliberately
+  // reuses ACCOUNTS_PAYABLE above (by partyId) rather than a dedicated
+  // account, so the existing Payment Given flow already settles it.
+  ROUGH_DIAMOND_INVENTORY: "1200",
+  DIAMOND_WIP: "1210",
+  POLISHED_DIAMOND_INVENTORY: "1220",
 } as const;
 
 /**

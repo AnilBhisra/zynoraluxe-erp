@@ -18,12 +18,14 @@ export function PartySelect({
   defaultValue,
   onChange,
   required,
+  label = "Party",
 }: {
   name: string;
   parties: PartyOption[];
   defaultValue?: string;
   onChange?: (partyId: string) => void;
   required?: boolean;
+  label?: string;
 }) {
   const [search, setSearch] = useState("");
   const [value, setValue] = useState(defaultValue ?? "");
@@ -39,12 +41,13 @@ export function PartySelect({
   return (
     <div className="flex flex-col gap-1.5">
       <label htmlFor={inputId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
-        Party{required ? <span className="text-red-600 dark:text-red-400"> *</span> : null}
+        {label}
+        {required ? <span className="text-red-600 dark:text-red-400"> *</span> : null}
       </label>
       <input
         id={inputId}
         type="text"
-        placeholder="Search parties by name…"
+        placeholder="Search by name…"
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         className="h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus:border-zinc-900 dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100 dark:focus-visible:ring-amber-300"

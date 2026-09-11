@@ -36,6 +36,17 @@ const SYSTEM_ACCOUNTS: AccountSeed[] = [
   { code: SYSTEM_ACCOUNT_CODES.OUTPUT_SGST, name: "Output SGST", type: "LIABILITY" },
   { code: SYSTEM_ACCOUNT_CODES.OUTPUT_IGST, name: "Output IGST", type: "LIABILITY" },
   { code: SYSTEM_ACCOUNT_CODES.ROUND_OFF, name: "Round Off", type: "EXPENSE" },
+  {
+    code: SYSTEM_ACCOUNT_CODES.ROUGH_DIAMOND_INVENTORY,
+    name: "Rough Diamond Inventory",
+    type: "ASSET",
+  },
+  { code: SYSTEM_ACCOUNT_CODES.DIAMOND_WIP, name: "Diamond WIP (Cutting-Polishing)", type: "ASSET" },
+  {
+    code: SYSTEM_ACCOUNT_CODES.POLISHED_DIAMOND_INVENTORY,
+    name: "Polished Diamond Inventory",
+    type: "ASSET",
+  },
 ];
 
 // Starter GST rate choices, editable/extendable by the Owner. These are

@@ -2,15 +2,20 @@
 
 Phase 1: project setup, database foundation, login, Owner/Staff roles,
 dashboard, navigation, responsive layout, basic company settings.
-Phase 2 (this branch, `phase-2-accounting`): a full double-entry Accounting
-module — Parties, Transactions (Purchase/Sale/Payment Given/Payment
-Received/Expense), Ledger, Reports, GST, and Dashboard integration.
+Phase 2: a full double-entry Accounting module — Parties, Transactions
+(Purchase/Sale/Payment Given/Payment Received/Expense), Ledger, Reports,
+GST, and Dashboard integration.
+Phase 3 (this branch, `phase-3-diamond`): Rough-to-Polished Diamond
+Manufacturing — Rough purchase/stock, Issue Rough to Karigar, Cutting-
+Polishing Jobs, Receive Polished (yield/loss, multi-output), Polished
+Stock, all fully integrated into the Phase 2 accounting engine.
 
 Full Phase 1–6 scope is defined in
 `../ZYNORALUXE_JEWELLERY_ERP_MASTER_PLAN.md` (the locked source of truth).
-This build implements **Phase 1 + Phase 2 only** — Diamond, Jewellery Jobs
-and Costing are still route foundations, not working business logic. See
-`PHASE_2_VERIFICATION.md` for the detailed verification report.
+This build implements **Phase 1 + Phase 2 + Phase 3 only** — Jewellery
+Jobs and Costing are still route foundations, not working business logic.
+See `PHASE_2_VERIFICATION.md` and `PHASE_3_VERIFICATION.md` for the
+detailed verification reports.
 
 ## Stack
 
@@ -42,6 +47,10 @@ Fill in:
 - `SESSION_SECRET` — generate with `openssl rand -base64 32`
 - `OWNER_EMAIL`, `OWNER_NAME`, `OWNER_PASSWORD` — used once by the seed
   script below to create the first Owner account. Not read anywhere else.
+- `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `SUPABASE_DIAMOND_BUCKET` —
+  **optional.** Only needed to enable Diamond-module photo/certificate
+  uploads (Phase 3) — everything else works without them. See "Media
+  storage" under Diamond Manufacturing workflow below.
 
 ## 3. Set up the database
 
@@ -136,8 +145,57 @@ money/quantity columns are Prisma `Decimal` (Postgres `NUMERIC`), never
   UPDATE`) in the same DB transaction as the voucher insert, so concurrent
   submissions can never collide or skip.
 
-Phase 3–5 tables (rough/polished stock, jewellery jobs, costing) are
-intentionally **not** created yet.
+**Phase 3 tables** (migration `20260911065140_phase3_diamond_manufacturing`),
+same Decimal-everywhere rule (carat columns use `Decimal(10,3)`, money
+`Decimal(14,2)`):
+
+- **`rough_lots`** — one purchase/parcel: supplier, purchase date, rate/rate
+  basis, currency+exchange rate, `totalPurchaseCost` (authoritative landed
+  cost), optional GST, linked accounting voucher, human-readable `lotCode`
+  (`ZL-RL-2026-000001`).
+- **`rough_pieces`** — individual stones, always belonging to a lot OR
+  (for a leftover returned from a job) `lotId: null` with
+  `returnedFromJobId`/`returnedFromReceiptId` set instead — preserves
+  traceability without inventing a false "parent piece" when a job issued
+  several pieces together. `allocatedCost` is this piece's share of its
+  lot's (or source receipt's) cost; `costLocked` flips permanently `true`
+  the moment a piece is first issued, blocking further direct cost edits.
+  `status`: `AVAILABLE` → `WITH_KARIGAR` → `COMPLETED`, or `CANCELLED`
+  (returned-and-available again after an issue cancellation). "Partly/Fully
+  Issued" are **derived lot-level rollups**, not a stored column — see
+  `deriveRoughLotStatus()` in `src/lib/diamond/reports.ts`.
+- **`diamond_job_pieces`** — join table recording every piece a job ever
+  held, even across a cancel-and-reissue-elsewhere cycle (a piece's
+  `status` alone can't reconstruct that history).
+- **`diamond_jobs`** — one Issue-Rough-to-Karigar event through to
+  completion: Karigar, required shape (+ custom-shape fields), issue/due
+  date, `issuedRoughCarat`/`issuedCostValue` (snapshot at issue),
+  `remainingWipCost` (drains to exactly 0 as receipts resolve it),
+  cumulative `receivedPolishedCarat`/`returnedRoughCarat`/
+  `totalLabourCharge`, status (`ISSUED`→`IN_PROGRESS`→
+  `PARTIALLY_RECEIVED`→`COMPLETED`, or `CANCELLED`), linked WIP-transfer
+  voucher, `jobCode` (`ZL-JOB-2026-000001`).
+- **`polished_receipts`** — one Receive-Polished event (a job may have
+  several, for partial receipts): polished/returned carat, this receipt's
+  `weightLossCarat`/`yieldPercent`, labour charge, linked accounting
+  voucher, `receiptCode` (`ZL-REC-2026-000001`).
+- **`polished_diamonds`** — one output per polished stone: shape,
+  measurements, grading fields, certificate status, `allocatedCost`/
+  `costPerCarat`, status (`AVAILABLE`/`RECUT`), `polishedCode`
+  (`ZL-POL-2026-000001`).
+- **`stock_movements`** — the immutable audit ledger every stock figure in
+  the app derives from. `pieces`/`carat`/`costValue` are always positive
+  magnitudes; direction is implied entirely by `type` (`ROUGH_PURCHASE_IN`,
+  `ROUGH_ISSUE_OUT`, `ROUGH_ISSUE_CANCEL_IN`, `ROUGH_CONSUMED_OUT`,
+  `ROUGH_RETURN_IN`, `POLISHED_RECEIVE_IN`, `POLISHED_RECUT_OUT`) — never
+  edited or deleted after insert.
+- **`diamond_sequences`** — concurrency-safe numbering for the five
+  human-readable code types above (one row per type+calendar-year,
+  incremented via the same atomic-upsert pattern as `voucher_sequences`,
+  but keyed by calendar year, matching the master plan's own examples).
+
+Phase 4–5 tables (jewellery jobs, costing) are intentionally **not**
+created yet.
 
 ## Accounting workflow (Phase 2)
 
@@ -177,6 +235,147 @@ Sale quick actions are now real, live-computed data — not placeholders —
 and always match the Accounting reports because both read from the same
 journal entries.
 
+## Diamond Manufacturing workflow (Phase 3)
+
+The `/diamond` page is one page with exactly three tabs (`?tab=rough|
+jobs|polished`), matching the master plan. Business model: ZYNORALUXE
+buys lab-grown **rough** diamonds and has a Karigar cut/polish them — it
+never grows diamonds (no CVD/HPHT in V1).
+
+- **Rough Stock** — "New Rough Purchase" records a lot (one or many
+  pieces in one parcel) — supplier, rate/basis, total landed cost,
+  optional GST, optional immediate payment. Each piece's cost is
+  allocated **proportionally by carat** by default (decimal-safe,
+  rounding remainder assigned to one deterministic piece so shares always
+  sum exactly to the lot total — the same pattern already used for
+  CGST/SGST splitting); Owner may instead type each piece's cost manually,
+  honored only when every piece supplies one and they sum exactly. Owner
+  can later adjust a lot's cost split ("Adjust cost split") with a
+  mandatory reason — but only while every piece in that lot is still
+  unissued (`costLocked: false`); once issued, a piece's cost is locked
+  permanently, including after a later cancellation-return.
+- **Cutting-Polishing Jobs** — "Issue Rough" picks a Karigar, one or more
+  *Available* rough pieces (a piece is always issued whole — never split
+  across two jobs), a required shape (10 standard shapes or Custom with
+  its own name/reference/measurements/instruction — no CAD/OBJ import or
+  auto-inclusion-planning, deliberately out of scope), optional due date
+  and target size. A job's detail page shows full material figures, an
+  Owner-only cost panel, every rough piece issued, every receipt, and a
+  complete audit timeline. "Mark In Progress" is a label-only status
+  change. **Receive Polished** records one or more polished outputs (each
+  with its own shape/measurements/grading/certificate fields), any
+  returned unused rough, and the labour charge — partial receipts are
+  fully supported.
+- **Polished Stock** — every polished output with its allocated cost/cost-
+  per-carat (Owner-only), certificate status, and status (`Available` or
+  `Recut` — Owner-only, with a mandatory reason). `Sold`/`Issued to
+  Jewellery` are deliberately **not** implemented: the master plan
+  requires every status to be backed by a real linked transaction, and
+  Sale-of-polished / Jewellery-issue don't exist until later phases.
+
+### Weight loss, yield, and partial receipts
+
+For a *single* full receipt: `Weight Loss = Issued − Polished − Returned`
+and `Yield % = Polished ÷ Issued × 100`, exactly per the master plan. The
+subtlety is **partial** receipts, where a job's several issued pieces
+aren't all resolved in one event: the gap between what's pending and what
+a given receipt reports is **not** automatically treated as loss (it may
+simply be other pieces still untouched with the Karigar). Loss is only
+ever recognized — and cost only ever fully drained from WIP — when there
+is no gap at all (nothing ambiguous left) or the user explicitly checks
+"This completes the job — no more rough will come back from this
+Karigar." Until then, the receipt's own `weightLossCarat` is `0`, its
+`yieldPercent` is an interim per-receipt figure, and the job stays
+`PARTIALLY_RECEIVED` with the unresolved cost still sitting in WIP. A
+job's *final* weight loss/yield (shown on its detail page once
+`COMPLETED`) are the true cumulative figures. This is why the receive form
+always shows Polished/Returned/Loss-or-Pending and the resulting job
+status **before** the confirm dialog.
+
+### Cost allocation
+
+Polished carrying cost = the issued rough's carrying cost that this
+receipt resolves, plus this receipt's labour charge, plus every normal
+manufacturing loss recognized in this receipt (never carved out
+separately — it stays absorbed inside the surviving polished inventory's
+cost, per the master plan). When a receipt produces multiple outputs, that
+total is split **proportionally by carat** across them (same deterministic
+rounding-remainder pattern as the rough-piece split); Owner may adjust an
+individual receipt's output costs afterward with a mandatory reason, only
+while every output in that receipt is still `Available`. Returned unused
+rough becomes a brand-new Rough Stock piece (its own `ZL-RGH-...` code)
+carrying its proportional share of cost — not the same piece continuing,
+since the original piece's identity ends once any of it is consumed.
+
+### Accounting integration
+
+Three new inventory/WIP asset accounts back this module — `1200` Rough
+Diamond Inventory, `1210` Diamond WIP, `1220` Polished Diamond Inventory
+(seeded idempotently, alongside the 13 Phase 2 accounts). **Karigar
+labour payable deliberately reuses the existing Accounts Payable control
+account** (`2000`, by `partyId`) rather than a dedicated one — a Karigar
+is already a valid Party type, so Phase 2's unmodified Payment Given flow
+already settles it; no new liability account or new payment UI was
+needed. See the posting table below for exactly what each event posts.
+Every posting happens inside one `prisma.$transaction` alongside its
+stock-state changes — never a partial save — and duplicate submission is
+blocked the same idempotency-key way as Phase 2 vouchers (`RoughLot`/
+`DiamondJob`/`PolishedReceipt` each have their own unique nullable
+`idempotencyKey`).
+
+### Karigar balances — two, never mixed
+
+**Material balance** (rough pieces/carat currently held, across open
+jobs) comes purely from `DiamondJob`/`RoughPiece` state — see "Material
+with each Karigar" on the Jobs tab. **Money balance** (labour payable) is
+the ordinary Phase 2 Accounts Payable balance for that Karigar party —
+visible on the Outstanding report exactly like a Supplier's payable, and
+reduced by an ordinary Payment Given entry. The two are computed from
+completely different tables and never combined into one number.
+
+### Cancellation and reversal
+
+Only an **unused** issue (status `ISSUED`/`IN_PROGRESS`, nothing received
+or returned yet) can be cancelled, Owner-only: every issued piece returns
+to `AVAILABLE` (its cost stays locked — see above) and the WIP-transfer
+voucher is reversed through the *same* generic `cancelVoucher()` engine
+Phase 2 already uses (an equal-and-opposite `REVERSAL` voucher, original
+marked `CANCELLED`). The moment any polished output has been received
+against a job, cancellation is rejected outright. **Polished receipts are
+not reversible in Phase 3** — there's no "un-receive" flow. The generic
+Accounting-tab "Cancel voucher" button also explicitly refuses to touch a
+`DIAMOND_ISSUE`/`DIAMOND_RECEIPT` voucher (redirecting to the Diamond
+module's own cancellation, or refusing outright for receipts) — cancelling
+the accounting side alone would desync it from stock/job state.
+
+### Media storage (photos, reference images, certificate files)
+
+`src/lib/storage/diamondMedia.ts` is a small, production-shaped
+abstraction over Supabase Storage's REST API (no extra SDK dependency):
+private bucket, server-only **secret** API key (Supabase's current
+server-only key type — the successor to the legacy `service_role` key,
+same full-access/never-in-the-browser semantics), random non-guessable
+object paths, MIME allowlist, 10 MB cap, short-lived signed URLs for
+viewing — never a public bucket URL. Configured via `SUPABASE_URL` /
+`SUPABASE_SECRET_KEY` / `SUPABASE_DIAMOND_BUCKET` (see `.env.example`) —
+when unset, every non-photo Diamond feature still works fully, and
+upload actions return a plain "not available yet" message instead of
+pretending to succeed.
+
+Upload is wired into `PhotoUploadField` (a small client component that
+calls the upload Server Action directly, then hands the resulting opaque
+asset id up to its parent form as a plain field — same shape as every
+other field) on: the rough lot photo and each rough piece's photo
+(Rough Purchase form), the custom-shape reference photo (Issue Rough
+form, when shape is Custom), and each polished output's photo and
+certificate file (Receive Polished form, cert file only when Certified).
+Thumbnails/links are rendered on Rough Stock, Polished Stock, and a job's
+Custom Shape reference — the server resolves each stored asset id to a
+short-lived signed URL before it ever crosses into a Client Component
+(same "resolve server-only data before the boundary" rule as Decimal
+values elsewhere in this codebase), so a page never holds a permanent or
+public link to private storage.
+
 ## Posting / cancellation rules
 
 Every voucher type posts a balanced set of journal lines inside one DB
@@ -194,6 +393,9 @@ partially-saved entry cannot exist. In brief:
 | Expense | Dr Business Expenses · Cr payment account |
 | Opening Receivable | Dr Accounts Receivable (party) · Cr Opening Balance Equity |
 | Opening Payable | Dr Opening Balance Equity · Cr Accounts Payable (party) |
+| Rough Purchase | Dr Rough Diamond Inventory + Dr Input GST · Cr Accounts Payable (supplier) [+ Dr Accounts Payable · Cr payment account if paid now] |
+| Issue Rough to Karigar | Dr Diamond WIP · Cr Rough Diamond Inventory |
+| Receive Polished | Dr Polished Diamond Inventory (resolved cost + labour) [+ Dr Rough Diamond Inventory for any returned carat] · Cr Diamond WIP (resolved cost) [+ Cr Accounts Payable (Karigar) for labour] |
 
 **Cancellation is Owner-only** and never deletes or edits the original: it
 posts a new `REVERSAL` voucher with every journal line's debit/credit
@@ -222,6 +424,28 @@ number.
   cannot see GST summary or P&L, cannot change a Party's name/type/GSTIN/
   state/active-status, cannot archive/reactivate a Party, cannot edit an
   archived Party at all.
+
+## Permissions (Phase 3 additions)
+
+- **Owner**: everything Staff can do, plus cancel an eligible Diamond Job
+  (reversing both stock and accounting), mark a polished diamond for
+  Recut, and make audited cost-allocation overrides (rough-piece split
+  before issue, polished-output split before any output leaves
+  `Available`). Sees every cost/carrying-value figure and the Karigar
+  money (labour payable) balance.
+- **Staff**: create Rough Purchases, Issue Rough, and Receive Polished —
+  the same day-to-day operational permission level as Phase 2's Purchase/
+  Sale/Payment entries (any authenticated user, not Owner-gated). Sees
+  material quantities, statuses, and codes throughout the Diamond module,
+  but **never** a cost, carrying value, or the Karigar's money balance —
+  those fields are omitted server-side from what a Staff-rendered page
+  even receives, not just hidden with CSS. Cannot cancel a job, cannot
+  mark a polished diamond for Recut, cannot make a cost-allocation
+  override.
+
+All of the above is enforced **inside the Server Action itself**
+(`requireUser()`/`requireOwner()`), exactly like Phase 2 — never only by
+which buttons a page happens to render.
 
 Every rule above is enforced **inside the Server Action itself**
 (`requireUser()`/`requireOwner()` from the Phase 1 DAL), not just by hiding
@@ -263,6 +487,45 @@ rejected the same way a Staff click would be.
   Any *new* link added to this page that navigates into a form holding
   local component state should do the same rather than using `next/link`.
 
+## Known Phase 3 limitations
+
+- **Diamond media storage is optional** — see "Media storage" above.
+  When `SUPABASE_URL`/`SUPABASE_SECRET_KEY` are unset, an upload attempt
+  returns a plain "not available yet" message rather than silently doing
+  nothing or faking success with a local-disk path; every other Diamond
+  feature works fully either way. In this deployment it **is** configured
+  and live-verified (real upload → private-bucket storage → signed-URL
+  retrieval → thumbnail render, through the actual UI, plus direct Storage
+  REST-API checks that the bucket is genuinely non-public) — see
+  `PHASE_3_VERIFICATION.md`. Photo upload is wired for: rough lot photo,
+  rough piece photo, custom-shape reference photo, polished-diamond photo,
+  and certificate file — each is optional and additive to its form.
+- **Recut has no reverse flow.** Marking a polished diamond `RECUT` is a
+  simple, audited, Owner-only status change (with a `POLISHED_RECUT_OUT`
+  movement) — it does **not** generate a new rough piece or a new job.
+  Modeling "what actually happens to a recut stone" belongs to a later
+  phase once Jewellery Jobs/Costing exist to consume the outcome.
+- **Polished receipts cannot be reversed or corrected once posted.** Rough
+  issue cancellation is fully supported (Owner-only, unused issues only);
+  a mis-entered polished receipt has no undo in Phase 3 — this mirrors
+  the master plan's "never silently edit/delete a posted movement" rule,
+  but a correction *mechanism* (e.g. a receipt-reversal voucher) is future
+  work, not yet built.
+- **A rough piece is always issued and consumed as a whole physical
+  stone** — never split carat-by-carat across two simultaneous jobs. This
+  is a deliberate modeling choice (matches how a single rough stone is
+  actually handled by a Karigar) documented at the top of the Phase 3
+  section of `prisma/schema.prisma`; a business that genuinely needs to
+  divide one physical stone's carat across two concurrent cutting jobs
+  before either starts is not represented by this model.
+- **`Sold` / `Issued to Jewellery` polished statuses don't exist yet** —
+  by design, since neither a polished-diamond sale nor a Jewellery Job
+  exists until later phases, and the master plan requires every status to
+  be backed by a real linked transaction.
+- Reports/lists cap at a few hundred rows (`take: 200`–`500`) — fine at
+  small-shop data volumes, not built for pagination at scale, matching the
+  same known limitation already documented for Phase 2's report queries.
+
 ## Authentication & authorization model
 
 - `src/lib/auth/password.ts` — bcrypt hashing (12 rounds).
@@ -297,7 +560,8 @@ trade is not worth it for a transitive, dev-only, unreachable code path.
 
 ## What's deliberately not built yet
 
-Accounting, Diamond, Jewellery Jobs and Costing are route foundations only
-(`/accounting`, `/diamond`, `/jewellery-jobs`, `/costing`) — each renders a
-page explaining which Phase will implement it. No transactions, stock
-movements, or costing calculations exist yet, real or fake.
+Accounting and Diamond are real, working business logic. Jewellery Jobs
+and Costing (`/jewellery-jobs`, `/costing`) are still route foundations
+only — each renders a page explaining which Phase will implement it. No
+jewellery-job transactions or costing calculations exist yet, real or
+fake.

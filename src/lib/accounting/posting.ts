@@ -19,7 +19,7 @@ export class PostingError extends Error {}
 
 type Tx = Prisma.TransactionClient;
 
-type JournalLineInput = {
+export type JournalLineInput = {
   accountCode: string;
   partyId?: string | null;
   debit?: DecimalInput;
@@ -39,9 +39,10 @@ async function resolveAccountId(tx: Tx, code: string): Promise<string> {
 
 /** Inserts journal lines for a voucher, after re-verifying total debit ==
  * total credit. This is the last line of defense against a posting-logic
- * bug — every caller in this file is also individually responsible for
- * building balanced lines. */
-async function insertBalancedJournalLines(
+ * bug — every caller in this file (and, via the export below, the Phase 3
+ * diamond posting engine) is also individually responsible for building
+ * balanced lines. */
+export async function insertBalancedJournalLines(
   tx: Tx,
   voucherId: string,
   lines: JournalLineInput[]
@@ -96,7 +97,7 @@ async function insertBalancedJournalLines(
   });
 }
 
-type CommonVoucherInput = {
+export type CommonVoucherInput = {
   date: Date;
   fyStartMonth: number;
   fyStartDay: number;
@@ -108,7 +109,11 @@ type CommonVoucherInput = {
   createdByUserId: string;
 };
 
-async function createVoucherHeader(
+/** Exported so the Phase 3 diamond posting engine can allocate a voucher
+ * number + header row through the same FY-labeling and numbering logic,
+ * for voucher types (DIAMOND_ISSUE, DIAMOND_RECEIPT) this file doesn't
+ * itself post lines for. */
+export async function createVoucherHeader(
   tx: Tx,
   common: CommonVoucherInput,
   voucherType: VoucherType,

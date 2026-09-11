@@ -1,13 +1,18 @@
 // ZYNORALUXE Jewellery ERP — database schema.
 //
 // Phase 1: auth, roles, company settings.
-// Phase 2 (this update): double-entry accounting — Chart of Accounts,
-// Parties (Customer/Supplier/Karigar), Vouchers, Journal Entries, Invoice
-// Lines, Payment Accounts, GST rates, voucher numbering sequences.
+// Phase 2: double-entry accounting — Chart of Accounts, Parties
+// (Customer/Supplier/Karigar), Vouchers, Journal Entries, Invoice Lines,
+// Payment Accounts, GST rates, voucher numbering sequences.
+// Phase 3 (this update): rough-to-polished diamond manufacturing — Rough
+// Lots/Pieces, Diamond (cutting-polishing) Jobs, Polished Receipts,
+// Polished Diamonds, an immutable Stock Movement ledger, and a diamond
+// code-numbering sequence — all integrated into the Phase 2 accounting
+// engine (new Rough/WIP/Polished inventory accounts; Karigar labour
+// payable reuses the existing Accounts Payable control account by party).
 //
-// Phase 3+ models (rough/polished stock, jewellery jobs, costing) are
-// intentionally NOT created yet — see
-// ZYNORALUXE_JEWELLERY_ERP_MASTER_PLAN.md section 9, rule 2.
+// Phase 4+ models (jewellery jobs, costing) are intentionally NOT created
+// yet — see ZYNORALUXE_JEWELLERY_ERP_MASTER_PLAN.md section 9, rule 2.
 //
 // Forward-compat convention: any field representing money, carat, or weight
 // MUST use Prisma's `Decimal` type (maps to PostgreSQL NUMERIC), never
@@ -44,6 +49,15 @@ model User {
   paymentAccountsCreated PaymentAccount[]  @relation("PaymentAccountCreatedBy")
   vouchersCreated        Voucher[]         @relation("VoucherCreatedBy")
   vouchersCancelled      Voucher[]         @relation("VoucherCancelledBy")
+
+  roughLotsCreated        RoughLot[]        @relation("RoughLotCreatedBy")
+  roughPiecesCreated      RoughPiece[]      @relation("RoughPieceCreatedBy")
+  diamondJobsCreated      DiamondJob[]      @relation("DiamondJobCreatedBy")
+  diamondJobsCancelled    DiamondJob[]      @relation("DiamondJobCancelledBy")
+  polishedReceiptsCreated PolishedReceipt[] @relation("PolishedReceiptCreatedBy")
+  polishedDiamondsCreated PolishedDiamond[] @relation("PolishedDiamondCreatedBy")
+  polishedDiamondsRecut   PolishedDiamond[] @relation("PolishedDiamondRecutBy")
+  stockMovementsCreated   StockMovement[]   @relation("StockMovementCreatedBy")
 
   @@map("users")
 }
@@ -119,12 +133,14 @@ model Party {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  vouchers       Voucher[]
-  journalEntries JournalEntry[]
+  vouchers             Voucher[]
+  journalEntries       JournalEntry[]
+  roughLotsAsSupplier  RoughLot[]     @relation("RoughLotSupplier")
+  diamondJobsAsKarigar DiamondJob[]   @relation("DiamondJobKarigar")
 
-  @@map("parties")
   @@index([type])
   @@index([name])
+  @@map("parties")
 }
 
 enum AccountType {
@@ -196,6 +212,7 @@ model GstRate {
   updatedAt DateTime @updatedAt
 
   invoiceLines InvoiceLine[]
+  roughLots    RoughLot[]
 
   @@map("gst_rates")
 }
@@ -208,6 +225,8 @@ enum VoucherType {
   EXPENSE
   OPENING
   REVERSAL
+  DIAMOND_ISSUE
+  DIAMOND_RECEIPT
 }
 
 // Concurrency-safe voucher numbering: one row per (type, financial year),
@@ -287,12 +306,16 @@ model Voucher {
   journalEntries JournalEntry[]
   invoiceLines   InvoiceLine[]
 
-  @@map("vouchers")
+  roughLot            RoughLot?
+  diamondJobIssue     DiamondJob?
+  polishedReceiptPost PolishedReceipt? @relation("PolishedReceiptPosting")
+
   @@index([voucherType])
   @@index([partyId])
   @@index([date])
   @@index([status])
   @@index([financialYearLabel])
+  @@map("vouchers")
 }
 
 // One row per debit OR credit leg of a posted voucher. `partyId` is set only
@@ -317,10 +340,10 @@ model JournalEntry {
 
   createdAt DateTime @default(now())
 
-  @@map("journal_entries")
   @@index([accountId])
   @@index([partyId])
   @@index([voucherId])
+  @@map("journal_entries")
 }
 
 enum InvoiceUnit {
@@ -364,6 +387,419 @@ model InvoiceLine {
 
   createdAt DateTime @default(now())
 
-  @@map("invoice_lines")
   @@index([voucherId])
+  @@map("invoice_lines")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — Rough-to-Polished Diamond Manufacturing
+// ---------------------------------------------------------------------------
+//
+// Business model: ZYNORALUXE buys lab-grown ROUGH diamonds (never grows
+// them — no CVD/HPHT) and has them cut/polished by a Karigar into a
+// standard or custom shape. Two-level stock structure: RoughLot (one
+// purchase/parcel) contains one or more RoughPiece rows (individual
+// stones). A RoughPiece is always issued to a Karigar as a WHOLE piece
+// (never split across two jobs) — "partly/fully issued" is a LOT-level
+// derived rollup (see src/lib/diamond/reports.ts), not a stored column.
+// Every quantity-affecting transition is paired with an immutable
+// StockMovement row; nothing here is ever a manually-editable "available"
+// field.
+
+enum DiamondShape {
+  ROUND
+  OVAL
+  PEAR
+  EMERALD
+  CUSHION
+  ELONGATED_CUSHION
+  RADIANT
+  PRINCESS
+  MARQUISE
+  ASSCHER
+  CUSTOM
+}
+
+enum RateBasis {
+  PER_CARAT
+  FIXED_TOTAL
+}
+
+// A piece is issued to a Karigar as a whole (see file header note above),
+// so only 4 real states exist at the piece level. The master plan's
+// "Partly Issued"/"Fully Issued" labels are a derived LOT-level rollup —
+// see getRoughLotStatus() in src/lib/diamond/reports.ts.
+enum RoughPieceStatus {
+  AVAILABLE
+  WITH_KARIGAR
+  COMPLETED
+  CANCELLED
+}
+
+enum DiamondJobStatus {
+  ISSUED
+  IN_PROGRESS
+  PARTIALLY_RECEIVED
+  COMPLETED
+  CANCELLED
+}
+
+enum CertificateStatus {
+  NOT_CERTIFIED
+  INTERNAL_GRADE
+  CERTIFIED
+}
+
+// SOLD / ISSUED_TO_JEWELLERY are intentionally NOT modeled yet — the
+// master plan requires every status to be backed by a real linked
+// transaction, and Sale-of-polished / Jewellery-issue don't exist until
+// later phases. RECUT is implemented (Owner-only, no reverse rough flow).
+enum PolishedDiamondStatus {
+  AVAILABLE
+  RECUT
+}
+
+// One row per (entityType, calendar year) for human-readable diamond
+// codes, incremented atomically the same way VoucherSequence is — see
+// src/lib/diamond/numbering.ts.
+enum DiamondSequenceType {
+  ROUGH_LOT
+  ROUGH_PIECE
+  DIAMOND_JOB
+  POLISHED_RECEIPT
+  POLISHED_DIAMOND
+}
+
+model DiamondSequence {
+  id           String              @id @default(cuid())
+  sequenceType DiamondSequenceType
+  yearLabel    String
+  lastNumber   Int                 @default(0)
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([sequenceType, yearLabel])
+  @@map("diamond_sequences")
+}
+
+model RoughLot {
+  id           String   @id @default(cuid())
+  lotCode      String   @unique
+  purchaseDate DateTime
+  supplierId   String
+  supplier     Party    @relation("RoughLotSupplier", fields: [supplierId], references: [id])
+
+  piecesCount       Int
+  totalRoughCarat   Decimal   @db.Decimal(10, 3)
+  purchaseRate      Decimal   @db.Decimal(14, 4)
+  rateBasis         RateBasis
+  currencyCode      String    @default("INR")
+  exchangeRate      Decimal   @default(1) @db.Decimal(10, 4)
+  // Authoritative landed cost in INR (after exchange rate) — every piece's
+  // allocatedCost must always sum back to exactly this value.
+  totalPurchaseCost Decimal   @db.Decimal(14, 2)
+
+  gstTreatment   GstTreatment @default(NONE)
+  gstRateId      String?
+  gstRate        GstRate?     @relation(fields: [gstRateId], references: [id])
+  gstRatePercent Decimal?     @db.Decimal(5, 2)
+
+  supplierInvoiceRef String?
+  notes              String?
+  photoAssetId       String?
+
+  voucherId String?  @unique
+  voucher   Voucher? @relation(fields: [voucherId], references: [id])
+
+  idempotencyKey String? @unique
+
+  createdByUserId String
+  createdBy       User   @relation("RoughLotCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pieces RoughPiece[]
+
+  @@index([supplierId])
+  @@index([purchaseDate])
+  @@map("rough_lots")
+}
+
+model RoughPiece {
+  id        String    @id @default(cuid())
+  roughCode String    @unique
+  lotId     String?
+  lot       RoughLot? @relation(fields: [lotId], references: [id])
+
+  // Set when this piece was created from a returned-unused-rough leftover
+  // on a polished receipt, instead of from a purchase lot — preserves
+  // Rough -> Job -> Receipt -> new-Rough traceability without pretending
+  // one of several issued pieces was "the" source (a job may issue many
+  // pieces together; the leftover isn't attributable to just one of them).
+  returnedFromJobId     String?
+  returnedFromJob       DiamondJob?      @relation("JobReturnedPieces", fields: [returnedFromJobId], references: [id])
+  returnedFromReceiptId String?
+  returnedFromReceipt   PolishedReceipt? @relation("ReceiptReturnedPieces", fields: [returnedFromReceiptId], references: [id])
+
+  carat         Decimal  @db.Decimal(10, 3)
+  lengthMm      Decimal? @db.Decimal(8, 3)
+  widthMm       Decimal? @db.Decimal(8, 3)
+  heightMm      Decimal? @db.Decimal(8, 3)
+  colorEstimate String?
+  clarityNote   String?
+  internalNote  String?
+  photoAssetId  String?
+
+  // This piece's share of its lot's (or, for a leftover, its source
+  // receipt's) cost. Must always sum exactly back to that total — see
+  // src/lib/diamond/allocation.ts. Owner may edit directly only while
+  // costLocked is false (before the piece's first issue).
+  allocatedCost Decimal          @db.Decimal(14, 2)
+  costLocked    Boolean          @default(false)
+  status        RoughPieceStatus @default(AVAILABLE)
+
+  createdByUserId String
+  createdBy       User   @relation("RoughPieceCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  jobLinks       DiamondJobPiece[]
+  stockMovements StockMovement[]
+
+  @@index([lotId])
+  @@index([status])
+  @@map("rough_pieces")
+}
+
+// Join table so a piece's full issue/return/reissue history survives even
+// across multiple different jobs over time (a cancelled-and-returned piece
+// can be issued again later to a different Karigar) — required for the
+// master plan's Rough -> Job traceability rule.
+model DiamondJobPiece {
+  id           String     @id @default(cuid())
+  jobId        String
+  job          DiamondJob @relation(fields: [jobId], references: [id])
+  roughPieceId String
+  roughPiece   RoughPiece @relation(fields: [roughPieceId], references: [id])
+
+  // Snapshots at issue time (the piece itself never changes after this).
+  caratAtIssue Decimal @db.Decimal(10, 3)
+  costAtIssue  Decimal @db.Decimal(14, 2)
+
+  createdAt DateTime @default(now())
+
+  @@unique([jobId, roughPieceId])
+  @@map("diamond_job_pieces")
+}
+
+model DiamondJob {
+  id      String @id @default(cuid())
+  jobCode String @unique
+
+  karigarId String
+  karigar   Party  @relation("DiamondJobKarigar", fields: [karigarId], references: [id])
+
+  requiredShape                    DiamondShape
+  customShapeName                  String?
+  customShapeReferencePhotoAssetId String?
+  customShapeMeasurements          String?
+  customShapeInstruction           String?
+
+  issueDate           DateTime
+  dueDate             DateTime?
+  targetPolishedCarat Decimal?  @db.Decimal(10, 3)
+  targetLengthMm      Decimal?  @db.Decimal(8, 3)
+  targetWidthMm       Decimal?  @db.Decimal(8, 3)
+  targetHeightMm      Decimal?  @db.Decimal(8, 3)
+  notes               String?
+
+  issuedPiecesCount Int
+  issuedRoughCarat  Decimal @db.Decimal(10, 3)
+  // Total cost moved Rough Inventory -> Diamond WIP for this job. Never
+  // recomputed later — receipts drain remainingWipCost, which must reach
+  // exactly 0 when the job completes (see src/lib/diamond/posting.ts).
+  issuedCostValue   Decimal @db.Decimal(14, 2)
+  remainingWipCost  Decimal @db.Decimal(14, 2)
+
+  // Cumulative, updated atomically by each receipt.
+  receivedPolishedCarat Decimal @default(0) @db.Decimal(10, 3)
+  returnedRoughCarat    Decimal @default(0) @db.Decimal(10, 3)
+  totalLabourCharge     Decimal @default(0) @db.Decimal(14, 2)
+
+  status DiamondJobStatus @default(ISSUED)
+
+  cancelledAt        DateTime?
+  cancelledByUserId  String?
+  cancelledBy        User?     @relation("DiamondJobCancelledBy", fields: [cancelledByUserId], references: [id])
+  cancellationReason String?
+
+  // The Dr Diamond WIP / Cr Rough Inventory transfer voucher, posted at
+  // issue time.
+  wipVoucherId String?  @unique
+  wipVoucher   Voucher? @relation(fields: [wipVoucherId], references: [id])
+
+  idempotencyKey String? @unique
+
+  createdByUserId String
+  createdBy       User   @relation("DiamondJobCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pieces           DiamondJobPiece[]
+  receipts         PolishedReceipt[]
+  stockMovements   StockMovement[]
+  returnedPieces   RoughPiece[]      @relation("JobReturnedPieces")
+  polishedDiamonds PolishedDiamond[]
+
+  @@index([karigarId])
+  @@index([status])
+  @@map("diamond_jobs")
+}
+
+model PolishedReceipt {
+  id          String @id @default(cuid())
+  receiptCode String @unique
+
+  jobId String
+  job   DiamondJob @relation(fields: [jobId], references: [id])
+
+  receiveDate        DateTime
+  polishedCount      Int
+  totalPolishedCarat Decimal      @db.Decimal(10, 3)
+  returnedRoughCarat Decimal      @default(0) @db.Decimal(10, 3)
+  // Figures for THIS receipt only (not the job's cumulative totals) —
+  // Weight Loss = pending-carat-before-this-receipt - polished - returned;
+  // Yield % = polished / pending-carat-before-this-receipt * 100.
+  weightLossCarat    Decimal      @db.Decimal(10, 3)
+  yieldPercent       Decimal      @db.Decimal(6, 3)
+  labourCharge       Decimal      @default(0) @db.Decimal(14, 2)
+  shape              DiamondShape
+  notes              String?
+
+  // Single balanced voucher: Dr Polished Inventory (resolved cost +
+  // labour) [+ Dr Rough Inventory for any returned carat], Cr Diamond WIP
+  // (resolved cost), Cr Karigar Payable (labour, if any).
+  postingVoucherId String?  @unique
+  postingVoucher   Voucher? @relation("PolishedReceiptPosting", fields: [postingVoucherId], references: [id])
+
+  idempotencyKey String? @unique
+
+  createdByUserId String
+  createdBy       User   @relation("PolishedReceiptCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  outputs        PolishedDiamond[]
+  returnedPieces RoughPiece[]      @relation("ReceiptReturnedPieces")
+
+  @@index([jobId])
+  @@map("polished_receipts")
+}
+
+model PolishedDiamond {
+  id           String @id @default(cuid())
+  polishedCode String @unique
+
+  receiptId String
+  receipt   PolishedReceipt @relation(fields: [receiptId], references: [id])
+  jobId     String
+  job       DiamondJob      @relation(fields: [jobId], references: [id])
+
+  shape        DiamondShape
+  carat        Decimal      @db.Decimal(10, 3)
+  lengthMm     Decimal?     @db.Decimal(8, 3)
+  widthMm      Decimal?     @db.Decimal(8, 3)
+  heightMm     Decimal?     @db.Decimal(8, 3)
+  color        String?
+  clarity      String?
+  cutGrade     String?
+  polish       String?
+  symmetry     String?
+  fluorescence String?
+
+  certificateStatus CertificateStatus @default(NOT_CERTIFIED)
+  certLab           String?
+  certNumber        String?
+  certFileAssetId   String?
+  photoAssetId      String?
+
+  // This output's share of the receipt's total resolved cost (polished
+  // portion + labour). Must sum exactly back to that total across all of
+  // a receipt's outputs — see src/lib/diamond/allocation.ts.
+  allocatedCost Decimal @db.Decimal(14, 2)
+  costPerCarat  Decimal @db.Decimal(14, 2)
+
+  status PolishedDiamondStatus @default(AVAILABLE)
+
+  recutAt       DateTime?
+  recutByUserId String?
+  recutBy       User?     @relation("PolishedDiamondRecutBy", fields: [recutByUserId], references: [id])
+  recutReason   String?
+
+  createdByUserId String
+  createdBy       User   @relation("PolishedDiamondCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  stockMovements StockMovement[]
+
+  @@index([jobId])
+  @@index([status])
+  @@map("polished_diamonds")
+}
+
+enum StockMovementType {
+  ROUGH_PURCHASE_IN
+  ROUGH_ISSUE_OUT
+  ROUGH_ISSUE_CANCEL_IN
+  ROUGH_CONSUMED_OUT
+  ROUGH_RETURN_IN
+  POLISHED_RECEIVE_IN
+  POLISHED_RECUT_OUT
+}
+
+// Immutable audit ledger. Never updated or deleted after insert — a
+// correction is always a new movement (e.g. ROUGH_ISSUE_CANCEL_IN
+// reverses a ROUGH_ISSUE_OUT), optionally self-linked via
+// reversalOfMovementId. `pieces`/`carat`/`costValue` are always positive
+// magnitudes; direction is implied entirely by `type` (…_IN adds to
+// stock, …_OUT removes it) — this is the single source every stock/report
+// figure in src/lib/diamond/reports.ts derives from.
+model StockMovement {
+  id   String            @id @default(cuid())
+  type StockMovementType
+
+  roughPieceId String?
+  roughPiece   RoughPiece? @relation(fields: [roughPieceId], references: [id])
+
+  polishedDiamondId String?
+  polishedDiamond   PolishedDiamond? @relation(fields: [polishedDiamondId], references: [id])
+
+  diamondJobId String?
+  diamondJob   DiamondJob? @relation(fields: [diamondJobId], references: [id])
+
+  pieces    Int     @default(1)
+  carat     Decimal @db.Decimal(10, 3)
+  costValue Decimal @db.Decimal(14, 2)
+
+  sourceDocument String
+
+  reversalOfMovementId String?        @unique
+  reversalOfMovement   StockMovement? @relation("MovementReversal", fields: [reversalOfMovementId], references: [id])
+  reversedByMovement   StockMovement? @relation("MovementReversal")
+
+  createdByUserId String
+  createdBy       User   @relation("StockMovementCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([roughPieceId])
+  @@index([polishedDiamondId])
+  @@index([diamondJobId])
+  @@index([type])
+  @@map("stock_movements")
 }

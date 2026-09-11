@@ -441,6 +441,23 @@ export async function cancelVoucherAction(
 
   const fy = await getCompanyFySettings();
 
+  // Diamond-module vouchers (Rough Issue -> WIP, Polished Receipt) must
+  // never be cancelled through this generic action: reversing the
+  // accounting alone here would leave RoughPiece/DiamondJob status out of
+  // sync with the ledger. Rough issues have their own cancellation path
+  // (Diamond module "Cancel job", which reverses both together);
+  // polished receipts are not reversible in Phase 3 at all.
+  const target = await prisma.voucher.findUnique({
+    where: { id: parsed.data.voucherId },
+    select: { voucherType: true },
+  });
+  if (target?.voucherType === "DIAMOND_ISSUE") {
+    return { error: "Cancel this from the Diamond module's job detail view instead, so stock stays in sync." };
+  }
+  if (target?.voucherType === "DIAMOND_RECEIPT") {
+    return { error: "Polished receipts cannot be cancelled in Phase 3." };
+  }
+
   try {
     await prisma.$transaction((tx) =>
       posting.cancelVoucher(tx, {

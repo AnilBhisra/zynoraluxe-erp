@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 
 import { requireUser } from "@/lib/auth/dal";
 import { getCashBankSummary, getReceivablePayableSummary } from "@/lib/accounting/reports";
+import { getDashboardDiamondSummary } from "@/lib/diamond/reports";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { SummaryCard } from "@/components/dashboard/SummaryCard";
 import { QuickActionButton } from "@/components/dashboard/QuickActionButton";
@@ -17,25 +18,23 @@ function money(value: { toFixed: (n: number) => string }) {
   })}`;
 }
 
-const PLACEHOLDER_CARDS = [
-  { label: "Rough stock", unit: "carat", phase: 3 },
-  { label: "Polished stock", unit: "carat", phase: 3 },
-  { label: "Material with Karigar", phase: 3 },
-  { label: "Pending jewellery jobs", phase: 4 },
-];
+function carat(value: { toFixed: (n: number) => string }) {
+  return `${value.toFixed(3)}`;
+}
+
+const PLACEHOLDER_CARDS = [{ label: "Pending jewellery jobs", phase: 4 }];
 
 const PLACEHOLDER_ACTIONS = [
-  { label: "Issue Rough", href: "/diamond", phase: 3 },
-  { label: "Receive Polished", href: "/diamond", phase: 3 },
   { label: "New Jewellery Job", href: "/jewellery-jobs", phase: 4 },
   { label: "New Costing", href: "/costing", phase: 5 },
 ];
 
 export default async function DashboardPage() {
   const user = await requireUser();
-  const [cashBank, receivablePayable] = await Promise.all([
+  const [cashBank, receivablePayable, diamondSummary] = await Promise.all([
     getCashBankSummary(),
     getReceivablePayableSummary(),
+    getDashboardDiamondSummary(),
   ]);
 
   return (
@@ -50,6 +49,9 @@ export default async function DashboardPage() {
         <SummaryCard label="Bank balance" value={money(cashBank.bank)} />
         <SummaryCard label="Receivable" value={money(receivablePayable.receivable)} />
         <SummaryCard label="Payable" value={money(receivablePayable.payable)} />
+        <SummaryCard label="Rough stock" value={carat(diamondSummary.roughStockCarat)} unit="carat" />
+        <SummaryCard label="Polished stock" value={carat(diamondSummary.polishedStockCarat)} unit="carat" />
+        <SummaryCard label="Material with Karigar" value={carat(diamondSummary.materialWithKarigarCarat)} unit="carat" />
         {PLACEHOLDER_CARDS.map((card) => (
           <SummaryCard key={card.label} {...card} />
         ))}
@@ -70,6 +72,8 @@ export default async function DashboardPage() {
             href="/accounting?tab=transactions&new=sale"
             enabled
           />
+          <QuickActionButton label="Issue Rough" href="/diamond?tab=jobs&issue=1" enabled />
+          <QuickActionButton label="Receive Polished" href="/diamond?tab=jobs" enabled />
           {PLACEHOLDER_ACTIONS.map((action) => (
             <QuickActionButton key={action.label} {...action} />
           ))}
