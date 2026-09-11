@@ -1,0 +1,65 @@
+// ZYNORALUXE Jewellery ERP — Phase 1 database foundation.
+//
+// Scope note: only the models required by Phase 1 (auth, roles, company
+// settings) live here. Phase 2+ models (parties, transactions, rough/polished
+// stock, jewellery jobs, costing) are intentionally NOT created yet — see
+// ZYNORALUXE_JEWELLERY_ERP_MASTER_PLAN.md section 9, rule 2.
+//
+// Forward-compat convention for later phases: any field representing money,
+// carat, or weight MUST use Prisma's `Decimal` type (maps to PostgreSQL
+// NUMERIC), never Float, to avoid floating-point rounding errors in
+// accounting figures.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  OWNER
+  STAFF
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         UserRole
+  isActive     Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  companySettingsUpdates CompanySettings[] @relation("CompanySettingsUpdatedBy")
+
+  @@map("users")
+}
+
+// Version 1 supports exactly one company. A single row is enforced at the
+// application layer via a fixed id ("default"); see src/lib/db/company.ts.
+model CompanySettings {
+  id String @id @default("default")
+
+  companyName             String
+  address                 String?
+  phone                   String?
+  email                   String?
+  gstNumber               String?
+  defaultCurrency         String  @default("INR")
+  // Financial year start, stored as month/day so it repeats every year.
+  financialYearStartMonth Int     @default(4)
+  financialYearStartDay   Int     @default(1)
+
+  updatedByUserId String?
+  updatedBy       User?   @relation("CompanySettingsUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("company_settings")
+}
