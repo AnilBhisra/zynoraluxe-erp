@@ -13,6 +13,7 @@ type CompanySettingsValues = {
   phone: string;
   email: string;
   gstNumber: string;
+  companyStateCode: string;
   defaultCurrency: string;
   financialYearStartMonth: number;
   financialYearStartDay: number;
@@ -25,7 +26,13 @@ export function CompanySettingsForm({
 }) {
   const [state, formAction, pending] = useActionState(updateCompanySettings, undefined);
   const [showMore, setShowMore] = useState(
-    Boolean(initialValues.address || initialValues.phone || initialValues.email || initialValues.gstNumber)
+    Boolean(
+      initialValues.address ||
+        initialValues.phone ||
+        initialValues.email ||
+        initialValues.gstNumber ||
+        initialValues.companyStateCode
+    )
   );
 
   function confirmBeforeSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -116,12 +123,21 @@ export function CompanySettingsForm({
               defaultValue={initialValues.email}
             />
           </div>
-          <Field
-            label="GST number"
-            name="gstNumber"
-            defaultValue={initialValues.gstNumber}
-            hint="15-character GSTIN"
-          />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field
+              label="GST number"
+              name="gstNumber"
+              defaultValue={initialValues.gstNumber}
+              hint="15-character GSTIN"
+            />
+            <Field
+              label="State code (for GST)"
+              name="companyStateCode"
+              defaultValue={initialValues.companyStateCode}
+              maxLength={2}
+              hint="2 digits, e.g. 24 — used to suggest CGST+SGST vs IGST"
+            />
+          </div>
         </div>
       ) : null}
 

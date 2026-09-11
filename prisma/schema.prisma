@@ -1,14 +1,17 @@
-// ZYNORALUXE Jewellery ERP — Phase 1 database foundation.
+// ZYNORALUXE Jewellery ERP — database schema.
 //
-// Scope note: only the models required by Phase 1 (auth, roles, company
-// settings) live here. Phase 2+ models (parties, transactions, rough/polished
-// stock, jewellery jobs, costing) are intentionally NOT created yet — see
+// Phase 1: auth, roles, company settings.
+// Phase 2 (this update): double-entry accounting — Chart of Accounts,
+// Parties (Customer/Supplier/Karigar), Vouchers, Journal Entries, Invoice
+// Lines, Payment Accounts, GST rates, voucher numbering sequences.
+//
+// Phase 3+ models (rough/polished stock, jewellery jobs, costing) are
+// intentionally NOT created yet — see
 // ZYNORALUXE_JEWELLERY_ERP_MASTER_PLAN.md section 9, rule 2.
 //
-// Forward-compat convention for later phases: any field representing money,
-// carat, or weight MUST use Prisma's `Decimal` type (maps to PostgreSQL
-// NUMERIC), never Float, to avoid floating-point rounding errors in
-// accounting figures.
+// Forward-compat convention: any field representing money, carat, or weight
+// MUST use Prisma's `Decimal` type (maps to PostgreSQL NUMERIC), never
+// Float, to avoid floating-point rounding errors in accounting figures.
 
 generator client {
   provider = "prisma-client"
@@ -36,6 +39,11 @@ model User {
   updatedAt DateTime @updatedAt
 
   companySettingsUpdates CompanySettings[] @relation("CompanySettingsUpdatedBy")
+  partiesCreated         Party[]           @relation("PartyCreatedBy")
+  partiesUpdated         Party[]           @relation("PartyUpdatedBy")
+  paymentAccountsCreated PaymentAccount[]  @relation("PaymentAccountCreatedBy")
+  vouchersCreated        Voucher[]         @relation("VoucherCreatedBy")
+  vouchersCancelled      Voucher[]         @relation("VoucherCancelledBy")
 
   @@map("users")
 }
@@ -50,6 +58,9 @@ model CompanySettings {
   phone                   String?
   email                   String?
   gstNumber               String?
+  // Home state code (GST place-of-supply), e.g. "24" for Gujarat. Used only
+  // to SUGGEST CGST+SGST vs IGST on a voucher — never applied silently.
+  companyStateCode        String?
   defaultCurrency         String  @default("INR")
   // Financial year start, stored as month/day so it repeats every year.
   financialYearStartMonth Int     @default(4)
@@ -62,4 +73,297 @@ model CompanySettings {
   updatedAt DateTime @updatedAt
 
   @@map("company_settings")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — Accounting
+// ---------------------------------------------------------------------------
+
+enum PartyType {
+  CUSTOMER
+  SUPPLIER
+  KARIGAR
+}
+
+enum OpeningBalanceType {
+  RECEIVABLE
+  PAYABLE
+}
+
+model Party {
+  id   String    @id @default(cuid())
+  name String
+  type PartyType
+
+  phone     String?
+  email     String?
+  gstin     String?
+  address   String?
+  state     String?
+  stateCode String?
+
+  // Snapshot of the balance entered at creation time. The real, current
+  // balance is always derived from JournalEntry rows (see
+  // src/lib/accounting/reports.ts) — this column is never read as a live
+  // balance, only used to post the one-time opening Voucher.
+  openingBalance     Decimal            @default(0) @db.Decimal(14, 2)
+  openingBalanceType OpeningBalanceType @default(RECEIVABLE)
+
+  isActive Boolean @default(true)
+
+  createdByUserId String?
+  createdBy       User?   @relation("PartyCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  updatedByUserId String?
+  updatedBy       User?   @relation("PartyUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  vouchers       Voucher[]
+  journalEntries JournalEntry[]
+
+  @@map("parties")
+  @@index([type])
+  @@index([name])
+}
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  INCOME
+  EXPENSE
+}
+
+// Chart of Accounts. Seeded idempotently with the fixed system accounts the
+// posting engine relies on (see prisma/seed.ts) — `isSystem` accounts are
+// not exposed for Owner deletion.
+model Account {
+  id       String      @id @default(cuid())
+  code     String      @unique
+  name     String
+  type     AccountType
+  isSystem Boolean     @default(false)
+  isActive Boolean     @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  journalEntries JournalEntry[]
+  paymentAccount PaymentAccount?
+
+  @@map("accounts")
+}
+
+enum PaymentMethod {
+  CASH
+  BANK
+  UPI
+  OTHER
+}
+
+model PaymentAccount {
+  id     String        @id @default(cuid())
+  name   String
+  method PaymentMethod
+
+  accountId String  @unique
+  account   Account @relation(fields: [accountId], references: [id])
+
+  isActive Boolean @default(true)
+
+  createdByUserId String?
+  createdBy       User?   @relation("PaymentAccountCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  vouchers Voucher[]
+
+  @@map("payment_accounts")
+}
+
+// Configurable GST rate master — never hardcoded as legal fact in code.
+// Owner manages the list; invoice lines snapshot the percent actually used.
+model GstRate {
+  id          String  @id @default(cuid())
+  label       String
+  ratePercent Decimal @db.Decimal(5, 2)
+  isActive    Boolean @default(true)
+  isSystem    Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  invoiceLines InvoiceLine[]
+
+  @@map("gst_rates")
+}
+
+enum VoucherType {
+  PURCHASE
+  SALE
+  PAYMENT_GIVEN
+  PAYMENT_RECEIVED
+  EXPENSE
+  OPENING
+  REVERSAL
+}
+
+// Concurrency-safe voucher numbering: one row per (type, financial year),
+// incremented via an atomic upsert — see src/lib/accounting/numbering.ts.
+model VoucherSequence {
+  id                 String      @id @default(cuid())
+  voucherType        VoucherType
+  financialYearLabel String
+  lastNumber         Int         @default(0)
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([voucherType, financialYearLabel])
+  @@map("voucher_sequences")
+}
+
+enum VoucherStatus {
+  POSTED
+  CANCELLED
+}
+
+enum GstTreatment {
+  NONE
+  CGST_SGST
+  IGST
+}
+
+model Voucher {
+  id                 String      @id @default(cuid())
+  voucherNumber      String      @unique
+  voucherType        VoucherType
+  date               DateTime
+  financialYearLabel String
+
+  partyId String?
+  party   Party?  @relation(fields: [partyId], references: [id])
+
+  // Set when this voucher is (or includes) an immediate cash/bank/UPI
+  // settlement. Required for Payment Given/Received and Expense; optional
+  // for Purchase/Sale (present = paid now, absent = on credit).
+  paymentAccountId String?
+  paymentAccount   PaymentAccount? @relation(fields: [paymentAccountId], references: [id])
+
+  amount       Decimal @db.Decimal(14, 2)
+  currencyCode String  @default("INR")
+  exchangeRate Decimal @default(1) @db.Decimal(10, 4)
+
+  referenceNumber String?
+  note            String?
+
+  gstTreatment GstTreatment @default(NONE)
+
+  status VoucherStatus @default(POSTED)
+
+  // A CANCELLED voucher is never deleted or edited — cancelling posts an
+  // equal-and-opposite REVERSAL voucher and links back here.
+  reversalOfVoucherId String?  @unique
+  reversalOfVoucher   Voucher? @relation("VoucherReversal", fields: [reversalOfVoucherId], references: [id])
+  reversedByVoucher   Voucher? @relation("VoucherReversal")
+
+  cancelledAt        DateTime?
+  cancelledByUserId  String?
+  cancelledBy        User?     @relation("VoucherCancelledBy", fields: [cancelledByUserId], references: [id], onDelete: SetNull)
+  cancellationReason String?
+
+  // Set by the client on first render of a create form and re-sent on
+  // submit; a unique-constraint hit on retry means "already posted" rather
+  // than creating a duplicate voucher. See src/lib/accounting/posting.ts.
+  idempotencyKey String? @unique
+
+  createdByUserId String
+  createdBy       User   @relation("VoucherCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  journalEntries JournalEntry[]
+  invoiceLines   InvoiceLine[]
+
+  @@map("vouchers")
+  @@index([voucherType])
+  @@index([partyId])
+  @@index([date])
+  @@index([status])
+  @@index([financialYearLabel])
+}
+
+// One row per debit OR credit leg of a posted voucher. `partyId` is set only
+// on the Accounts-Receivable / Accounts-Payable legs, giving each party a
+// real sub-ledger without a separately-maintained balance column — see
+// src/lib/accounting/reports.ts for how running balances are derived.
+model JournalEntry {
+  id        String  @id @default(cuid())
+  voucherId String
+  voucher   Voucher @relation(fields: [voucherId], references: [id], onDelete: Cascade)
+
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id])
+
+  partyId String?
+  party   Party?  @relation(fields: [partyId], references: [id])
+
+  debit  Decimal @default(0) @db.Decimal(14, 2)
+  credit Decimal @default(0) @db.Decimal(14, 2)
+
+  description String?
+
+  createdAt DateTime @default(now())
+
+  @@map("journal_entries")
+  @@index([accountId])
+  @@index([partyId])
+  @@index([voucherId])
+}
+
+enum InvoiceUnit {
+  PCS
+  CT
+  GRAM
+  OTHER
+}
+
+enum TaxType {
+  EXCLUSIVE
+  INCLUSIVE
+}
+
+// Purchase/Sale itemized lines. Financial detail only in Phase 2 — no stock
+// movement is created from these; Phase 3 connects real stock later.
+model InvoiceLine {
+  id        String  @id @default(cuid())
+  voucherId String
+  voucher   Voucher @relation(fields: [voucherId], references: [id], onDelete: Cascade)
+
+  description String
+  hsnSac      String?
+  quantity    Decimal     @db.Decimal(14, 3)
+  unit        InvoiceUnit @default(PCS)
+  rate        Decimal     @db.Decimal(14, 2)
+  discount    Decimal     @default(0) @db.Decimal(14, 2)
+
+  gstRateId      String?
+  gstRate        GstRate? @relation(fields: [gstRateId], references: [id])
+  // Snapshot of the rate actually applied — never recomputed if the GstRate
+  // master changes later.
+  gstRatePercent Decimal  @db.Decimal(5, 2)
+  taxType        TaxType  @default(EXCLUSIVE)
+
+  taxableValue Decimal @db.Decimal(14, 2)
+  taxAmount    Decimal @db.Decimal(14, 2)
+  lineTotal    Decimal @db.Decimal(14, 2)
+
+  sortOrder Int @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@map("invoice_lines")
+  @@index([voucherId])
 }

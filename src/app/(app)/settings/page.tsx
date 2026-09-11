@@ -45,6 +45,7 @@ export default async function SettingsPage() {
                 phone: companySettings?.phone ?? "",
                 email: companySettings?.email ?? "",
                 gstNumber: companySettings?.gstNumber ?? "",
+                companyStateCode: companySettings?.companyStateCode ?? "",
                 defaultCurrency: companySettings?.defaultCurrency ?? "INR",
                 financialYearStartMonth: companySettings?.financialYearStartMonth ?? 4,
                 financialYearStartDay: companySettings?.financialYearStartDay ?? 1,

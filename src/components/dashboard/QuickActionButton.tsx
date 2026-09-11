@@ -1,14 +1,11 @@
 import Link from "next/link";
 
-export function QuickActionButton({
-  label,
-  href,
-  phase,
-}: {
-  label: string;
-  href: string;
-  phase: number;
-}) {
+type QuickActionButtonProps =
+  | { label: string; href: string; phase: number; enabled?: undefined }
+  | { label: string; href: string; phase?: undefined; enabled: true };
+
+export function QuickActionButton(props: QuickActionButtonProps) {
+  const { label, href } = props;
   return (
     <Link
       href={href}
@@ -16,7 +13,7 @@ export function QuickActionButton({
     >
       <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">{label}</span>
       <span className="text-xs text-zinc-500 group-hover:text-zinc-600 dark:text-zinc-400">
-        Available in Phase {phase}
+        {props.enabled ? "Open a form to save this now" : `Available in Phase ${props.phase}`}
       </span>
     </Link>
   );

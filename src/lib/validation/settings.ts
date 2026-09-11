@@ -40,6 +40,14 @@ export const companySettingsSchema = z.object({
     .refine((v) => !v || GSTIN_PATTERN.test(v), {
       message: "GST number should look like a 15-character GSTIN.",
     }),
+  companyStateCode: z
+    .string()
+    .trim()
+    .optional()
+    .or(z.literal(""))
+    .refine((v) => !v || /^[0-9]{2}$/.test(v), {
+      message: "State code should be 2 digits, e.g. 24.",
+    }),
   defaultCurrency: z
     .string()
     .trim()
