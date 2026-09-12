@@ -3,6 +3,7 @@ import Link from "next/link";
 import { Card, CardHeader, CardTitle } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { CsvDownloadButton } from "@/components/accounting/CsvDownloadButton";
+import { useFieldId } from "@/lib/utils/useFieldId";
 import type {
   GstSummary,
   PartyBalanceRow,
@@ -45,6 +46,8 @@ export function ReportsNav({
   dateFrom: string;
   dateTo: string;
 }) {
+  const dateFromId = useFieldId();
+  const dateToId = useFieldId();
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap gap-2">
@@ -66,11 +69,11 @@ export function ReportsNav({
         <input type="hidden" name="tab" value="reports" />
         <input type="hidden" name="report" value={active} />
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="dateFrom" className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+          <label htmlFor={dateFromId} className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
             From
           </label>
           <input
-            id="dateFrom"
+            id={dateFromId}
             type="date"
             name="dateFrom"
             defaultValue={dateFrom}
@@ -78,11 +81,11 @@ export function ReportsNav({
           />
         </div>
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="dateTo" className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+          <label htmlFor={dateToId} className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
             To
           </label>
           <input
-            id="dateTo"
+            id={dateToId}
             type="date"
             name="dateTo"
             defaultValue={dateTo}

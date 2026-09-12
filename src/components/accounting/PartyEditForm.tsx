@@ -7,6 +7,7 @@ import { updateParty } from "@/app/actions/parties";
 import { Field } from "@/components/ui/Field";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
+import { useFieldId } from "@/lib/utils/useFieldId";
 
 const PARTY_TYPES = [
   { value: "CUSTOMER", label: "Customer" },
@@ -39,6 +40,7 @@ export function PartyEditForm({
   const [state, formAction, pending] = useActionState(updateParty, undefined);
   const [type, setType] = useState(party.type);
   const [confirmTypeChange, setConfirmTypeChange] = useState(false);
+  const typeId = useFieldId();
   const isOwner = role === "OWNER";
   const typeChanged = type !== party.type;
 
@@ -82,11 +84,11 @@ export function PartyEditForm({
 
         {isOwner ? (
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="type" className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+            <label htmlFor={typeId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
               Party type
             </label>
             <select
-              id="type"
+              id={typeId}
               name="type"
               value={type}
               onChange={(e) => setType(e.target.value as EditablePartyValues["type"])}

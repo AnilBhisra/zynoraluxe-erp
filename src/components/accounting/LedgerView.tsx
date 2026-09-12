@@ -1,5 +1,6 @@
 import { EmptyState } from "@/components/ui/EmptyState";
 import type { PartyLedgerRow } from "@/lib/accounting/reports";
+import { useFieldId } from "@/lib/utils/useFieldId";
 
 function formatMoney(value: { toFixed: (n: number) => string }) {
   return `₹${Number(value.toFixed(2)).toLocaleString("en-IN", {
@@ -15,15 +16,16 @@ export function LedgerPartyPicker({
   parties: { id: string; name: string }[];
   selectedPartyId: string;
 }) {
+  const ledgerPartyId = useFieldId();
   return (
     <form method="GET" action="/accounting" className="flex flex-wrap items-end gap-3">
       <input type="hidden" name="tab" value="ledger" />
       <div className="flex flex-col gap-1.5">
-        <label htmlFor="ledgerPartyId" className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+        <label htmlFor={ledgerPartyId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
           Party
         </label>
         <select
-          id="ledgerPartyId"
+          id={ledgerPartyId}
           name="partyId"
           defaultValue={selectedPartyId}
           className="h-11 w-64 rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"

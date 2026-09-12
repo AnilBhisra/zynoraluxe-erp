@@ -73,6 +73,15 @@ Fill in:
   reusing the Diamond bucket above under jewellery-specific path
   prefixes (the default). See "Media storage" under Jewellery
   Manufacturing workflow below.
+- `TRUSTED_CLIENT_IP_HEADER` — **optional, set only once the hosting
+  platform is known.** Names the one request header the login rate
+  limiter (see "Login rate limiting" below) should trust as the real
+  client IP. Leave unset in local development and until you know your
+  platform's trusted header — an unset value is always the safe
+  default (per-account rate limiting still fully applies; only the
+  broader per-network limiting is skipped). See the inline comment in
+  `.env.example` for platform-specific header names and the spoofing
+  risk of guessing wrong.
 
 ## 3. Set up the database
 
@@ -118,6 +127,7 @@ Visit http://localhost:3000 — it redirects to `/login` when signed out.
 | `npm run db:migrate:dev` | Apply/create migrations locally |
 | `npm run db:migrate:deploy` | Apply existing migrations (CI/production) |
 | `npm run db:seed` | Create/update the Owner account from `.env` |
+| `npm run db:cleanup-login-rate-limits` | Deletes expired login rate-limit rows (safe to run any time; also happens opportunistically on successful logins — see "Login rate limiting" below) |
 
 ## Database foundation
 
@@ -1053,10 +1063,100 @@ rejected the same way a Staff click would be.
   even renders. It intentionally cannot check role (that needs the
   database) — Settings being Owner-only is enforced authoritatively by
   `requireOwner()` inside `src/app/(app)/settings/page.tsx`, not by hiding
-  the link in navigation.
+  the link in navigation. It also sets a per-request
+  Content-Security-Policy and the rest of the security headers — see
+  "HTTP security headers & CSP" below.
 - Every Server Action that changes data (`src/app/actions/*.ts`)
   independently re-checks authorization — it does not trust that the UI
   that called it was rendered correctly.
+- `login()` (`src/app/actions/auth.ts`) is protected by a persistent,
+  database-backed rate limiter before any password is even checked —
+  see "Login rate limiting" below.
+
+## Login rate limiting
+
+`src/lib/auth/rateLimit.ts`, backed by the `LoginRateLimit` table
+(additive migration). Persistent across restarts and multiple app
+instances — this is deliberately not an in-memory counter, which would
+reset on every deploy/restart and not be shared across instances.
+
+- **Three buckets**, each an HMAC-SHA256 hash (never a raw email or IP),
+  keyed with the existing `SESSION_SECRET` (no new secret): `ACCOUNT`
+  (the email alone, 5 attempts/15 min, always active), `ACCOUNT_NETWORK`
+  (email + IP together, 5 attempts/15 min), `NETWORK` (IP alone, 30
+  attempts/15 min — deliberately higher, to tolerate a shared
+  office/NAT connection while still catching credential stuffing across
+  many accounts from one IP).
+- The client IP is read only from an explicitly-configured header (see
+  `TRUSTED_CLIENT_IP_HEADER` above) — never a default guess a client
+  could spoof. Until it's set, IP-based buckets are simply skipped; the
+  per-account bucket alone still fully protects every account.
+- Every lock is time-bounded and never extended by further attempts
+  while already locked — no account, including the Owner's, can be
+  locked out permanently.
+- A successful login clears the account's own buckets (not the shared
+  network bucket, which stays independent of any one account's
+  success).
+- A nonexistent account and a wrong password on a real account return
+  the identical generic message and take statistically the same time
+  (a fixed dummy bcrypt hash is compared against for a nonexistent
+  account) — neither timing nor message reveals whether an email is
+  registered.
+- If the database itself is unreachable, the rate-limit check fails
+  **closed** (blocks with a short retry message) rather than silently
+  disabling brute-force protection.
+- Recording all applicable buckets for one failed attempt is a single
+  atomic database round trip (`INSERT ... ON CONFLICT DO UPDATE ...
+  RETURNING`), not a multi-statement interactive transaction with an
+  explicit row lock — an earlier design using exactly that pattern was
+  observed to hang under concurrent load against this app's real
+  Supabase pooled connection string (the exact low-level mechanism was
+  not conclusively proven; see `V1_FINAL_ACCEPTANCE.md` §6b for the
+  full, evidence-scoped writeup, including a correction of an earlier,
+  overstated explanation of that mechanism). The single-statement
+  design needs no session-scoped lock held across statements and was
+  separately verified, not assumed, to handle real concurrent load
+  correctly (4-way and 40+-way concurrent write tests).
+- Expired rows are cleaned up opportunistically (a low-probability
+  sweep on successful logins) or via
+  `npm run db:cleanup-login-rate-limits`; an active (non-expired)
+  window is never deleted regardless of lock state.
+
+See `src/lib/auth/rateLimit.test.ts` (real-database integration tests,
+including genuine concurrent-write and two-Prisma-connection tests) and
+`src/app/actions/auth.test.ts` (mocked orchestration tests) for the
+full test coverage.
+
+## HTTP security headers & CSP
+
+Static headers (`X-Content-Type-Options`, `X-Frame-Options`,
+`Referrer-Policy`, a restrictive `Permissions-Policy`,
+`Cross-Origin-Opener-Policy`/`Cross-Origin-Resource-Policy`, and
+production-only `Strict-Transport-Security`) are set in
+`next.config.ts`'s `headers()`. The per-request
+Content-Security-Policy — which needs a fresh nonce every request, so
+it can't live in the static config — is set in `src/proxy.ts`,
+following Next's own documented nonce pattern: `script-src`/`style-src`
+use a per-request nonce plus `strict-dynamic` (required for Next's
+client-side route transitions to keep working after the first page
+load), `img-src` is scoped to the app's own configured Supabase
+project origin (never a wildcard, and omitted entirely when Supabase
+Storage isn't configured), and there is no `unsafe-eval` in production
+(only in development, where Turbopack's HMR runtime requires it) and
+no wildcard source anywhere.
+
+`/unauthorized` is the one page in the app that Next prerenders
+statically — it needs `export const dynamic = "force-dynamic"` so it
+gets the same per-request nonce as every other route (a static page
+has no per-request nonce at build time, but still receives the
+proxy's freshly-generated CSP header at request time; without forcing
+dynamic rendering, its script tags and the CSP header's nonce would
+never match). Any new fully-static page added later needs the same
+line for the same reason.
+
+See `src/proxy.test.ts` for the automated header/CSP test coverage,
+and `V1_FINAL_ACCEPTANCE.md` for the real-Chromium, production-mode
+(`next build` + `next start`) verification evidence.
 
 ## Known, low-risk dev-tooling advisory
 
@@ -1110,3 +1210,12 @@ real ledger/stock figures.
 Accounting, Diamond, Jewellery Jobs, and Costing are real, working
 business logic. Sale-of-jewellery / invoicing integration, deployment,
 and marketplace/e-commerce integration are Phase 6+ and not started.
+
+**Phase 6, approved by the Owner, is Finished Jewellery Sale → Stock →
+COGS/P&L integration** — closing the intentionally-excluded Version 1
+gap where an Accounting Sale voucher doesn't reference, consume, or
+reduce `FinishedJewellery` stock, and Profit & Loss stays provisional
+(no automatic cost-of-goods matching). This is to be built *before*
+production deployment. **Not started** — no schema, Server Action, or
+UI for it exists yet; see `V1_FINAL_ACCEPTANCE.md` §16 for the full
+record of the decision.

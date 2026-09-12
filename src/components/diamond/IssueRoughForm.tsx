@@ -9,6 +9,7 @@ import { Alert } from "@/components/ui/Alert";
 import { PartySelect, type PartyOption } from "@/components/accounting/PartySelect";
 import { PhotoUploadField } from "@/components/diamond/PhotoUploadField";
 import { STANDARD_SHAPES } from "@/lib/diamond/shapes";
+import { useFieldId } from "@/lib/utils/useFieldId";
 
 export type AvailablePieceOption = {
   id: string;
@@ -36,6 +37,7 @@ export function IssueRoughForm({
   const [customShapeReferencePhotoAssetId, setCustomShapeReferencePhotoAssetId] = useState<string | null>(null);
   const [pieceSearch, setPieceSearch] = useState("");
   const [idempotencyKey] = useState(() => crypto.randomUUID());
+  const requiredShapeId = useFieldId();
 
   useEffect(() => {
     if (state?.success) onDone?.();
@@ -140,11 +142,11 @@ export function IssueRoughForm({
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="requiredShape" className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+          <label htmlFor={requiredShapeId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
             Required shape <span className="text-red-600 dark:text-red-400">*</span>
           </label>
           <select
-            id="requiredShape"
+            id={requiredShapeId}
             name="requiredShape"
             value={requiredShape}
             onChange={(e) => setRequiredShape(e.target.value)}

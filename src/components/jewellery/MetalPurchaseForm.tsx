@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 import { PartySelect, type PartyOption } from "@/components/accounting/PartySelect";
 import type { MetalPurityOption } from "@/components/jewellery/ReceiveFinishedForm";
+import { useFieldId } from "@/lib/utils/useFieldId";
 
 type PaymentAccountOption = { id: string; name: string; method: string };
 type GstRateOption = { id: string; label: string; ratePercent: string };
@@ -41,6 +42,12 @@ export function MetalPurchaseForm({
   const [gstRateId, setGstRateId] = useState(gstRates[0]?.id ?? "");
   const [showMore, setShowMore] = useState(false);
   const [idempotencyKey] = useState(() => crypto.randomUUID());
+  const metalTypeId = useFieldId();
+  const purityIdFieldId = useFieldId();
+  const rateBasisId = useFieldId();
+  const gstTreatmentId = useFieldId();
+  const gstRateIdFieldId = useFieldId();
+  const paymentAccountId = useFieldId();
 
   useEffect(() => {
     if (state?.success) onDone?.();
@@ -97,11 +104,11 @@ export function MetalPurchaseForm({
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="metalType" className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+          <label htmlFor={metalTypeId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
             Metal
           </label>
           <select
-            id="metalType"
+            id={metalTypeId}
             value={metalType}
             onChange={(e) => {
               const nextPurity = purities.find((p) => p.metalType === e.target.value)?.id ?? "";
@@ -118,11 +125,11 @@ export function MetalPurchaseForm({
           </select>
         </div>
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="purityId" className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+          <label htmlFor={purityIdFieldId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
             Purity
           </label>
           <select
-            id="purityId"
+            id={purityIdFieldId}
             value={purityId}
             onChange={(e) => setPurityId(e.target.value)}
             className="h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
@@ -152,11 +159,11 @@ export function MetalPurchaseForm({
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="rateBasis" className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+          <label htmlFor={rateBasisId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
             Rate basis
           </label>
           <select
-            id="rateBasis"
+            id={rateBasisId}
             value={rateBasis}
             onChange={(e) => setRateBasis(e.target.value as typeof rateBasis)}
             className="h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
@@ -206,11 +213,11 @@ export function MetalPurchaseForm({
       {showMore ? (
         <div className="grid grid-cols-1 gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-4 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="gstTreatment" className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+            <label htmlFor={gstTreatmentId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
               GST
             </label>
             <select
-              id="gstTreatment"
+              id={gstTreatmentId}
               value={gstTreatment}
               onChange={(e) => setGstTreatment(e.target.value as typeof gstTreatment)}
               className="h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
@@ -222,11 +229,11 @@ export function MetalPurchaseForm({
           </div>
           {gstTreatment !== "NONE" ? (
             <div className="flex flex-col gap-1.5">
-              <label htmlFor="gstRateId" className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+              <label htmlFor={gstRateIdFieldId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
                 GST rate
               </label>
               <select
-                id="gstRateId"
+                id={gstRateIdFieldId}
                 value={gstRateId}
                 onChange={(e) => setGstRateId(e.target.value)}
                 className="h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
@@ -240,11 +247,11 @@ export function MetalPurchaseForm({
             </div>
           ) : null}
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="paymentAccountId" className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+            <label htmlFor={paymentAccountId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
               Payment
             </label>
             <select
-              id="paymentAccountId"
+              id={paymentAccountId}
               name="paymentAccountId"
               defaultValue=""
               className="h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"

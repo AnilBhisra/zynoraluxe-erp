@@ -1,3 +1,10 @@
+// Deliberately the plain `import "dotenv/config"` side-effect form — see
+// the comment in src/lib/auth/rateLimit.test.ts for why an explicit
+// `config({ quiet: true })` call (tried, to suppress dotenv's own console
+// tip line) is unsafe here: ES module imports are hoisted, so a call
+// placed after this line would actually run after any later sibling
+// import's own top-level code, which can read env vars before dotenv
+// populates them. Reverted for correctness.
 import "dotenv/config";
 import bcrypt from "bcryptjs";
 import { PrismaPg } from "@prisma/adapter-pg";

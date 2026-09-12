@@ -48,7 +48,6 @@ export function CostingSettingsTab({
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Field label="Default pricing method" name="defaultPricingMethod" required>
           <select
-            id="defaultPricingMethod"
             name="defaultPricingMethod"
             defaultValue={initialValues.defaultPricingMethod}
             className="h-11 rounded-lg border border-zinc-300 bg-white px-3 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
@@ -77,7 +76,6 @@ export function CostingSettingsTab({
         />
         <Field label="Default discount type" name="defaultDiscountType">
           <select
-            id="defaultDiscountType"
             name="defaultDiscountType"
             defaultValue={initialValues.defaultDiscountType}
             className="h-11 rounded-lg border border-zinc-300 bg-white px-3 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
@@ -90,7 +88,6 @@ export function CostingSettingsTab({
         <Field label="Default discount value" name="defaultDiscountValue" type="number" step="0.01" min="0" defaultValue={initialValues.defaultDiscountValue} />
         <Field label="Default GST treatment" name="defaultGstTreatment">
           <select
-            id="defaultGstTreatment"
             name="defaultGstTreatment"
             defaultValue={initialValues.defaultGstTreatment}
             className="h-11 rounded-lg border border-zinc-300 bg-white px-3 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
@@ -102,7 +99,6 @@ export function CostingSettingsTab({
         </Field>
         <Field label="Default GST rate" name="defaultGstRateId">
           <select
-            id="defaultGstRateId"
             name="defaultGstRateId"
             defaultValue={initialValues.defaultGstRateId}
             className="h-11 rounded-lg border border-zinc-300 bg-white px-3 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
@@ -117,7 +113,6 @@ export function CostingSettingsTab({
         </Field>
         <Field label="Customer price type" name="defaultPriceType">
           <select
-            id="defaultPriceType"
             name="defaultPriceType"
             defaultValue={initialValues.defaultPriceType}
             className="h-11 rounded-lg border border-zinc-300 bg-white px-3 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
@@ -142,7 +137,6 @@ export function CostingSettingsTab({
 
       <Field label="Quotation terms shown to customers" name="quotationTerms">
         <textarea
-          id="quotationTerms"
           name="quotationTerms"
           defaultValue={initialValues.quotationTerms}
           rows={3}

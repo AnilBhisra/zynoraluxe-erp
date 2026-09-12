@@ -7,6 +7,7 @@ import { Field } from "@/components/ui/Field";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 import { PartySelect, type PartyOption } from "@/components/accounting/PartySelect";
+import { useFieldId } from "@/lib/utils/useFieldId";
 
 type PaymentAccountOption = { id: string; name: string; method: string };
 
@@ -35,6 +36,7 @@ export function CashVoucherForm({
   const [idempotencyKey] = useState(() => crypto.randomUUID());
   const partyRequired = voucherType !== "EXPENSE";
   const label = LABELS[voucherType];
+  const paymentAccountId = useFieldId();
 
   useEffect(() => {
     if (state?.success) onDone?.();
@@ -78,13 +80,13 @@ export function CashVoucherForm({
         <PartySelect name="partyId" parties={parties} required={partyRequired} />
         <div className="flex flex-col gap-1.5">
           <label
-            htmlFor="paymentAccountId"
+            htmlFor={paymentAccountId}
             className="text-sm font-medium text-zinc-800 dark:text-zinc-200"
           >
             Payment account <span className="text-red-600 dark:text-red-400">*</span>
           </label>
           <select
-            id="paymentAccountId"
+            id={paymentAccountId}
             name="paymentAccountId"
             required
             defaultValue=""

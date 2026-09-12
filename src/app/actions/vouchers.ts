@@ -464,6 +464,52 @@ export async function cancelVoucherAction(
   if (target?.voucherType === "JEWELLERY_RECEIPT") {
     return { error: "Jewellery receipts cannot be cancelled in Phase 4." };
   }
+  // A Rough Purchase or Metal Purchase also posts as a plain "PURCHASE"
+  // voucher (there is no dedicated voucher type for either) — without this
+  // check, cancelling it here would reverse the accounting while leaving
+  // the real Rough/Metal stock (already issued/consumed, possibly into a
+  // finished, sold piece) completely untouched, corrupting the same
+  // accounting/stock sync the four checks above exist to protect.
+  if (target?.voucherType === "PURCHASE") {
+    const roughLot = await prisma.roughLot.findUnique({
+      where: { voucherId: parsed.data.voucherId },
+      include: { pieces: { select: { costLocked: true } } },
+    });
+    if (roughLot && roughLot.pieces.some((p) => p.costLocked)) {
+      return { error: "One or more pieces from this rough purchase have already been issued — it can no longer be cancelled." };
+    }
+    // Metal is a fungible, pooled stock (unlike individually-tracked rough
+    // pieces), so there is no way to say THIS purchase's specific grams
+    // were the ones issued. The safe, conservative rule mirrors the rough
+    // side's own "once touched, locked" principle instead of a
+    // point-in-time pool-balance check (which a large, healthy pool could
+    // satisfy even after this exact purchase's metal was long since
+    // issued): once ANY metal of this purity has been issued/consumed at
+    // any point after this purchase was posted, the purchase can no
+    // longer be safely reversed.
+    const metalPurchase = await prisma.metalPurchase.findUnique({ where: { voucherId: parsed.data.voucherId } });
+    if (metalPurchase) {
+      const purchaseMovement = await prisma.metalStockMovement.findFirst({
+        where: {
+          metalType: metalPurchase.metalType,
+          purityId: metalPurchase.purityId,
+          type: "PURCHASE_IN",
+          sourceDocument: metalPurchase.purchaseCode,
+        },
+      });
+      const laterOutflow = await prisma.metalStockMovement.findFirst({
+        where: {
+          metalType: metalPurchase.metalType,
+          purityId: metalPurchase.purityId,
+          type: { in: ["ISSUE_OUT", "CONSUMED_OUT", "ADJUSTMENT_OUT"] },
+          createdAt: purchaseMovement ? { gt: purchaseMovement.createdAt } : undefined,
+        },
+      });
+      if (laterOutflow) {
+        return { error: "Metal of this purity has already been issued since this purchase was made — it can no longer be cancelled." };
+      }
+    }
+  }
 
   try {
     await prisma.$transaction((tx) =>

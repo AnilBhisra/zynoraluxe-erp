@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 import { PartySelect, type PartyOption } from "@/components/accounting/PartySelect";
 import { PhotoUploadField } from "@/components/diamond/PhotoUploadField";
+import { useFieldId } from "@/lib/utils/useFieldId";
 
 type PaymentAccountOption = { id: string; name: string; method: string };
 type GstRateOption = { id: string; label: string; ratePercent: string };
@@ -64,6 +65,8 @@ export function RoughPurchaseForm({
   const [showMore, setShowMore] = useState(false);
   const [lotPhotoAssetId, setLotPhotoAssetId] = useState<string | null>(null);
   const [idempotencyKey] = useState(() => crypto.randomUUID());
+  const rateBasisId = useFieldId();
+  const paymentAccountId = useFieldId();
 
   useEffect(() => {
     if (state?.success) onDone?.();
@@ -137,11 +140,11 @@ export function RoughPurchaseForm({
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <Field label="Rate" name="purchaseRate" type="number" step="0.01" min={0} required />
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="rateBasis" className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+          <label htmlFor={rateBasisId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
             Rate basis
           </label>
           <select
-            id="rateBasis"
+            id={rateBasisId}
             name="rateBasis"
             defaultValue="PER_CARAT"
             className="h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
@@ -330,11 +333,11 @@ export function RoughPurchaseForm({
             </div>
           ) : null}
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="paymentAccountId" className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+            <label htmlFor={paymentAccountId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
               Payment
             </label>
             <select
-              id="paymentAccountId"
+              id={paymentAccountId}
               name="paymentAccountId"
               defaultValue=""
               className="h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"

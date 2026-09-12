@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 import { PartySelect, type PartyOption } from "@/components/accounting/PartySelect";
 import { previewLineTotals, suggestGstTreatment, type GstTreatment } from "@/lib/accounting/previewMath";
+import { useFieldId } from "@/lib/utils/useFieldId";
 
 type PaymentAccountOption = { id: string; name: string; method: string };
 type GstRateOption = { id: string; label: string; ratePercent: string };
@@ -65,6 +66,8 @@ export function InvoiceVoucherForm({
   const [confirmOutsideFy, setConfirmOutsideFy] = useState(false);
   const [showMore, setShowMore] = useState(false);
   const [idempotencyKey] = useState(() => crypto.randomUUID());
+  const paymentAccountId = useFieldId();
+  const gstTreatmentSelectId = useFieldId();
 
   useEffect(() => {
     if (state?.success) onDone?.();
@@ -140,11 +143,11 @@ export function InvoiceVoucherForm({
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="paymentAccountId" className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+          <label htmlFor={paymentAccountId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
             Payment
           </label>
           <select
-            id="paymentAccountId"
+            id={paymentAccountId}
             name="paymentAccountId"
             defaultValue=""
             className="h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
@@ -159,11 +162,11 @@ export function InvoiceVoucherForm({
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="gstTreatmentSelect" className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+          <label htmlFor={gstTreatmentSelectId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
             GST
           </label>
           <select
-            id="gstTreatmentSelect"
+            id={gstTreatmentSelectId}
             value={gstTreatment}
             onChange={(e) => setGstTreatment(e.target.value as GstTreatment)}
             className="h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"

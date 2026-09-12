@@ -7,20 +7,22 @@ import { Field } from "@/components/ui/Field";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { useFieldId } from "@/lib/utils/useFieldId";
 
 export type MetalPurityRow = { id: string; metalType: string; displayName: string; finenessPercent: string; isActive: boolean };
 
 function AddPurityForm() {
   const [state, formAction, pending] = useActionState(createMetalPurity, undefined);
+  const metalTypeId = useFieldId();
   return (
     <form action={formAction} className="flex flex-wrap items-end gap-3" noValidate>
       {state?.error ? <Alert tone="error">{state.error}</Alert> : null}
       <div className="flex flex-col gap-1.5">
-        <label htmlFor="new-metalType" className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+        <label htmlFor={metalTypeId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
           Metal
         </label>
         <select
-          id="new-metalType"
+          id={metalTypeId}
           name="metalType"
           defaultValue="GOLD"
           className="h-11 rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900 dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"

@@ -7,6 +7,17 @@ export const metadata: Metadata = {
   title: "Not available · ZYNORALUXE",
 };
 
+// Forces per-request rendering. Without this, Next prerenders this page
+// once at build time with no nonce baked into its script tags (there is
+// no per-request nonce available at build time) — but src/proxy.ts still
+// stamps a FRESH nonce onto every response's Content-Security-Policy
+// header, including this one, so a statically-generated version of this
+// page would carry a CSP that its own bundled scripts can never satisfy.
+// Confirmed live: this exact mismatch reliably blocked this page's script
+// chunks in a real production `next build`/`next start` run before this
+// line was added.
+export const dynamic = "force-dynamic";
+
 export default function UnauthorizedPage() {
   return (
     <div className="flex min-h-dvh items-center justify-center bg-[var(--background)] px-4 py-12">

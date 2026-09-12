@@ -11,6 +11,9 @@ const mocks = vi.hoisted(() => ({
   postPaymentGiven: vi.fn(),
   postPurchase: vi.fn(),
   cancelVoucher: vi.fn(),
+  roughLotFindUnique: vi.fn(),
+  metalPurchaseFindUnique: vi.fn(),
+  metalStockMovementFindFirst: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/dal", () => ({
@@ -23,6 +26,9 @@ vi.mock("@/lib/db/prisma", () => ({
     $transaction: mocks.transaction,
     voucher: { findUnique: mocks.voucherFindUnique },
     gstRate: { findMany: mocks.gstRateFindMany },
+    roughLot: { findUnique: mocks.roughLotFindUnique },
+    metalPurchase: { findUnique: mocks.metalPurchaseFindUnique },
+    metalStockMovement: { findFirst: mocks.metalStockMovementFindFirst },
   },
 }));
 
@@ -65,6 +71,9 @@ beforeEach(() => {
   });
   mocks.transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => fn({}));
   mocks.voucherFindUnique.mockResolvedValue(null);
+  mocks.roughLotFindUnique.mockResolvedValue(null);
+  mocks.metalPurchaseFindUnique.mockResolvedValue(null);
+  mocks.metalStockMovementFindFirst.mockResolvedValue(null);
 });
 
 describe("createPaymentGiven validation", () => {
@@ -231,5 +240,85 @@ describe("cancelVoucherAction permissions", () => {
     );
     expect(result?.error).toMatch(/cannot be cancelled/i);
     expect(mocks.cancelVoucher).not.toHaveBeenCalled();
+  });
+
+  // Real bug found during the V1 final acceptance audit (live E2E,
+  // confirmed against the real database): a Rough Purchase / Metal
+  // Purchase voucher posts as the plain "PURCHASE" type (there is no
+  // dedicated voucher type for either), so it fell through all four
+  // checks above and could be cancelled through this generic action even
+  // after its stock was fully issued/consumed — reversing the accounting
+  // while silently leaving the real Rough/Metal stock (and anything built
+  // from it downstream) completely out of sync.
+
+  it("rejects cancelling a Rough Purchase voucher once any of its pieces has been issued (costLocked)", async () => {
+    mocks.voucherFindUnique.mockResolvedValue({ voucherType: "PURCHASE" });
+    mocks.roughLotFindUnique.mockResolvedValue({
+      pieces: [{ costLocked: false }, { costLocked: true }],
+    });
+    const result = await cancelVoucherAction(
+      undefined,
+      formData({ voucherId: "v1", cancellationReason: "Trying to cancel after issue" })
+    );
+    expect(result?.error).toMatch(/already been issued/i);
+    expect(mocks.cancelVoucher).not.toHaveBeenCalled();
+  });
+
+  it("allows cancelling a Rough Purchase voucher while every piece is still unissued", async () => {
+    mocks.voucherFindUnique.mockResolvedValue({ voucherType: "PURCHASE" });
+    mocks.roughLotFindUnique.mockResolvedValue({
+      pieces: [{ costLocked: false }, { costLocked: false }],
+    });
+    await cancelVoucherAction(undefined, formData({ voucherId: "v1", cancellationReason: "Entered by mistake" }));
+    expect(mocks.cancelVoucher).toHaveBeenCalled();
+  });
+
+  it("rejects cancelling a Metal Purchase voucher once any metal of that purity has been issued since this purchase — even if the pool still holds plenty from other purchases", async () => {
+    mocks.voucherFindUnique.mockResolvedValue({ voucherType: "PURCHASE" });
+    mocks.metalPurchaseFindUnique.mockResolvedValue({
+      metalType: "GOLD",
+      purityId: "p22k",
+      purchaseCode: "ZL-MP-2026-000010",
+      grossWeight: "30.000",
+      totalPurchaseCost: "180000.00",
+    });
+    // First call resolves this purchase's own PURCHASE_IN movement (to
+    // anchor "since this purchase"); second call finds a later ISSUE_OUT —
+    // a real pool can easily still hold far more than 30g from OTHER
+    // purchases, which is exactly why a point-in-time balance check would
+    // wrongly allow this.
+    mocks.metalStockMovementFindFirst
+      .mockResolvedValueOnce({ createdAt: new Date("2026-01-01T00:00:00Z") })
+      .mockResolvedValueOnce({ createdAt: new Date("2026-01-02T00:00:00Z") });
+    const result = await cancelVoucherAction(
+      undefined,
+      formData({ voucherId: "v1", cancellationReason: "Trying to cancel after issue" })
+    );
+    expect(result?.error).toMatch(/already been issued/i);
+    expect(mocks.cancelVoucher).not.toHaveBeenCalled();
+  });
+
+  it("allows cancelling a Metal Purchase voucher while no metal of that purity has been issued since this purchase", async () => {
+    mocks.voucherFindUnique.mockResolvedValue({ voucherType: "PURCHASE" });
+    mocks.metalPurchaseFindUnique.mockResolvedValue({
+      metalType: "GOLD",
+      purityId: "p22k",
+      purchaseCode: "ZL-MP-2026-000010",
+      grossWeight: "30.000",
+      totalPurchaseCost: "180000.00",
+    });
+    mocks.metalStockMovementFindFirst
+      .mockResolvedValueOnce({ createdAt: new Date("2026-01-01T00:00:00Z") }) // this purchase's own movement
+      .mockResolvedValueOnce(null); // no later outflow
+    await cancelVoucherAction(undefined, formData({ voucherId: "v1", cancellationReason: "Entered by mistake" }));
+    expect(mocks.cancelVoucher).toHaveBeenCalled();
+  });
+
+  it("allows cancelling an ordinary PURCHASE voucher that isn't linked to any Rough Lot or Metal Purchase", async () => {
+    mocks.voucherFindUnique.mockResolvedValue({ voucherType: "PURCHASE" });
+    // roughLot/metalPurchase mocks already resolve to null in beforeEach —
+    // this is a plain Phase 2 accounting purchase (e.g. office supplies).
+    await cancelVoucherAction(undefined, formData({ voucherId: "v1", cancellationReason: "Entered by mistake" }));
+    expect(mocks.cancelVoucher).toHaveBeenCalled();
   });
 });

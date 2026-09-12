@@ -11,12 +11,14 @@ import {
 import { Field } from "@/components/ui/Field";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
+import { useFieldId } from "@/lib/utils/useFieldId";
 
 type PaymentAccountRow = { id: string; name: string; method: string; isActive: boolean };
 type GstRateRow = { id: string; label: string; ratePercent: string; isActive: boolean };
 
 function AddPaymentAccountForm() {
   const [state, formAction, pending] = useActionState(createPaymentAccount, undefined);
+  const methodId = useFieldId();
   return (
     <form action={formAction} className="flex flex-wrap items-end gap-3" noValidate>
       {state?.error ? <Alert tone="error">{state.error}</Alert> : null}
@@ -24,11 +26,11 @@ function AddPaymentAccountForm() {
         <Field label="Account name" name="name" />
       </div>
       <div className="flex flex-col gap-1.5">
-        <label htmlFor="method" className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+        <label htmlFor={methodId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
           Type
         </label>
         <select
-          id="method"
+          id={methodId}
           name="method"
           defaultValue="BANK"
           className="h-11 rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900 dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"

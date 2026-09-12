@@ -85,12 +85,12 @@ model User {
   jewelleryReceiptsCreated   JewelleryReceipt[]           @relation("JewelleryReceiptCreatedBy")
   finishedJewelleryCreated   FinishedJewellery[]          @relation("FinishedJewelleryCreatedBy")
 
-  costingSettingsUpdated CostingSettings[]      @relation("CostingSettingsUpdatedBy")
-  costSheetsCreated      CostSheet[]            @relation("CostSheetCreatedBy")
-  costSheetsUpdated      CostSheet[]            @relation("CostSheetUpdatedBy")
-  costSheetsFinalized    CostSheet[]            @relation("CostSheetFinalizedBy")
-  costSheetsArchived     CostSheet[]            @relation("CostSheetArchivedBy")
-  costSheetAuditEvents   CostSheetAuditEvent[]  @relation("CostSheetAuditEventUser")
+  costingSettingsUpdated CostingSettings[]     @relation("CostingSettingsUpdatedBy")
+  costSheetsCreated      CostSheet[]           @relation("CostSheetCreatedBy")
+  costSheetsUpdated      CostSheet[]           @relation("CostSheetUpdatedBy")
+  costSheetsFinalized    CostSheet[]           @relation("CostSheetFinalizedBy")
+  costSheetsArchived     CostSheet[]           @relation("CostSheetArchivedBy")
+  costSheetAuditEvents   CostSheetAuditEvent[] @relation("CostSheetAuditEventUser")
 
   @@map("users")
 }
@@ -250,11 +250,11 @@ model GstRate {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  invoiceLines     InvoiceLine[]
-  roughLots        RoughLot[]
-  metalPurchases   MetalPurchase[]
-  costSheets       CostSheet[]       @relation("CostSheetGstRate")
-  costingSettings  CostingSettings[] @relation("CostingSettingsGstRate")
+  invoiceLines    InvoiceLine[]
+  roughLots       RoughLot[]
+  metalPurchases  MetalPurchase[]
+  costSheets      CostSheet[]       @relation("CostSheetGstRate")
+  costingSettings CostingSettings[] @relation("CostingSettingsGstRate")
 
   @@map("gst_rates")
 }
@@ -805,8 +805,8 @@ model PolishedDiamond {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  stockMovements       StockMovement[]
-  jewelleryIssueLines  JewelleryDiamondIssueLine[]
+  stockMovements        StockMovement[]
+  jewelleryIssueLines   JewelleryDiamondIssueLine[]
   costSheetDiamondLines CostSheetDiamondLine[]
 
   @@index([jobId])
@@ -1511,14 +1511,14 @@ model CostSheet {
   mode          CostSheetMode
   status        CostSheetStatus @default(DRAFT)
 
-  costingDate     DateTime
-  jewelleryType   JewelleryType
-  itemName        String
-  referenceNumber String?
-  quantity        Int     @default(1)
-  sizeOrLength    String?
+  costingDate        DateTime
+  jewelleryType      JewelleryType
+  itemName           String
+  referenceNumber    String?
+  quantity           Int           @default(1)
+  sizeOrLength       String?
   designImageAssetId String?
-  notes           String?
+  notes              String?
 
   customerId String?
   customer   Party?  @relation("CostSheetCustomer", fields: [customerId], references: [id])
@@ -1683,10 +1683,10 @@ model CostSheetOtherMaterialLine {
 
   category    OtherMaterialCategory @default(OTHER)
   description String
-  quantity    Decimal? @db.Decimal(10, 3)
-  weight      Decimal? @db.Decimal(10, 3)
-  rate        Decimal? @db.Decimal(14, 2)
-  amount      Decimal  @default(0) @db.Decimal(14, 2)
+  quantity    Decimal?              @db.Decimal(10, 3)
+  weight      Decimal?              @db.Decimal(10, 3)
+  rate        Decimal?              @db.Decimal(14, 2)
+  amount      Decimal               @default(0) @db.Decimal(14, 2)
 
   sortOrder Int      @default(0)
   createdAt DateTime @default(now())
@@ -1708,7 +1708,7 @@ model CostSheetChargeLine {
   costSheetId String
   costSheet   CostSheet @relation(fields: [costSheetId], references: [id], onDelete: Cascade)
 
-  label  String
+  label    String
   // Splits the calculation summary's "Labour cost" (this flag true) from
   // its separate "Additional manufacturing charges" (false) — a display
   // grouping only, freely chosen per line, so any number of lines can be
@@ -1723,6 +1723,40 @@ model CostSheetChargeLine {
 
   @@index([costSheetId])
   @@map("cost_sheet_charge_lines")
+}
+
+// ---------------------------------------------------------------------------
+// Login brute-force protection (V1 final acceptance)
+// ---------------------------------------------------------------------------
+//
+// Persistent, DB-backed rate limiting — see src/lib/auth/rateLimit.ts for
+// the full policy and src/app/actions/auth.ts for how it's wired into
+// login(). Deliberately never stores a raw email, IP address, or password:
+// `keyHash` is an HMAC-SHA256 (keyed with the server-only SESSION_SECRET)
+// of a normalized identifier — ACCOUNT buckets on the login email alone,
+// NETWORK buckets on the client IP alone (only when a trusted proxy header
+// is configured — see getTrustedClientIp()), ACCOUNT_NETWORK combines
+// both — so this table can never be read back into a list of real emails
+// or IPs even if it were ever exposed.
+enum LoginRateLimitBucket {
+  ACCOUNT
+  NETWORK
+  ACCOUNT_NETWORK
+}
+
+model LoginRateLimit {
+  id           String               @id @default(cuid())
+  bucket       LoginRateLimitBucket
+  keyHash      String
+  failureCount Int                  @default(0)
+  windowStart  DateTime
+  lockedUntil  DateTime?
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([bucket, keyHash])
+  @@index([lockedUntil])
+  @@map("login_rate_limits")
 }
 
 // Immutable, append-only audit trail — never updated or deleted, same

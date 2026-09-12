@@ -6,6 +6,7 @@ import { createParty } from "@/app/actions/parties";
 import { Field } from "@/components/ui/Field";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
+import { useFieldId } from "@/lib/utils/useFieldId";
 
 const PARTY_TYPES = [
   { value: "CUSTOMER", label: "Customer" },
@@ -17,6 +18,8 @@ export function PartyForm() {
   const [state, formAction, pending] = useActionState(createParty, undefined);
   const [showMore, setShowMore] = useState(false);
   const [hasOpeningBalance, setHasOpeningBalance] = useState(false);
+  const typeId = useFieldId();
+  const openingBalanceTypeId = useFieldId();
 
   function confirmBeforeSubmit(event: React.FormEvent<HTMLFormElement>) {
     const formData = new FormData(event.currentTarget);
@@ -39,11 +42,11 @@ export function PartyForm() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Field label="Name" name="name" required />
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="type" className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+          <label htmlFor={typeId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
             Party type <span className="text-red-600 dark:text-red-400">*</span>
           </label>
           <select
-            id="type"
+            id={typeId}
             name="type"
             required
             defaultValue="CUSTOMER"
@@ -87,13 +90,13 @@ export function PartyForm() {
           />
           <div className="flex flex-col gap-1.5">
             <label
-              htmlFor="openingBalanceType"
+              htmlFor={openingBalanceTypeId}
               className="text-sm font-medium text-zinc-800 dark:text-zinc-200"
             >
               Direction
             </label>
             <select
-              id="openingBalanceType"
+              id={openingBalanceTypeId}
               name="openingBalanceType"
               defaultValue="RECEIVABLE"
               className="h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"

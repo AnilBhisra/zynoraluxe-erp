@@ -9,6 +9,7 @@ import { Alert } from "@/components/ui/Alert";
 import { PartySelect, type PartyOption } from "@/components/accounting/PartySelect";
 import { JewelleryPhotoUploadField } from "@/components/jewellery/PhotoUploadField";
 import { JEWELLERY_TYPES, METAL_TYPES } from "@/lib/jewellery/types";
+import { useFieldId } from "@/lib/utils/useFieldId";
 
 export type PurityOption = { id: string; metalType: string; displayName: string };
 
@@ -28,6 +29,9 @@ export function CreateJobForm({
   const [showMore, setShowMore] = useState(false);
   const [targetMetalType, setTargetMetalType] = useState("");
   const [idempotencyKey] = useState(() => crypto.randomUUID());
+  const jewelleryTypeId = useFieldId();
+  const targetMetalTypeId = useFieldId();
+  const targetPurityId = useFieldId();
 
   useEffect(() => {
     if (state?.success) onDone?.();
@@ -58,11 +62,11 @@ export function CreateJobForm({
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="jewelleryType" className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+          <label htmlFor={jewelleryTypeId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
             Jewellery type <span className="text-red-600 dark:text-red-400">*</span>
           </label>
           <select
-            id="jewelleryType"
+            id={jewelleryTypeId}
             name="jewelleryType"
             defaultValue="RING"
             required
@@ -96,11 +100,11 @@ export function CreateJobForm({
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="targetMetalType" className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+          <label htmlFor={targetMetalTypeId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
             Target metal (optional)
           </label>
           <select
-            id="targetMetalType"
+            id={targetMetalTypeId}
             name="targetMetalType"
             value={targetMetalType}
             onChange={(e) => setTargetMetalType(e.target.value)}
@@ -116,11 +120,11 @@ export function CreateJobForm({
         </div>
         {targetMetalType ? (
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="targetPurityId" className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+            <label htmlFor={targetPurityId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
               Target purity
             </label>
             <select
-              id="targetPurityId"
+              id={targetPurityId}
               name="targetPurityId"
               className="h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
             >

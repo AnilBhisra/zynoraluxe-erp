@@ -11,6 +11,7 @@ import { previewCostSheetTotals } from "@/lib/costing/previewMath";
 import { CalculationSummary } from "@/components/costing/CalculationSummary";
 import { PricingFields, defaultPricingState, type PricingState } from "@/components/costing/PricingFields";
 import { CostingPhotoUploadField } from "@/components/costing/CostingPhotoUploadField";
+import { useFieldId } from "@/lib/utils/useFieldId";
 
 export type MetalPurityOption = { id: string; metalType: string; displayName: string; finenessPercent: string };
 
@@ -118,6 +119,7 @@ export function EstimateForm({
   const action = isEdit ? updateEstimateCostingAction : createEstimateCostingAction;
   const [state, formAction, pending] = useActionState(action, undefined);
   const [idempotencyKey] = useState(() => crypto.randomUUID());
+  const chargeLabelSuggestionsId = useFieldId();
 
   const [costingDate, setCostingDate] = useState(initial?.costingDate ?? new Date().toISOString().slice(0, 10));
   const [jewelleryType, setJewelleryType] = useState(initial?.jewelleryType ?? "RING");
@@ -439,7 +441,7 @@ export function EstimateForm({
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
             <input
               aria-label="Label"
-              list="charge-label-suggestions"
+              list={chargeLabelSuggestionsId}
               placeholder="Label, e.g. Karigar labour"
               className="h-10 rounded-lg border border-zinc-300 bg-white px-2.5 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
               value={line.label}
@@ -466,7 +468,7 @@ export function EstimateForm({
           </div>
         </div>
       ))}
-      <datalist id="charge-label-suggestions">
+      <datalist id={chargeLabelSuggestionsId}>
         {CHARGE_LABEL_SUGGESTIONS.map((l) => (
           <option key={l} value={l} />
         ))}

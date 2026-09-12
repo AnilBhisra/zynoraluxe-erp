@@ -13,7 +13,8 @@
     "db:generate": "prisma generate",
     "db:migrate:dev": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
-    "db:seed": "prisma db seed"
+    "db:seed": "prisma db seed",
+    "db:cleanup-login-rate-limits": "tsx scripts/cleanupLoginRateLimits.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",
