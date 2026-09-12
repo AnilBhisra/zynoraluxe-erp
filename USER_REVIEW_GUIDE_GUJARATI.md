@@ -18,7 +18,7 @@
 - પહેલેથી save કરેલ Owner email અને password વાપરો (એ આ fileમાં
   લખેલ નથી — તમારી પાસે પહેલેથી છે).
 - Email અને Password નાખો.
-- "Sign in" બટન દબાવો.
+- "Log in" બટન દબાવો.
 - Login થયા પછી Dashboard ખુલશે.
 
 જો password ભૂલાઈ ગયો હોય, તો મને (developer/agent) જણાવો — હું
@@ -32,9 +32,9 @@ database directly touch કર્યા વગર નવો password set કર�
 | Menu | શું કામ કરે છે |
 |---|---|
 | **Dashboard** | આજની business સ્થિતિ — Cash, Bank, કેટલા રૂપિયા લેવાના/આપવાના, Rough/Polished stock, Karigar પાસે material, pending jobs — બધું એક નજરમાં. |
-| **Accounting** | Purchase, Sale, Payment આપવું/લેવું, Expense — બધા પૈસાની entries. Parties (Customer/Supplier/Karigar) ની list, ledger, અને reports પણ અહીં. |
+| **Accounting** | Purchase, Sale, Payment આપવું/લેવું, Expense — બધા પૈસાની entries. Parties (Customer/Supplier/Karigar) ની list, ledger, અને reports પણ અહીં. "New Sale" દબાવો ત્યારે હવે પહેલા પૂછશે — "Sell Finished Jewellery" (તૈયાર jewellery stock માંથી piece વેચવું, stock+profit આપોઆપ update થાય) કે "Other / Accounting-only Sale" (જૂની રીતે, ફક્ત accounting entry, stock touch ન થાય). |
 | **Diamond** | Rough diamond ખરીદવું, Karigarને cutting-polishing માટે આપવું, Polished diamond પાછું લેવું, Polished stock જોવું. |
-| **Jewellery Job** | Customer માટે jewellery job બનાવવો, Karigarને metal અને diamonds આપવા, તૈયાર jewellery પાછી લેવી, Metal Stock જોવું. |
+| **Jewellery Job** | Customer માટે jewellery job બનાવવો, Karigarને metal અને diamonds આપવા, તૈયાર jewellery પાછી લેવી. હવે 3 tabs: **Jobs**, **Metal Stock**, અને **Finished Stock** (તૈયાર jewellery ની list — કયો piece Available છે, કયો વેચાયો, ક્યાં return/damaged થયો). Finished Stock tab પર (ફક્ત Owner માટે) દરેક વેચેલા sale ને "Cancel sale" કરી શકાય, અને દરેક item ને "Return (Sellable)" કે "Return (Damaged)" કરી શકાય — તેમજ જેની Costing finalized હોય એવા item પર "Compare vs Costing" દબાવીને Phase 5 ના estimate profit અને Phase 6 ના real profit ની સરખામણી જોઈ શકાય. |
 | **Costing** (ફક્ત Owner માટે) | કોઈ jewellery piece ની ખરી cost કાઢવી, વેચવા પહેલાં estimate બનાવવું, selling price અને profit નક્કી કરવું, Customer માટે સાફ quotation બનાવવું. |
 | **Settings** (ફક્ત Owner માટે) | Company details, Staff accounts, Metal/Purity master, GST rates — બધા master settings. |
 
@@ -59,8 +59,19 @@ database directly touch કર્યા વગર નવો password set કર�
    શું એમાં ફક્ત selling price દેખાય છે, cost/profit નહીં?
 7. **Settings → Metal/Purity master** — 7 purity rows બરાબર
    દેખાય છે? (10K, 14K, 18K, 22K, 24K, 925 Silver, 950 Platinum)
-8. Mobile phone અથવા browserની window નાની કરીને પણ એકવાર જુઓ —
-   બધું બરાબર દેખાય છે?
+8. **Jewellery Job → Finished Stock** — list જુઓ. Staff account થી
+   જુઓ તો cost/profit column, "Compare vs Costing" બટન, અને sale
+   cancel/return કરવાનું section — આ ત્રણેય ન દેખાવા જોઈએ, ફક્ત
+   Owner account થી દેખાવા જોઈએ.
+9. **Accounting → Transactions → New Sale** દબાવો — "Sell Finished
+   Jewellery" પસંદ કરો (save ન કરો, ફક્ત form જુઓ), પછી "Other /
+   Accounting-only Sale" પણ પસંદ કરી જુઓ — બંને બરાબર ખુલે છે?
+10. **Jewellery Job → Finished Stock** પર નીચે "Finished Jewellery
+    Sales — cancel / return" section જુઓ (ફક્ત Owner account થી) —
+    કોઈ એક sale પર "Cancel sale" બટન દબાવો (save ન કરો, ફક્ત form
+    ખુલે છે કે નહીં જુઓ, પછી "Back" દબાવીને બંધ કરો).
+11. Mobile phone અથવા browserની window નાની કરીને પણ એકવાર જુઓ —
+    બધું બરાબર દેખાય છે?
 
 ---
 
@@ -75,7 +86,9 @@ database directly touch કર્યા વગર નવો password set કર�
   ખાતરી ન હોય કે એ ખોટી entry છે.
 - **નવો Staff account બનાવો તો temporary/simple password જ વાપરો**,
   અને testing પછી remove કરી દો (Settings → Staff list માં
-  "Deactivate" કરી શકાય).
+  "Deactivate" કરી શકાય). "Deactivate" દબાવતાની સાથે જ એ account
+  ની access બંધ થઈ જાય છે — Staff already login થયેલ હોય તો પણ,
+  next page ખોલતાં જ Login page પર પાછું મોકલી દેશે.
 - **Company Settings માં state code `24` હાલ placeholder છે** —
   ખરો state code અને company details તમે પોતે update કરજો.
 

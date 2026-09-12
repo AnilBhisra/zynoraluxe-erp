@@ -7,6 +7,8 @@ import {
   getJewelleryJobDetail,
   getKarigarJewelleryMaterialBalances,
   getMetalStockSummary,
+  listFinishedJewelleryStock,
+  listFinishedJewellerySalesForManagement,
   listJewelleryJobs,
   listMetalPurchases,
   listMetalPurities,
@@ -16,10 +18,12 @@ import { resolveJewelleryAssetUrl } from "@/lib/storage/jewelleryMedia";
 import { JobsTab, type SerializedJewelleryJob } from "@/components/jewellery/JobsTab";
 import { JobDetailView, type SerializedJobDetail } from "@/components/jewellery/JobDetailView";
 import { MetalStockTab, type SerializedMetalStockBucket, type SerializedMetalPurchase } from "@/components/jewellery/MetalStockTab";
+import { FinishedStockTab, type SerializedFinishedStockRow } from "@/components/jewellery/FinishedStockTab";
+import { FinishedSalesManager, type SerializedFinishedSale } from "@/components/jewellery/FinishedSalesManager";
 import type { PurityOption } from "@/components/jewellery/CreateJobForm";
 import type { AvailablePolishedDiamondOption } from "@/components/jewellery/IssueMaterialsForm";
 import type { MetalPurityOption } from "@/components/jewellery/ReceiveFinishedForm";
-import type { JewelleryJobStatus } from "@/generated/prisma/enums";
+import type { FinishedJewelleryStockStatus, JewelleryJobStatus } from "@/generated/prisma/enums";
 
 export const metadata: Metadata = {
   title: "Jewellery Jobs · ZYNORALUXE",
@@ -32,9 +36,12 @@ type SearchParams = {
   jobId?: string;
   metalSearch?: string;
   issue?: string;
+  finishedSearch?: string;
+  finishedStatus?: string;
+  saleSearch?: string;
 };
 
-const TABS = ["jobs", "metal"] as const;
+const TABS = ["jobs", "metal", "finished"] as const;
 type Tab = (typeof TABS)[number];
 
 function TabLink({ tab, label, active }: { tab: Tab; label: string; active: boolean }) {
@@ -61,11 +68,12 @@ export default async function JewelleryJobsPage({ searchParams }: { searchParams
 
   return (
     <div>
-      <PageHeader title="Jewellery Jobs" description="Create jobs, issue metal and diamonds, receive finished jewellery, and track Metal Stock." />
+      <PageHeader title="Jewellery Jobs" description="Create jobs, issue metal and diamonds, receive finished jewellery, and track Metal Stock and Finished Stock." />
 
       <nav aria-label="Jewellery sections" className="mb-6 flex flex-wrap gap-1 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1.5">
         <TabLink tab="jobs" label="Jewellery Jobs" active={tab === "jobs"} />
         <TabLink tab="metal" label="Metal Stock" active={tab === "metal"} />
+        <TabLink tab="finished" label="Finished Stock" active={tab === "finished"} />
       </nav>
 
       {tab === "jobs" ? (
@@ -78,6 +86,14 @@ export default async function JewelleryJobsPage({ searchParams }: { searchParams
         />
       ) : null}
       {tab === "metal" ? <MetalTabContent search={params.metalSearch ?? ""} isOwner={isOwner} /> : null}
+      {tab === "finished" ? (
+        <FinishedTabContent
+          search={params.finishedSearch ?? ""}
+          status={params.finishedStatus ?? ""}
+          saleSearch={params.saleSearch ?? ""}
+          isOwner={isOwner}
+        />
+      ) : null}
     </div>
   );
 }
@@ -339,5 +355,80 @@ async function MetalTabContent({ search, isOwner }: { search: string; isOwner: b
       isOwner={isOwner}
       search={search}
     />
+  );
+}
+
+async function FinishedTabContent({
+  search,
+  status,
+  saleSearch,
+  isOwner,
+}: {
+  search: string;
+  status: string;
+  saleSearch: string;
+  isOwner: boolean;
+}) {
+  // Owner-only cost/Costing fields are fetched from the database ONLY when
+  // isOwner is true — never fetched-then-hidden. See the SECURITY BOUNDARY
+  // comment on listFinishedJewelleryStock in src/lib/jewellery/reports.ts.
+  const rows = await listFinishedJewelleryStock({
+    search: search || undefined,
+    status: (status || undefined) as FinishedJewelleryStockStatus | undefined,
+    includeCost: isOwner,
+  });
+
+  const items: SerializedFinishedStockRow[] = await Promise.all(
+    rows.map(async (r) => ({
+      id: r.id,
+      finishedCode: r.finishedCode,
+      jobCode: r.jobCode,
+      designName: r.designName,
+      karigarName: r.karigarName,
+      jewelleryType: r.jewelleryType,
+      metalType: r.metalType,
+      purityDisplayName: r.purityDisplayName,
+      netMetalWeight: r.netMetalWeight.toFixed(3),
+      fineMetalWeight: r.fineMetalWeight.toFixed(3),
+      grossWeight: r.grossWeight ? r.grossWeight.toFixed(3) : null,
+      diamondCount: r.diamondCount,
+      totalCarat: r.totalCarat.toFixed(3),
+      status: r.status,
+      producedAt: r.producedAt.toISOString(),
+      photoUrl: await resolveJewelleryAssetUrl(r.photoAssetId),
+      saleCode: r.saleCode,
+      saleDate: r.saleDate ? r.saleDate.toISOString() : null,
+      ...(isOwner
+        ? { inventoryCost: r.inventoryCost?.toFixed(2), costSheetNumber: r.costSheetNumber ?? null }
+        : {}),
+    }))
+  );
+
+  // Owner-only sale management (cancel/return) — never fetched for Staff.
+  const sales: SerializedFinishedSale[] = isOwner
+    ? (await listFinishedJewellerySalesForManagement(saleSearch || undefined)).map((s) => ({
+        id: s.id,
+        saleCode: s.saleCode,
+        saleDate: s.saleDate.toISOString(),
+        customerName: s.customerName,
+        status: s.status,
+        grandTotal: s.grandTotal.toFixed(2),
+        lines: s.lines.map((l) => ({
+          id: l.id,
+          finishedCode: l.finishedCode,
+          itemDescription: l.itemDescription,
+          taxableValue: l.taxableValue.toFixed(2),
+          taxAmount: l.taxAmount.toFixed(2),
+          lineTotal: l.lineTotal.toFixed(2),
+          returnStatus: l.returnStatus,
+        })),
+      }))
+    : [];
+
+  return (
+    <div className="flex flex-col gap-8">
+      <FinishedStockTab items={items} isOwner={isOwner} search={search} status={status} />
+      {isOwner ? <FinishedSalesManager sales={sales} search={saleSearch} /> : null}
+    </div>
   );
 }

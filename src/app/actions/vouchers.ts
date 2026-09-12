@@ -470,6 +470,29 @@ export async function cancelVoucherAction(
   // the real Rough/Metal stock (already issued/consumed, possibly into a
   // finished, sold piece) completely untouched, corrupting the same
   // accounting/stock sync the four checks above exist to protect.
+  // Phase 6: a Finished Jewellery Sale also posts as a plain "SALE"
+  // voucher (same reuse pattern as Rough/Metal Purchase reusing
+  // "PURCHASE" above) — without this check, cancelling it here would
+  // reverse the accounting (including the Dr COGS / Cr Finished Jewellery
+  // Inventory lines, since the generic reversal mirrors every original
+  // journal line) while leaving the FinishedJewellery item's own `status`
+  // stuck at SOLD and creating no stock movement — desyncing stock from
+  // accounting exactly like the checks above exist to prevent. Cancelling
+  // a linked sale MUST go through the domain-specific
+  // cancelFinishedJewellerySaleAction, which reuses this same
+  // posting.cancelVoucher() call and additionally reverses stock,
+  // atomically, in one transaction.
+  if (target?.voucherType === "SALE") {
+    const linkedSale = await prisma.finishedJewellerySale.findUnique({
+      where: { voucherId: parsed.data.voucherId },
+      select: { id: true },
+    });
+    if (linkedSale) {
+      return {
+        error: "This sale is linked to Finished Jewellery stock — cancel it from the Finished Stock page instead, so stock stays in sync.",
+      };
+    }
+  }
   if (target?.voucherType === "PURCHASE") {
     const roughLot = await prisma.roughLot.findUnique({
       where: { voucherId: parsed.data.voucherId },

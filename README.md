@@ -16,23 +16,34 @@ diamonds + manual other material), Receive Finished Jewellery (partial
 receipts, multi-output, fine-weight/diamond reconciliation),
 cancellation/reversal, all fully integrated into the Phase 2 accounting
 engine and Phase 3's diamond stock.
-Phase 5 (this branch, `phase-5-costing`): Jewellery Costing and
-Selling-Price Calculation — cost a real finished Phase 4 output
-("Actual" costing, sourced 1:1 from Phase 4's already-resolved figures,
-never re-derived) or build a pre-manufacturing quotation ("Estimate"
-costing, full multi-line metal/diamond/other-material/labour form),
-suggested selling price via markup-on-cost or target-margin-on-price,
-GST, discount, selling expenses, an immutable Finalized snapshot with
-revisions, and a customer-facing quotation that never reveals cost or
-profit. Informational only — never posts a Voucher/JournalEntry/
-StockMovement.
+Phase 5: Jewellery Costing and Selling-Price Calculation — cost a real
+finished Phase 4 output ("Actual" costing, sourced 1:1 from Phase 4's
+already-resolved figures, never re-derived) or build a pre-
+manufacturing quotation ("Estimate" costing, full multi-line metal/
+diamond/other-material/labour form), suggested selling price via
+markup-on-cost or target-margin-on-price, GST, discount, selling
+expenses, an immutable Finalized snapshot with revisions, and a
+customer-facing quotation that never reveals cost or profit.
+Informational only — never posts a Voucher/JournalEntry/StockMovement.
+Phase 6 (this branch, `phase-6-finished-sales`, Owner-approved as an
+extra business phase before deployment): Finished Jewellery Sales,
+Stock and actual COGS/Gross-Profit P&L — an immutable Finished
+Jewellery Stock ledger, selling a specific finished piece (single or
+multi-item, reusing the existing Sale/GST engine plus an atomic Dr
+COGS / Cr Inventory posting at the authoritative accounting cost —
+never Phase 5's suggested price), database-enforced one-sale-only
+protection, Owner-only cancellation/item-level return (sellable vs
+damaged)/customer refund, and an actual Gross Sales → Net Profit P&L
+alongside the existing provisional one. Simple UI for non-accounting
+staff; Staff never receives cost/COGS/margin data from the server.
 
-Full Phase 1–6 scope is defined in
-`../ZYNORALUXE_JEWELLERY_ERP_MASTER_PLAN.md` (the locked source of truth).
-This build implements **Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5**.
-See `PHASE_2_VERIFICATION.md`, `PHASE_3_VERIFICATION.md`,
-`PHASE_4_VERIFICATION.md`, and `PHASE_5_VERIFICATION.md` for the
-detailed verification reports.
+Full scope is defined in `../ZYNORALUXE_JEWELLERY_ERP_MASTER_PLAN.md`
+(the locked V1 source of truth, plus a Section 13 "Scope History"
+recording this Owner-approved Phase 6 addition). This build implements
+**Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5 + Phase 6**. See
+`PHASE_2_VERIFICATION.md`, `PHASE_3_VERIFICATION.md`,
+`PHASE_4_VERIFICATION.md`, `PHASE_5_VERIFICATION.md`, and
+`PHASE_6_VERIFICATION.md` for the detailed verification reports.
 
 ## Stack
 
@@ -128,6 +139,8 @@ Visit http://localhost:3000 — it redirects to `/login` when signed out.
 | `npm run db:migrate:deploy` | Apply existing migrations (CI/production) |
 | `npm run db:seed` | Create/update the Owner account from `.env` |
 | `npm run db:cleanup-login-rate-limits` | Deletes expired login rate-limit rows (safe to run any time; also happens opportunistically on successful logins — see "Login rate limiting" below) |
+| `npm run db:backfill-finished-jewellery-stock` | Idempotent one-time backfill: creates a `PRODUCED_IN` stock movement for any pre-Phase-6 `FinishedJewellery` output that doesn't have one yet. Safe to run any number of times. |
+| `npx tsx scripts/phase6LiveVerification.ts` | Real-database Phase 6 regression script — proves the full Sale/cancel/return/refund/concurrency chain against the live database using `PHASE6TEST`-prefixed rows, then deletes everything it created. Not wired into `package.json` (deliberately explicit to run). See `PHASE_6_VERIFICATION.md` §6, §11 and §13 (the real browser E2E pass covers the same ground end-to-end, live). |
 
 ## Database foundation
 
@@ -338,6 +351,42 @@ net realization, profit, margin) is **never a stored column** — it is
 always derived at read time from a sheet's own (frozen-once-Finalized)
 inputs by `computeCostSheetTotals()` in `src/lib/costing/calculations.ts`,
 guaranteeing immutability automatically.
+
+**Phase 6 tables** (migration
+`20260912093906_phase6_finished_jewellery_sales`), same
+Decimal-everywhere and immutable-ledger rules:
+
+- **`finished_jewellery`** gained a `status` column
+  (`AVAILABLE`/`SOLD`/`RETURNED_DAMAGED`) — the fast, concurrency-safe
+  gate every Phase 6 state transition claims via a conditional
+  `updateMany` (never a plain `update`), proven live under 10
+  simultaneous concurrent sale attempts (`PHASE_6_VERIFICATION.md`
+  §6/§17).
+- **`finished_jewellery_stock_movements`** — immutable ledger
+  (`PRODUCED_IN`/`SOLD_OUT`/`SALE_CANCELLED_IN`/`RETURNED_SELLABLE_IN`/
+  `RETURNED_DAMAGED_OUT`/`OWNER_ADJUSTMENT_IN`/`OWNER_ADJUSTMENT_OUT`),
+  each row snapshotting identity/weight/cost at that moment — no
+  update or delete path exists for it anywhere in the app.
+- **`finished_jewellery_sales`** / **`finished_jewellery_sale_lines`**
+  — one Sale (reuses the existing `SALE` voucher type, same reuse
+  pattern as Rough/Metal Purchase reusing `PURCHASE`) with one line per
+  item, each line freezing its own taxable value/tax/COGS forever
+  (`@@unique([saleId, finishedJewelleryId])` prevents a duplicate line
+  within one sale).
+- **`finished_jewellery_returns`** / **`finished_jewellery_return_lines`**
+  — item-level returns; `saleLineId` is `UNIQUE`, so a database
+  constraint (not just an application check) makes returning the same
+  line twice impossible.
+- **`4100` Sales Returns**, **`5200` Finished Jewellery COGS**, **`5300`
+  Damaged Jewellery Loss** — three new Chart-of-Accounts entries (see
+  `SYSTEM_ACCOUNT_CODES`), plus `SALE_RETURN`/`CUSTOMER_REFUND` added
+  to the existing `VoucherType` enum.
+
+The authoritative accounting inventory cost for any `FinishedJewellery`
+output is **`metalCost + diamondCost + labourAllocated`** — never
+`totalCost` (which includes Phase 4's deliberately display-only
+`otherMaterialCost`, confirmed by code audit to never be posted to any
+account). See `PHASE_6_VERIFICATION.md` §1 for the full audit trail.
 
 ## Accounting workflow (Phase 2)
 
@@ -1046,6 +1095,30 @@ rejected the same way a Staff click would be.
   branch of `src/app/(app)/dashboard/page.tsx` — a Staff-rendered
   Dashboard request never even queries for costing data.
 
+## Permissions (Phase 6 additions)
+
+- **Staff**: may post a Finished Jewellery Sale (matches the existing
+  Sale permission — `createFinishedJewellerySaleAction` calls
+  `requireUser()`), including an optional Costing-sourced price
+  suggestion (a *selling price*, not cost data). Never receives
+  inventory cost, COGS, markup, margin, profit, or Cost-Sheet data from
+  the server — `listFinishedJewelleryStock()` runs a different Prisma
+  `select` entirely when the caller isn't Owner, so those fields are
+  never queried, not merely hidden in the UI.
+- **Owner-only** (`requireOwner()` in every action in
+  `src/app/actions/finishedSales.ts`): sale cancellation, item-level
+  return, customer refund, manual finished-stock adjustment, the
+  Phase 5 vs Phase 6 comparison view (`getPhase5VsPhase6ComparisonAction`),
+  and the new "Finished Sales & Profit" report / the extended Profit &
+  Loss figures. The generic Accounting "Cancel voucher" action also
+  refuses a `SALE` voucher linked to a `FinishedJewellerySale`,
+  directing the Owner to the domain-specific cancellation instead of
+  letting stock desync from accounting (see `PHASE_6_VERIFICATION.md`
+  §7). Every one of these boundaries was verified with a real Staff
+  browser session, not just mocked action-layer tests — including a
+  captured-and-replayed real wire request and a full network-payload
+  audit for cost-field absence (`PHASE_6_VERIFICATION.md` §14).
+
 ## Authentication & authorization model
 
 - `src/lib/auth/password.ts` — bcrypt hashing (12 rounds).
@@ -1060,8 +1133,14 @@ rejected the same way a Staff click would be.
   `/unauthorized`) when the check fails.
 - `src/proxy.ts` (Next 16's renamed `middleware.ts`) does a fast,
   cookie-only "is there a session at all" check before a protected route
-  even renders. It intentionally cannot check role (that needs the
-  database) — Settings being Owner-only is enforced authoritatively by
+  even renders. It intentionally cannot check role or `isActive` (both
+  need the database) — and, since a live Phase 6 test found a real
+  redirect-loop bug from an earlier version of this file trying to make
+  an "already logged in" decision on the JWT signal alone, it no longer
+  redirects an authenticated visitor away from `/login` either; that
+  decision is made once, correctly, by `/login`'s own `getCurrentUser()`
+  DB check (see `PHASE_6_VERIFICATION.md` §17.2). Settings being
+  Owner-only is enforced authoritatively by
   `requireOwner()` inside `src/app/(app)/settings/page.tsx`, not by hiding
   the link in navigation. It also sets a per-request
   Content-Security-Policy and the rest of the security headers — see
@@ -1205,17 +1284,42 @@ tooling — not the product code — that had left orphaned
 `MetalStockMovement` and job/receipt `Voucher` rows silently inflating
 real ledger/stock figures.
 
+## Known Phase 6 limitations
+
+- **CSV export is client-side**, same as every earlier phase.
+- **Reports are not paginated** beyond a reasonable cap (`take: 200`–
+  `500`), matching the same known limitation as Phase 2–5.
+- A minor, pre-existing Phase 3/4 data-provenance gap (rough pieces
+  created via "returned unused rough carat" lack `lotId`/
+  `returnedFromReceiptId`/`returnedFromJobId`) was found again during
+  this pass's live testing — confirmed still present, out of Phase 6's
+  scope, reported for awareness only.
+
+An earlier revision of this section listed "no interactive-browser E2E"
+and "no Phase-5-vs-Phase-6 comparison view" as limitations. Both were
+closed in the gap-closure pass: real browser automation (Owner and
+Staff, desktop and mobile, including a genuine 2-tab concurrent-sale
+race and a captured-and-replayed Owner-only wire request under a Staff
+session) and the Phase 5 vs Phase 6 comparison view are both now built
+and verified live. See `PHASE_6_VERIFICATION.md` for the full
+verification report, including the exact accounting entries, exact-
+paise (no-tolerance) reconciliation, the damaged-return stock-equation
+proof, three real bugs found and fixed during that pass, and full
+test-data cleanup proof.
+
 ## What's deliberately not built yet
 
-Accounting, Diamond, Jewellery Jobs, and Costing are real, working
-business logic. Sale-of-jewellery / invoicing integration, deployment,
-and marketplace/e-commerce integration are Phase 6+ and not started.
+Accounting, Diamond, Jewellery Jobs, Costing, and Finished Jewellery
+Sale/Stock/COGS/P&L (Phase 6) are real, working business logic.
+Deployment and marketplace/e-commerce integration are not started.
 
-**Phase 6, approved by the Owner, is Finished Jewellery Sale → Stock →
+**Phase 6, approved by the Owner, was Finished Jewellery Sale → Stock →
 COGS/P&L integration** — closing the intentionally-excluded Version 1
-gap where an Accounting Sale voucher doesn't reference, consume, or
-reduce `FinishedJewellery` stock, and Profit & Loss stays provisional
-(no automatic cost-of-goods matching). This is to be built *before*
-production deployment. **Not started** — no schema, Server Action, or
-UI for it exists yet; see `V1_FINAL_ACCEPTANCE.md` §16 for the full
-record of the decision.
+gap where an Accounting Sale voucher didn't reference, consume, or
+reduce `FinishedJewellery` stock, and Profit & Loss stayed provisional
+(no automatic cost-of-goods matching). **Built and live-verified against the real database and a real
+browser this pass** (branch `phase-6-finished-sales`, not yet
+committed/merged/deployed) — see `PHASE_6_VERIFICATION.md` for the
+full record, including the Phase 5 vs Phase 6 comparison view, the
+Owner and Staff browser E2E passes, and `V1_FINAL_ACCEPTANCE.md` §16
+for the original decision to add Phase 6.

@@ -104,9 +104,19 @@ export default async function proxy(request: NextRequest) {
     return withSecurityHeaders(NextResponse.redirect(loginUrl), nonce);
   }
 
-  if (pathname === "/login" && hasValidSession) {
-    return withSecurityHeaders(NextResponse.redirect(new URL("/dashboard", request.url)), nonce);
-  }
+  // Deliberately NOT redirecting an already-logged-in visitor away from
+  // /login here: `hasValidSession` only checks the JWT's signature/expiry,
+  // not whether the account is still active in the database. If this
+  // proxy redirected /login -> /dashboard on that weaker signal alone, a
+  // deactivated user's still-unexpired cookie would bounce them straight
+  // back to /dashboard, whose own requireUser() (an authoritative DB
+  // check) redirects them right back to /login — an infinite redirect
+  // loop the browser can only escape via ERR_TOO_MANY_REDIRECTS (found via
+  // a real deactivated-Staff-session browser test). The /login page
+  // itself already redirects an active, still-logged-in user to
+  // /dashboard using the authoritative `getCurrentUser()` DB check (see
+  // src/app/login/page.tsx) — that is the only place this redirect is
+  // safe to make, since it's the one that actually knows isActive.
 
   // Set on the REQUEST headers too (not just the response) — this is what
   // lets Next.js read `x-nonce`/the CSP back out during rendering and

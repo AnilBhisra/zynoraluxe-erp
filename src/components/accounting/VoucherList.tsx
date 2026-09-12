@@ -24,6 +24,8 @@ const TYPE_LABELS: Record<VoucherListRow["voucherType"], string> = {
   DIAMOND_RECEIPT: "Diamond Receipt",
   JEWELLERY_ISSUE: "Jewellery Issue",
   JEWELLERY_RECEIPT: "Jewellery Receipt",
+  SALE_RETURN: "Sale Return",
+  CUSTOMER_REFUND: "Customer Refund",
 };
 
 function formatMoney(value: string) {

@@ -1242,10 +1242,12 @@ export async function receiveFinishedJewellery(
     const metalCost = metalAllocation.find((a) => a.key === String(i))?.amount ?? ZERO;
     const otherCost = otherMaterialReallocation.get(`new:${i}`) ?? ZERO;
     const labourAllocated = chargesAllocation.find((a) => a.key === String(i))?.amount ?? ZERO;
+    const outputDiamondIssueLines = issueLines.filter((l) => resolved.input.diamondIds.includes(l.polishedDiamondId));
     const diamondCostForOutput = round2(
-      issueLines
-        .filter((l) => resolved.input.diamondIds.includes(l.polishedDiamondId))
-        .reduce((sum, l) => sum.plus(new Decimal(l.costAtIssue)), ZERO)
+      outputDiamondIssueLines.reduce((sum, l) => sum.plus(new Decimal(l.costAtIssue)), ZERO)
+    );
+    const totalCaratForOutput = round3(
+      outputDiamondIssueLines.reduce((sum, l) => sum.plus(new Decimal(l.caratAtIssue)), ZERO)
     );
     const totalCost = round2(metalCost.plus(diamondCostForOutput).plus(otherCost).plus(labourAllocated));
 
@@ -1275,6 +1277,37 @@ export async function receiveFinishedJewellery(
       },
     });
     createdOutputs.push(output);
+
+    // Phase 6: every FinishedJewellery output enters the stock ledger
+    // exactly once, atomically with its own creation. `costValue` is the
+    // AUTHORITATIVE accounting inventory cost — metalCost + diamondCost +
+    // labourAllocated, deliberately NOT totalCost (which wrongly includes
+    // display-only otherMaterialCost — see the header comment on
+    // FinishedJewellery in schema.prisma). This is also why it is safe to
+    // snapshot here, at creation time, even though a LATER receipt on this
+    // same (still-open) job may retroactively rewrite this output's
+    // otherMaterialCost/totalCost (see the "priorOutputs" reallocation
+    // above): that reallocation only ever changes otherMaterialCost, which
+    // this figure never included in the first place.
+    const inventoryCost = round2(metalCost.plus(diamondCostForOutput).plus(labourAllocated));
+    await tx.finishedJewelleryStockMovement.create({
+      data: {
+        type: "PRODUCED_IN",
+        finishedJewelleryId: output.id,
+        pieces: output.quantity,
+        costValue: inventoryCost.toFixed(2),
+        finishedCodeSnapshot: output.finishedCode,
+        jewelleryTypeSnapshot: output.jewelleryType,
+        metalTypeSnapshot: output.metalType,
+        purityDisplayNameSnapshot: (await tx.metalPurity.findUnique({ where: { id: output.purityId } }))!.displayName,
+        netMetalWeightSnapshot: output.netMetalWeight,
+        fineMetalWeightSnapshot: output.fineMetalWeight,
+        totalCaratSnapshot: totalCaratForOutput.toFixed(3),
+        jobCodeSnapshot: job.jobCode,
+        sourceDocument: receiptCode,
+        createdByUserId: input.createdByUserId,
+      },
+    });
   }
 
   // ---- Retroactively correct earlier receipts' outputs' other-material

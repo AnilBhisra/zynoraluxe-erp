@@ -46,7 +46,8 @@ supply on the Owner's behalf). The Owner should personally review the
 screens listed at the end of this report before final sign-off, and
 separately review the Owner's own approved decision to build **Finished
 Jewellery Sale → Stock → COGS/P&L** as a new Phase 6 before deployment
-(§16) — not started, per explicit instruction.
+(§16 — not started at the time this report was written; since built
+and live-verified, see `PHASE_6_VERIFICATION.md`).
 
 ---
 
@@ -1068,6 +1069,14 @@ that the decision was made and why, so a future session (or the
 Owner, reviewing this report) has the context without needing it
 re-explained.
 
+> **Update (later session, this file's own history left unedited
+> above):** Phase 6 was subsequently built, on branch
+> `phase-6-finished-sales` based on this report's own locked commit
+> `5912ddb4011a3a2f610fd956a41351ad0a7259b9`, and live-verified against
+> the real database. See `PHASE_6_VERIFICATION.md` for the full record.
+> Not committed/merged/deployed as of that report either — awaiting
+> Owner review, same as this one was at the time it was written.
+
 ---
 
 ## 17. Gap-closure pass — full automated results (supersedes §10's numbers)
@@ -1193,8 +1202,10 @@ something an audit pass can supply on the Owner's behalf**:
    environment.
 
 Separately, and by explicit instruction, **Phase 6 (Finished Jewellery
-Sale → Stock → COGS/P&L) has not been started** — recorded in §16 as
-an Owner-approved decision for future work, before deployment.
+Sale → Stock → COGS/P&L) had not been started** as of this report —
+recorded in §16 as an Owner-approved decision for future work, before
+deployment. (Since built and live-verified in a later session; see the
+update note on §16 and `PHASE_6_VERIFICATION.md`.)
 
 No commit, push, merge, tag, or deploy was performed from this branch
 at any point in this pass, per explicit instruction.

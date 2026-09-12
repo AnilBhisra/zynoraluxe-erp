@@ -67,7 +67,7 @@ export type CostSheetListRow = {
   estimatedProfit: Decimal;
 };
 
-function toTotalsInput(sheet: {
+export function toTotalsInput(sheet: {
   metalLines: { amount: Decimal | string }[];
   diamondLines: { amount: Decimal | string }[];
   otherMaterialLines: { amount: Decimal | string }[];

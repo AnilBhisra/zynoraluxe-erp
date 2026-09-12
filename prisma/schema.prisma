@@ -92,6 +92,11 @@ model User {
   costSheetsArchived     CostSheet[]           @relation("CostSheetArchivedBy")
   costSheetAuditEvents   CostSheetAuditEvent[] @relation("CostSheetAuditEventUser")
 
+  finishedJewelleryStockMovementsCreated FinishedJewelleryStockMovement[] @relation("FinishedJewelleryStockMovementCreatedBy")
+  finishedJewellerySalesCreated          FinishedJewellerySale[]          @relation("FinishedJewellerySaleCreatedBy")
+  finishedJewellerySalesCancelled        FinishedJewellerySale[]          @relation("FinishedJewellerySaleCancelledBy")
+  finishedJewelleryReturnsCreated        FinishedJewelleryReturn[]        @relation("FinishedJewelleryReturnCreatedBy")
+
   @@map("users")
 }
 
@@ -176,6 +181,8 @@ model Party {
   jewelleryJobsAsKarigar   JewelleryJob[]  @relation("JewelleryJobKarigar")
 
   costSheetsAsCustomer CostSheet[] @relation("CostSheetCustomer")
+
+  finishedJewellerySalesAsCustomer FinishedJewellerySale[] @relation("FinishedJewellerySaleCustomer")
 
   @@index([type])
   @@index([name])
@@ -271,6 +278,15 @@ enum VoucherType {
   DIAMOND_RECEIPT
   JEWELLERY_ISSUE
   JEWELLERY_RECEIPT
+  // Phase 6 — a Finished Jewellery Sale posts as a plain "SALE" (same
+  // reasoning as Rough/Metal Purchase reusing "PURCHASE": no dedicated
+  // type, linkage detected via FinishedJewellerySale.voucherId), but its
+  // partial, snapshot-computed item-level return and its customer refund
+  // are NOT a full mirror-reversal, so each gets its own real type rather
+  // than overloading REVERSAL (which the existing cancelVoucher() always
+  // interprets as "mirror every original line exactly").
+  SALE_RETURN
+  CUSTOMER_REFUND
 }
 
 // Concurrency-safe voucher numbering: one row per (type, financial year),
@@ -357,6 +373,13 @@ model Voucher {
   metalPurchase        MetalPurchase?
   jewelleryJobIssue    JewelleryJob?
   jewelleryReceiptPost JewelleryReceipt? @relation("JewelleryReceiptPosting")
+
+  // Phase 6 — a Finished Jewellery Sale's own SALE voucher, its (optional)
+  // full-cancellation REVERSAL voucher, and a return's SALE_RETURN
+  // voucher each link back here one-to-one.
+  finishedJewellerySale               FinishedJewellerySale?   @relation("FinishedJewellerySaleVoucher")
+  finishedJewellerySaleCancellationOf FinishedJewellerySale?   @relation("FinishedJewellerySaleCancellationVoucher")
+  finishedJewelleryReturnPost         FinishedJewelleryReturn? @relation("FinishedJewelleryReturnVoucher")
 
   @@index([voucherType])
   @@index([partyId])
@@ -1281,8 +1304,8 @@ enum QcStatus {
   REJECTED
 }
 
-// Completed jewellery output. Phase 5 will connect this to Sale/COGS —
-// no Sold/selling-price/profit fields exist here yet, deliberately.
+// Completed jewellery output. Phase 6 connects this to Sale/Stock/COGS —
+// see `status` and the FinishedJewelleryStockMovement ledger below.
 model FinishedJewellery {
   id           String @id @default(cuid())
   finishedCode String @unique
@@ -1307,6 +1330,21 @@ model FinishedJewellery {
   // Allocated across outputs when a receipt has more than one — see
   // src/lib/jewellery/allocation.ts. Always sums exactly back to the
   // receipt's resolved total.
+  //
+  // IMPORTANT (Phase 6 audit finding — see PHASE_6_VERIFICATION.md §1):
+  // `otherMaterialCost` is DISPLAY-ONLY. It is never posted through
+  // accounting at either Issue Materials time or Receive time (confirmed
+  // in src/lib/jewellery/posting.ts — the other-material lines create no
+  // stock movement and no journal line at issue; `finishedInventoryDebit`
+  // at receive time is `finishedPortionCost + totalCharges + setDiamondCost`
+  // only). The authoritative accounting inventory carrying cost for ANY
+  // Phase 6 COGS/inventory posting is therefore ALWAYS
+  // `metalCost + diamondCost + labourAllocated`
+  // (equivalently `totalCost - otherMaterialCost`) — NEVER `totalCost`
+  // itself. Phase 6 never reads `totalCost` for COGS; it is preserved
+  // here unchanged, still correct for Phase 5 Costing's own full
+  // business-costing purposes, which legitimately does want
+  // otherMaterialCost included.
   metalCost         Decimal @default(0) @db.Decimal(14, 2)
   diamondCost       Decimal @default(0) @db.Decimal(14, 2)
   otherMaterialCost Decimal @default(0) @db.Decimal(14, 2)
@@ -1317,17 +1355,313 @@ model FinishedJewellery {
   qcStatus     QcStatus @default(PASSED)
   notes        String?
 
+  // Phase 6. Derived-but-stored (same pattern as RoughPiece.status /
+  // PolishedDiamond.status): the FinishedJewelleryStockMovement ledger
+  // below is the immutable audit trail; this column is the fast,
+  // concurrency-safe gate a Sale's atomic conditional UPDATE checks
+  // against (`UPDATE ... WHERE status = 'AVAILABLE'`), not merely a
+  // pre-check read in application code — see
+  // src/lib/jewellery/finishedSalesPosting.ts.
+  status FinishedJewelleryStockStatus @default(AVAILABLE)
+
   createdByUserId String
   createdBy       User   @relation("FinishedJewelleryCreatedBy", fields: [createdByUserId], references: [id])
 
   createdAt DateTime @default(now())
 
-  diamonds   JewelleryDiamondIssueLine[]
-  costSheets CostSheet[]
+  diamonds       JewelleryDiamondIssueLine[]
+  costSheets     CostSheet[]
+  stockMovements FinishedJewelleryStockMovement[]
+  saleLines      FinishedJewellerySaleLine[]
 
   @@index([jobId])
   @@index([receiptId])
+  @@index([status])
   @@map("finished_jewellery")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6 — Finished Jewellery Sales, Stock, COGS and Actual P&L
+// ---------------------------------------------------------------------------
+//
+// See PHASE_6_VERIFICATION.md for the full design writeup and the source
+// audit that shaped it. Short version:
+//
+//  - Every FinishedJewellery output enters this ledger exactly once, via a
+//    PRODUCED_IN movement created atomically inside
+//    src/lib/jewellery/posting.ts's receiveFinishedJewellery (and, for any
+//    output that already existed before this migration, an idempotent
+//    backfill script — see scripts/backfillFinishedJewelleryStock.ts).
+//  - `FinishedJewellery.status` is the fast, concurrency-safe gate a Sale
+//    checks with an atomic conditional UPDATE
+//    (`WHERE status = 'AVAILABLE'`); this ledger is the immutable audit
+//    trail, mirroring StockMovement/MetalStockMovement's own established
+//    pattern in this codebase.
+//  - `costValue` on every movement is ALWAYS the authoritative accounting
+//    inventory cost (`metalCost + diamondCost + labourAllocated` —
+//    NEVER `totalCost`, which wrongly includes display-only
+//    `otherMaterialCost` — see the comment on FinishedJewellery above).
+
+enum FinishedJewelleryStockStatus {
+  AVAILABLE
+  SOLD
+  // A damaged/not-for-resale return lands here, permanently out of the
+  // sellable pool — never AVAILABLE again from this status. There is no
+  // separate "returned sellable" status: that transition goes straight
+  // back to AVAILABLE, since a sellable-returned piece is, from the
+  // stock ledger's point of view, simply available again.
+  RETURNED_DAMAGED
+}
+
+enum FinishedJewelleryStockMovementType {
+  PRODUCED_IN
+  SOLD_OUT
+  SALE_CANCELLED_IN
+  RETURNED_SELLABLE_IN
+  // Despite the "_OUT" suffix (kept for naming consistency with the other
+  // event types, not renamed post-launch to avoid an enum-rename migration
+  // on the live database), this event's AVAILABILITY delta is ZERO, not
+  // -1 — the item already left the Available pool via its own earlier
+  // SOLD_OUT movement. A damaged return only reclassifies an
+  // already-unavailable item's terminal lifecycle status (Sold ->
+  // Returned-Damaged) and its cost (COGS -> Damaged Jewellery Loss); it
+  // never removes the same physical item from stock a second time. See
+  // AVAILABILITY_DELTA in src/lib/jewellery/finishedSalesPosting.ts and
+  // PHASE_6_VERIFICATION.md §6 for the full reconciliation proof.
+  RETURNED_DAMAGED_OUT
+  // Owner-only, exceptional, fully audited (reason required at the
+  // application layer) — see finishedStockAdjustmentAction. Never used by
+  // any normal Sale/Return/Cancel flow.
+  OWNER_ADJUSTMENT_IN
+  OWNER_ADJUSTMENT_OUT
+}
+
+// Immutable, append-only — never updated or deleted after insert, same
+// principle as StockMovement/MetalStockMovement. `pieces`/`costValue` are
+// always positive magnitudes; direction is implied entirely by `type`
+// (…_IN adds to available stock or reinstates it, …_OUT removes it) —
+// this is the single source of truth the Finished Stock UI and reports
+// derive from, never a manually-editable balance.
+model FinishedJewelleryStockMovement {
+  id   String                             @id @default(cuid())
+  type FinishedJewelleryStockMovementType
+
+  finishedJewelleryId String
+  finishedJewellery   FinishedJewellery @relation(fields: [finishedJewelleryId], references: [id])
+
+  pieces    Int     @default(1)
+  costValue Decimal @db.Decimal(14, 2)
+
+  // Identity snapshot at the moment of THIS movement — immutable,
+  // independent of any later edit to the FinishedJewellery row or its
+  // Metal/Purity master, so history can never be silently rewritten.
+  finishedCodeSnapshot      String
+  jewelleryTypeSnapshot     JewelleryType
+  metalTypeSnapshot         MetalType
+  purityDisplayNameSnapshot String
+  netMetalWeightSnapshot    Decimal       @db.Decimal(10, 3)
+  fineMetalWeightSnapshot   Decimal       @db.Decimal(10, 3)
+  totalCaratSnapshot        Decimal       @default(0) @db.Decimal(10, 3)
+  jobCodeSnapshot           String
+
+  saleId String?
+  sale   FinishedJewellerySale? @relation(fields: [saleId], references: [id])
+
+  returnId String?
+  return   FinishedJewelleryReturn? @relation(fields: [returnId], references: [id])
+
+  sourceDocument String
+
+  reversalOfMovementId String?                         @unique
+  reversalOfMovement   FinishedJewelleryStockMovement? @relation("FinishedJewelleryMovementReversal", fields: [reversalOfMovementId], references: [id])
+  reversedByMovement   FinishedJewelleryStockMovement? @relation("FinishedJewelleryMovementReversal")
+
+  createdByUserId String
+  createdBy       User   @relation("FinishedJewelleryStockMovementCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([finishedJewelleryId])
+  @@index([type])
+  @@index([saleId])
+  @@index([returnId])
+  @@map("finished_jewellery_stock_movements")
+}
+
+enum FinishedJewellerySaleStatus {
+  POSTED
+  CANCELLED
+}
+
+// One row per Finished Jewellery Sale — a thin domain wrapper around a
+// plain "SALE" Voucher (same reuse pattern as Rough/Metal Purchase
+// reusing "PURCHASE": no dedicated VoucherType; linkage is this table's
+// own voucherId). The generic cancelVoucherAction is blocked for any
+// SALE voucher this table references — see src/app/actions/vouchers.ts.
+model FinishedJewellerySale {
+  id       String @id @default(cuid())
+  saleCode String @unique
+
+  customerId String
+  customer   Party  @relation("FinishedJewellerySaleCustomer", fields: [customerId], references: [id])
+
+  saleDate DateTime
+
+  voucherId String  @unique
+  voucher   Voucher @relation("FinishedJewellerySaleVoucher", fields: [voucherId], references: [id])
+
+  gstTreatment GstTreatment @default(NONE)
+
+  // Snapshot totals at post time — always re-derivable from `lines`, kept
+  // here as a fast, consistent read for lists/reports (same "store the
+  // total, derive from lines when it matters" pattern InvoiceLine/Voucher
+  // already use elsewhere in this codebase).
+  subtotal      Decimal @db.Decimal(14, 2)
+  discountTotal Decimal @default(0) @db.Decimal(14, 2)
+  taxableTotal  Decimal @db.Decimal(14, 2)
+  taxTotal      Decimal @default(0) @db.Decimal(14, 2)
+  grandTotal    Decimal @db.Decimal(14, 2)
+  // Sum of every line's own cogsAmount — the authoritative accounting
+  // inventory cost moved out for this whole sale.
+  cogsTotal     Decimal @db.Decimal(14, 2)
+
+  status FinishedJewellerySaleStatus @default(POSTED)
+
+  cancelledAt           DateTime?
+  cancelledByUserId     String?
+  cancelledBy           User?     @relation("FinishedJewellerySaleCancelledBy", fields: [cancelledByUserId], references: [id])
+  cancellationReason    String?
+  cancellationVoucherId String?   @unique
+  cancellationVoucher   Voucher?  @relation("FinishedJewellerySaleCancellationVoucher", fields: [cancellationVoucherId], references: [id])
+
+  idempotencyKey String? @unique
+
+  createdByUserId String
+  createdBy       User   @relation("FinishedJewellerySaleCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  lines          FinishedJewellerySaleLine[]
+  stockMovements FinishedJewelleryStockMovement[]
+  returns        FinishedJewelleryReturn[]
+
+  @@index([customerId])
+  @@index([status])
+  @@map("finished_jewellery_sales")
+}
+
+enum FinishedJewellerySaleLineReturnStatus {
+  NONE
+  RETURNED_SELLABLE
+  RETURNED_DAMAGED
+}
+
+// One row per sold item. A sale of N pieces has N lines, each pointing at
+// exactly one FinishedJewellery (never split further — Phase 4 never
+// produces a divisible output). Every money figure here is a FROZEN
+// snapshot: a later return, or any report, must always compute from
+// THESE stored figures, never by re-deriving from current GST
+// rates/prices/masters/Costing settings.
+model FinishedJewellerySaleLine {
+  id     String                @id @default(cuid())
+  saleId String
+  sale   FinishedJewellerySale @relation(fields: [saleId], references: [id])
+
+  finishedJewelleryId String
+  finishedJewellery   FinishedJewellery @relation(fields: [finishedJewelleryId], references: [id])
+
+  itemDescriptionSnapshot String
+
+  sellingPrice   Decimal @db.Decimal(14, 2)
+  discountShare  Decimal @default(0) @db.Decimal(14, 2)
+  taxableValue   Decimal @db.Decimal(14, 2)
+  gstRatePercent Decimal @default(0) @db.Decimal(5, 2)
+  taxAmount      Decimal @default(0) @db.Decimal(14, 2)
+  lineTotal      Decimal @db.Decimal(14, 2)
+  // The authoritative accounting inventory cost this specific line moved
+  // from Finished Jewellery Inventory to COGS — snapshotted from
+  // FinishedJewellery.metalCost + diamondCost + labourAllocated at the
+  // moment of sale (see the header comment on FinishedJewellery).
+  cogsAmount     Decimal @db.Decimal(14, 2)
+
+  returnStatus FinishedJewellerySaleLineReturnStatus @default(NONE)
+
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  returnLine FinishedJewelleryReturnLine?
+
+  // One unreturned sale line per (sale, item) — the same item CAN appear
+  // in a later, separate sale after a legitimate sellable return (a new
+  // FinishedJewellerySale row, hence a new saleId), so this is not a
+  // blanket "never sold twice" constraint by itself — that guarantee
+  // comes from the atomic conditional status UPDATE at sale-posting time
+  // (see finishedSalesPosting.ts). This constraint exists to make a
+  // buggy caller that tries to add the same item twice to ONE sale's
+  // line list fail loudly at the database level.
+  @@unique([saleId, finishedJewelleryId])
+  @@index([finishedJewelleryId])
+  @@map("finished_jewellery_sale_lines")
+}
+
+// One row per return event (an Owner may return several items from one
+// sale across several separate visits — each is its own
+// FinishedJewelleryReturn, its own voucher, its own audit trail).
+model FinishedJewelleryReturn {
+  id         String                @id @default(cuid())
+  returnCode String                @unique
+  saleId     String
+  sale       FinishedJewellerySale @relation(fields: [saleId], references: [id])
+  returnDate DateTime
+
+  voucherId String  @unique
+  voucher   Voucher @relation("FinishedJewelleryReturnVoucher", fields: [voucherId], references: [id])
+
+  reason String
+
+  idempotencyKey String? @unique
+
+  createdByUserId String
+  createdBy       User   @relation("FinishedJewelleryReturnCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  lines          FinishedJewelleryReturnLine[]
+  stockMovements FinishedJewelleryStockMovement[]
+
+  @@index([saleId])
+  @@map("finished_jewellery_returns")
+}
+
+enum FinishedJewelleryReturnDisposition {
+  SELLABLE
+  DAMAGED
+}
+
+// One row per returned line. `saleLineId` is UNIQUE — a database-enforced
+// invariant (not just an application check) that the same sold item can
+// never be returned twice.
+model FinishedJewelleryReturnLine {
+  id       String                  @id @default(cuid())
+  returnId String
+  return   FinishedJewelleryReturn @relation(fields: [returnId], references: [id])
+
+  saleLineId String                    @unique
+  saleLine   FinishedJewellerySaleLine @relation(fields: [saleLineId], references: [id])
+
+  disposition FinishedJewelleryReturnDisposition
+
+  // Reversal amounts — copied FROM the original sale line's own frozen
+  // figures (never recomputed against current rates/prices), so a return
+  // always reverses EXACTLY what was originally charged.
+  reversedTaxableValue Decimal @db.Decimal(14, 2)
+  reversedTaxAmount    Decimal @default(0) @db.Decimal(14, 2)
+  reversedTotal        Decimal @db.Decimal(14, 2)
+  reversedCogsAmount   Decimal @db.Decimal(14, 2)
+
+  createdAt DateTime @default(now())
+
+  @@map("finished_jewellery_return_lines")
 }
 
 // One row per (entityType, calendar year) for human-readable Phase 4
@@ -1338,6 +1672,9 @@ enum JewellerySequenceType {
   JEWELLERY_JOB
   JEWELLERY_RECEIPT
   FINISHED_JEWELLERY
+  // Phase 6
+  FINISHED_JEWELLERY_SALE
+  FINISHED_JEWELLERY_RETURN
 }
 
 model JewellerySequence {

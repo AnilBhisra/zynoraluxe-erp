@@ -230,7 +230,12 @@ type InvoiceVoucherInput = CommonVoucherInput & {
   lines: InvoiceLineInput[];
 };
 
-function computeLineTotalsForAll(lines: InvoiceLineInput[]) {
+/** Exported so the Phase 6 Finished Jewellery Sale posting engine can
+ * compute the exact same per-line taxable/tax/total breakdown BEFORE
+ * calling postSale, to snapshot onto its own FinishedJewellerySaleLine
+ * rows — postSale's own return value stays `Voucher` only (unchanged),
+ * to avoid touching its existing caller in src/app/actions/vouchers.ts. */
+export function computeLineTotalsForAll(lines: InvoiceLineInput[]) {
   const computed = lines.map((line) => ({
     line,
     totals: computeInvoiceLineTotals({
@@ -337,7 +342,18 @@ export async function postPurchase(tx: Tx, input: InvoiceVoucherInput) {
   return voucher;
 }
 
-export async function postSale(tx: Tx, input: InvoiceVoucherInput) {
+export async function postSale(
+  tx: Tx,
+  input: InvoiceVoucherInput & {
+    /** Phase 6: lets a Finished Jewellery Sale append its Dr COGS / Cr
+     * Finished Jewellery Inventory lines to this SAME voucher's SAME
+     * balanced-lines call, so the whole sale — revenue, GST, and
+     * inventory/COGS — is one atomic posting, not two. Every other
+     * caller (plain accounting-only Sale) omits this and behaves exactly
+     * as before. */
+    additionalLines?: JournalLineInput[];
+  }
+) {
   if (input.lines.length === 0) {
     throw new PostingError("A sale must have at least one item line.");
   }
@@ -391,6 +407,10 @@ export async function postSale(tx: Tx, input: InvoiceVoucherInput) {
         description: "Sale settled immediately",
       }
     );
+  }
+
+  if (input.additionalLines) {
+    lines.push(...input.additionalLines);
   }
 
   await insertBalancedJournalLines(tx, voucher.id, lines);
@@ -468,6 +488,60 @@ export async function postPaymentReceived(
       credit: amount,
       description: "Payment received",
     },
+  ]);
+
+  return voucher;
+}
+
+/**
+ * Phase 6: refunds a customer CASH/BANK for a credit they're owed (e.g.
+ * after a sales return) — the mirror-image of postPaymentReceived, not a
+ * reuse of postPaymentGiven (which targets ACCOUNTS_PAYABLE and is for
+ * paying a Supplier/Karigar, a completely different relationship). A
+ * customer's own credit balance already displays as a negative net across
+ * the same AR/AP grouping getPartyBalances uses (positive = they owe us,
+ * negative = we owe them) — crediting Accounts Receivable on a return is
+ * what makes that happen; this function is the corresponding cash-out
+ * leg: Dr Accounts Receivable (bringing the party's balance back toward
+ * zero from negative) / Cr the payment account (cash/bank leaving).
+ *
+ * The caller is responsible for checking the refund amount does not
+ * exceed the party's actual available credit — see
+ * getPartyBalances/getPartyLedger — since "how much credit is available"
+ * depends on the party's FULL AR/AP history, not anything this narrow
+ * posting function alone can safely determine.
+ */
+export async function postCustomerRefund(
+  tx: Tx,
+  input: CommonVoucherInput & {
+    partyId: string;
+    paymentAccountId: string;
+    amount: DecimalInput;
+  }
+) {
+  const amount = round2(input.amount);
+  if (!amount.greaterThan(0)) throw new PostingError("Amount must be greater than zero.");
+
+  const paymentAccount = await tx.paymentAccount.findUnique({
+    where: { id: input.paymentAccountId },
+    select: { account: { select: { code: true } } },
+  });
+  if (!paymentAccount) throw new PostingError("Payment account not found.");
+
+  const voucher = await createVoucherHeader(tx, input, "CUSTOMER_REFUND", {
+    amount,
+    partyId: input.partyId,
+    paymentAccountId: input.paymentAccountId,
+  });
+
+  await insertBalancedJournalLines(tx, voucher.id, [
+    {
+      accountCode: SYSTEM_ACCOUNT_CODES.ACCOUNTS_RECEIVABLE,
+      partyId: input.partyId,
+      debit: amount,
+      description: "Customer refund",
+    },
+    { accountCode: paymentAccount.account.code, credit: amount, description: "Customer refund" },
   ]);
 
   return voucher;

@@ -30,6 +30,19 @@ export const SYSTEM_ACCOUNT_CODES = {
   SCRAP_METAL_INVENTORY: "1310",
   JEWELLERY_WIP: "1320",
   FINISHED_JEWELLERY_INVENTORY: "1330",
+  // Phase 6 — Finished Jewellery Sales, Stock, COGS and Actual P&L.
+  // SALES_RETURNS is a contra-revenue account (INCOME type, but always
+  // presented in P&L as a deduction from Gross Sales — see
+  // getFinishedJewelleryProfitAndLoss). FINISHED_JEWELLERY_COGS is the
+  // authoritative accounting cost of goods sold, moved from
+  // FINISHED_JEWELLERY_INVENTORY at sale time. DAMAGED_JEWELLERY_LOSS
+  // exists so a damaged/not-for-resale return's cost is reclassified OUT
+  // of COGS (the item never really "sold" in the end) into its own
+  // clearly-labelled loss line, so Gross Profit isn't misleadingly
+  // depressed by a damage write-off that isn't really cost-of-GOODS-SOLD.
+  SALES_RETURNS: "4100",
+  FINISHED_JEWELLERY_COGS: "5200",
+  DAMAGED_JEWELLERY_LOSS: "5300",
 } as const;
 
 /**

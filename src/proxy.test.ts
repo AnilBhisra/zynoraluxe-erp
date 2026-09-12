@@ -48,14 +48,34 @@ describe("proxy", () => {
     expect(response.headers.get("location")).toBeNull();
   });
 
-  it("redirects an authenticated visitor away from /login to /dashboard", async () => {
+  // The proxy deliberately does NOT redirect a valid-JWT visitor away from
+  // /login — see the comment above that check in proxy.ts. It cannot tell
+  // an active session from a deactivated user's still-unexpired cookie
+  // (that requires the DB lookup only src/app/login/page.tsx's
+  // getCurrentUser() can do), and previously redirecting on the JWT signal
+  // alone produced a real, live-reproduced bug: a deactivated Staff
+  // account's cookie bounced /login -> /dashboard here, then
+  // requireUser()'s authoritative DB check bounced /dashboard -> /login,
+  // forever, until the browser gave up with ERR_TOO_MANY_REDIRECTS.
+  it("does NOT redirect a valid-JWT visitor away from /login — that authoritative decision belongs to the login page's own getCurrentUser() check", async () => {
     const response = await proxy(makeRequest("/login", await validToken()));
-    expect(response.headers.get("location")).toContain("/dashboard");
+    expect(response.headers.get("location")).toBeNull();
   });
 
   it("lets an unauthenticated visitor reach /login", async () => {
     const response = await proxy(makeRequest("/login"));
     expect(response.headers.get("location")).toBeNull();
+  });
+
+  it("never bounces /login -> /dashboard -> /login for the same request in a way that could loop (regression: a deactivated account's still-valid JWT used to loop between these two routes until the browser aborted with ERR_TOO_MANY_REDIRECTS)", async () => {
+    const token = await validToken();
+    const fromLogin = await proxy(makeRequest("/login", token));
+    const fromDashboard = await proxy(makeRequest("/dashboard", token));
+    // Neither hop redirects at the proxy layer on a bare valid JWT — the
+    // only place account-active-ness (and therefore this redirect
+    // decision) can be resolved is a page's own DB-backed check.
+    expect(fromLogin.headers.get("location")).toBeNull();
+    expect(fromDashboard.headers.get("location")).toBeNull();
   });
 
   it("treats a tampered session cookie as unauthenticated", async () => {
@@ -173,9 +193,9 @@ describe("proxy — security headers", () => {
     expect(response.headers.get("Content-Security-Policy")).toBeTruthy();
   });
 
-  it("sets the full header set on the authenticated-user-hitting-/login redirect", async () => {
+  it("still sets the full security header set on /login even for an authenticated visitor (no redirect happens here — see the dedicated proxy describe block above)", async () => {
     const response = await proxy(makeRequest("/login", await validToken()));
-    expect(response.headers.get("location")).toContain("/dashboard");
+    expect(response.headers.get("location")).toBeNull();
     expect(response.headers.get("Content-Security-Policy")).toBeTruthy();
   });
 });

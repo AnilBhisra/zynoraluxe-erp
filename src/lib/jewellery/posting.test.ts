@@ -404,6 +404,59 @@ describe("issueMaterialsToJewelleryJob", () => {
     ).rejects.toThrow(PostingError);
   });
 
+  it("zero-balance purity edge case: after draining a purity to exactly zero, issuing without replenishment is rejected, and a real replenishment makes it fully usable again", async () => {
+    const fixture = createFakeJewelleryTx();
+    const purity = seedGold22k(fixture);
+    await purchaseMetal(fixture, purity.id as string, { grossWeight: 20, totalPurchaseCost: 100000 });
+    const job1 = await createDraftJob(fixture);
+
+    // Drain the purity to EXACTLY zero.
+    await issueMaterialsToJewelleryJob(fixture.tx as never, {
+      ...common(),
+      jobId: job1.id as string,
+      issueDate: DATE,
+      metalLines: [{ metalType: "GOLD", purityId: purity.id as string, grossWeight: 20 }],
+      polishedDiamondIds: [],
+      otherMaterialLines: [],
+    });
+    const drained = await getMetalStockBalanceInTx(fixture.tx as never, "GOLD", purity.id as string);
+    expect(drained.grossWeight.toFixed(3)).toBe("0.000");
+    expect(drained.costValue.toFixed(2)).toBe("0.00");
+
+    // Attempting to issue from a zero balance, with NO replenishment, must
+    // be rejected — this is correct guard behaviour, not a bug.
+    const job2 = await createDraftJob(fixture);
+    await expect(
+      issueMaterialsToJewelleryJob(fixture.tx as never, {
+        ...common(),
+        jobId: job2.id as string,
+        issueDate: DATE,
+        metalLines: [{ metalType: "GOLD", purityId: purity.id as string, grossWeight: 5 }],
+        polishedDiamondIds: [],
+        otherMaterialLines: [],
+      })
+    ).rejects.toThrow(PostingError);
+
+    // A REAL replenishment of the SAME purity must make it fully usable
+    // again — this is the specific case that must NOT be rejected.
+    await purchaseMetal(fixture, purity.id as string, { grossWeight: 10, totalPurchaseCost: 55000 });
+    const replenished = await getMetalStockBalanceInTx(fixture.tx as never, "GOLD", purity.id as string);
+    expect(replenished.grossWeight.toFixed(3)).toBe("10.000");
+    expect(replenished.costValue.toFixed(2)).toBe("55000.00");
+
+    const job3 = await createDraftJob(fixture);
+    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, {
+      ...common(),
+      jobId: job3.id as string,
+      issueDate: DATE,
+      metalLines: [{ metalType: "GOLD", purityId: purity.id as string, grossWeight: 10 }],
+      polishedDiamondIds: [],
+      otherMaterialLines: [],
+    });
+    expect(issued.status).toBe("MATERIALS_ISSUED");
+    expect(Number(issued.issuedMetalCost)).toBeCloseTo(55000, 2);
+  });
+
   it("issues a Phase 3 AVAILABLE polished diamond using its own allocatedCost, marking it Issued to Jewellery", async () => {
     const fixture = createFakeJewelleryTx();
     const diamond = fixture.seedPolishedDiamond({ polishedCode: "ZL-P-000001", shape: "ROUND", carat: "0.5", allocatedCost: "8000" });

@@ -244,6 +244,39 @@ export async function listVouchers(filters: {
   }));
 }
 
+/**
+ * "Other / Accounting-only" Sale vouchers — a plain SALE voucher with no
+ * linked FinishedJewellerySale, i.e. no stock-matched COGS at all. Owner
+ * visibility only, same as the rest of this file's margin-adjacent data.
+ */
+export async function listManualSalesWithoutLinkedCogs(filters?: {
+  dateFrom?: Date;
+  dateTo?: Date;
+}): Promise<VoucherListRow[]> {
+  const vouchers = await prisma.voucher.findMany({
+    where: {
+      voucherType: "SALE",
+      status: "POSTED",
+      date: { gte: filters?.dateFrom, lte: filters?.dateTo },
+      finishedJewellerySale: { is: null },
+    },
+    include: { party: true, paymentAccount: true },
+    orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+    take: 200,
+  });
+  return vouchers.map((v) => ({
+    id: v.id,
+    voucherNumber: v.voucherNumber,
+    voucherType: v.voucherType,
+    date: v.date,
+    partyName: v.party?.name ?? null,
+    amount: round2(new Decimal(v.amount)),
+    status: v.status,
+    paymentAccountName: v.paymentAccount?.name ?? null,
+    referenceNumber: v.referenceNumber,
+  }));
+}
+
 export type GstSummary = {
   inputCgst: Decimal;
   inputSgst: Decimal;
@@ -302,10 +335,31 @@ export type ProfitAndLoss = {
   salesIncome: Decimal;
   purchases: Decimal;
   businessExpenses: Decimal;
-  /** salesIncome - purchases - businessExpenses. Provisional: no inventory
-   * valuation / cost-of-goods-sold exists until stock is wired in a later
-   * phase, so this is NOT a final business profit figure. */
+  /** salesIncome - purchases - businessExpenses. Provisional: rough/metal
+   * purchases posted through the generic Purchases account (non-inventory
+   * misc procurement only — Metal/Rough purchases post to their own
+   * inventory asset accounts, never here) have no matched cost-of-goods
+   * mechanism, so this line is NOT a final whole-business profit figure. */
   provisionalProfit: Decimal;
+
+  // ---- Phase 6: Finished Jewellery actual Gross Profit — Owner-only,
+  // matched revenue-to-cost at the individual sold piece, NOT provisional.
+  // See PHASE_6_VERIFICATION.md §10. ----
+  grossSales: Decimal;
+  salesReturns: Decimal;
+  netSales: Decimal;
+  finishedJewelleryCogs: Decimal;
+  grossProfit: Decimal;
+  grossMarginPercent: Decimal;
+  damagedJewelleryLoss: Decimal;
+  /** grossProfit - damagedJewelleryLoss - purchases - businessExpenses. */
+  netProfit: Decimal;
+  /** Portion of grossSales that came from Sale vouchers with NO linked
+   * FinishedJewellerySale (i.e. "Other / Accounting-only Sale") — these
+   * carry no stock-matched COGS at all, so a whole-business gross-margin
+   * read is incomplete whenever this is non-zero. */
+  manualSalesAmount: Decimal;
+  manualSalesCount: number;
 };
 
 export async function getProfitAndLoss(filters?: {
@@ -316,6 +370,9 @@ export async function getProfitAndLoss(filters?: {
     SYSTEM_ACCOUNT_CODES.SALES_INCOME,
     SYSTEM_ACCOUNT_CODES.PURCHASES,
     SYSTEM_ACCOUNT_CODES.BUSINESS_EXPENSES,
+    SYSTEM_ACCOUNT_CODES.SALES_RETURNS,
+    SYSTEM_ACCOUNT_CODES.FINISHED_JEWELLERY_COGS,
+    SYSTEM_ACCOUNT_CODES.DAMAGED_JEWELLERY_LOSS,
   ]);
 
   async function netFor(code: string) {
@@ -335,5 +392,54 @@ export async function getProfitAndLoss(filters?: {
 
   const provisionalProfit = round2(salesIncome.minus(purchases).minus(businessExpenses));
 
-  return { salesIncome, purchases, businessExpenses, provisionalProfit };
+  // Sales Returns and the two new expense accounts are all debit-normal in
+  // how they're actually posted here (Dr on return/loss) — read as-is, no
+  // sign flip, same convention purchases/businessExpenses already use.
+  const grossSales = salesIncome;
+  const salesReturns = round2(await netFor(SYSTEM_ACCOUNT_CODES.SALES_RETURNS));
+  const netSales = round2(grossSales.minus(salesReturns));
+  const finishedJewelleryCogs = round2(await netFor(SYSTEM_ACCOUNT_CODES.FINISHED_JEWELLERY_COGS));
+  const grossProfit = round2(netSales.minus(finishedJewelleryCogs));
+  const grossMarginPercent = netSales.greaterThan(0)
+    ? grossProfit.dividedBy(netSales).times(100).toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
+    : ZERO;
+  const damagedJewelleryLoss = round2(await netFor(SYSTEM_ACCOUNT_CODES.DAMAGED_JEWELLERY_LOSS));
+  const netProfit = round2(
+    grossProfit.minus(damagedJewelleryLoss).minus(purchases).minus(businessExpenses)
+  );
+
+  const linkedSaleAgg = await prisma.finishedJewellerySale.aggregate({
+    where: {
+      status: "POSTED",
+      saleDate: { gte: filters?.dateFrom, lte: filters?.dateTo },
+    },
+    _sum: { taxableTotal: true },
+  });
+  const linkedSalesAmount = round2(new Decimal(linkedSaleAgg._sum.taxableTotal ?? 0));
+  const manualSalesAmount = round2(Decimal.max(grossSales.minus(linkedSalesAmount), ZERO));
+  const manualSalesCount = await prisma.voucher.count({
+    where: {
+      voucherType: "SALE",
+      status: "POSTED",
+      date: { gte: filters?.dateFrom, lte: filters?.dateTo },
+      finishedJewellerySale: { is: null },
+    },
+  });
+
+  return {
+    salesIncome,
+    purchases,
+    businessExpenses,
+    provisionalProfit,
+    grossSales,
+    salesReturns,
+    netSales,
+    finishedJewelleryCogs,
+    grossProfit,
+    grossMarginPercent,
+    damagedJewelleryLoss,
+    netProfit,
+    manualSalesAmount,
+    manualSalesCount,
+  };
 }

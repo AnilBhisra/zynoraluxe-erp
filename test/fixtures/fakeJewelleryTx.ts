@@ -27,6 +27,7 @@ export function createFakeJewelleryTx() {
   const jewelleryOtherMaterialLines = new Map<string, Row>();
   const jewelleryReceipts = new Map<string, Row>();
   const finishedJewelleryRows = new Map<string, Row>();
+  const finishedJewelleryStockMovements = new Map<string, Row>();
 
   let counter = 0;
   const nextId = (prefix: string) => `${prefix}-${++counter}`;
@@ -246,9 +247,14 @@ export function createFakeJewelleryTx() {
     },
     finishedJewellery: {
       create: async ({ data }: { data: Row }) => {
-        const row = { id: nextId("fj"), ...data };
+        const row = { id: nextId("fj"), status: "AVAILABLE", ...data };
         finishedJewelleryRows.set(row.id as string, row);
         return row;
+      },
+      findUnique: async (args: { where: { id: string }; include?: { job?: boolean; purity?: boolean } }) => {
+        const row = finishedJewelleryRows.get(args.where.id);
+        if (!row) return null;
+        return resolveFinishedJewelleryIncludes(row, args.include);
       },
       findMany: async ({ where }: { where?: Row } = {}) => {
         const rows = [...finishedJewelleryRows.values()];
@@ -261,8 +267,44 @@ export function createFakeJewelleryTx() {
         Object.assign(row, data);
         return row;
       },
+      // Mirrors the real conditional-UPDATE double-sale-prevention pattern
+      // (see FinishedJewellery.status header comment in schema.prisma):
+      // only rows matching the WHERE (including status) get updated, and
+      // the returned count is the caller's sole signal of success.
+      updateMany: async ({ where, data }: { where: Row; data: Row }) => {
+        const rows = [...finishedJewelleryRows.values()].filter((r) => matchesWhere(r, where));
+        for (const row of rows) Object.assign(row, data);
+        return { count: rows.length };
+      },
+    },
+    finishedJewelleryStockMovement: {
+      create: async ({ data }: { data: Row }) => {
+        const row = { id: nextId("fjmov"), createdAt: new Date(), ...data };
+        finishedJewelleryStockMovements.set(row.id as string, row);
+        return row;
+      },
+      findFirst: async ({ where, orderBy }: { where?: Row; orderBy?: { createdAt: "asc" | "desc" } } = {}) => {
+        let rows = [...finishedJewelleryStockMovements.values()];
+        if (where) rows = rows.filter((r) => matchesWhere(r, where));
+        rows.sort((a, b) => (a.createdAt as Date).getTime() - (b.createdAt as Date).getTime());
+        if (orderBy?.createdAt === "desc") rows.reverse();
+        return rows[0] ?? null;
+      },
+      findMany: async ({ where }: { where?: Row } = {}) => {
+        const rows = [...finishedJewelleryStockMovements.values()];
+        if (!where) return rows;
+        return rows.filter((r) => matchesWhere(r, where));
+      },
     },
   };
+
+  function resolveFinishedJewelleryIncludes(row: Row, include?: { job?: boolean; purity?: boolean }) {
+    if (!include) return row;
+    const resolved: Row = { ...row };
+    if (include.job) resolved.job = jewelleryJobs.get(row.jobId as string) ?? null;
+    if (include.purity) resolved.purity = metalPurities.get(row.purityId as string) ?? null;
+    return resolved;
+  }
 
   return {
     tx,
@@ -278,6 +320,7 @@ export function createFakeJewelleryTx() {
       jewelleryOtherMaterialLines,
       jewelleryReceipts,
       finishedJewelleryRows,
+      finishedJewelleryStockMovements,
     },
     paymentAccountIdByMethod: base.paymentAccountIdByMethod,
     seedMetalPurity,

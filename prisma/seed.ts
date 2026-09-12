@@ -62,6 +62,18 @@ const SYSTEM_ACCOUNTS: AccountSeed[] = [
     name: "Finished Jewellery Inventory",
     type: "ASSET",
   },
+  // Phase 6
+  { code: SYSTEM_ACCOUNT_CODES.SALES_RETURNS, name: "Sales Returns", type: "INCOME" },
+  {
+    code: SYSTEM_ACCOUNT_CODES.FINISHED_JEWELLERY_COGS,
+    name: "Finished Jewellery COGS",
+    type: "EXPENSE",
+  },
+  {
+    code: SYSTEM_ACCOUNT_CODES.DAMAGED_JEWELLERY_LOSS,
+    name: "Damaged Jewellery Loss",
+    type: "EXPENSE",
+  },
 ];
 
 // Starter Metal/Purity master — standard, widely-known fineness

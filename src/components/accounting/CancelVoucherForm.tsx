@@ -4,6 +4,7 @@ import { useActionState, useState } from "react";
 
 import { cancelVoucherAction } from "@/app/actions/vouchers";
 import { Button } from "@/components/ui/Button";
+import { Field } from "@/components/ui/Field";
 import { Alert } from "@/components/ui/Alert";
 
 export function CancelVoucherForm({ voucherId, voucherNumber }: { voucherId: string; voucherNumber: string }) {
@@ -39,15 +40,12 @@ export function CancelVoucherForm({ voucherId, voucherNumber }: { voucherId: str
     >
       <input type="hidden" name="voucherId" value={voucherId} />
       {state?.error ? <Alert tone="error">{state.error}</Alert> : null}
-      <label className="text-xs font-medium text-zinc-700 dark:text-zinc-300">
-        Reason for cancelling
-      </label>
-      <input
+      <Field
+        label="Cancellation reason"
         name="cancellationReason"
         required
         minLength={3}
         placeholder="e.g. Entered by mistake"
-        className="h-9 rounded-lg border border-zinc-300 bg-white px-2.5 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
       />
       <div className="flex gap-2">
         <Button type="submit" variant="danger" size="md" disabled={pending}>

@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import { requireUser } from "@/lib/auth/dal";
 import { getCashBankSummary, getReceivablePayableSummary } from "@/lib/accounting/reports";
 import { getDashboardDiamondSummary } from "@/lib/diamond/reports";
-import { getPendingJewelleryJobsCount } from "@/lib/jewellery/reports";
+import { getFinishedJewelleryStockSummary, getPendingJewelleryJobsCount } from "@/lib/jewellery/reports";
 import { getDraftCostingsCount } from "@/lib/costing/reports";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { SummaryCard } from "@/components/dashboard/SummaryCard";
@@ -27,16 +27,21 @@ function carat(value: { toFixed: (n: number) => string }) {
 export default async function DashboardPage() {
   const user = await requireUser();
   const isOwner = user.role === "OWNER";
-  const [cashBank, receivablePayable, diamondSummary, pendingJewelleryJobs, draftCostingsCount] = await Promise.all([
-    getCashBankSummary(),
-    getReceivablePayableSummary(),
-    getDashboardDiamondSummary(),
-    getPendingJewelleryJobsCount(),
-    // Costing figures are Owner-only — Staff must never receive even a
-    // draft COUNT through this query, so it is only ever fetched when
-    // isOwner is true (never fetched-then-hidden).
-    isOwner ? getDraftCostingsCount() : Promise.resolve(null),
-  ]);
+  const [cashBank, receivablePayable, diamondSummary, pendingJewelleryJobs, draftCostingsCount, finishedStock] =
+    await Promise.all([
+      getCashBankSummary(),
+      getReceivablePayableSummary(),
+      getDashboardDiamondSummary(),
+      getPendingJewelleryJobsCount(),
+      // Costing figures are Owner-only — Staff must never receive even a
+      // draft COUNT through this query, so it is only ever fetched when
+      // isOwner is true (never fetched-then-hidden).
+      isOwner ? getDraftCostingsCount() : Promise.resolve(null),
+      // Inventory VALUE is Owner-only — only requested (queried) when
+      // isOwner is true, same never-fetched-then-hidden rule as above.
+      // Staff still gets the operational count/weight, just no ₹ figure.
+      getFinishedJewelleryStockSummary(isOwner),
+    ]);
 
   return (
     <div>
@@ -56,6 +61,11 @@ export default async function DashboardPage() {
         <SummaryCard label="Pending jewellery jobs" value={String(pendingJewelleryJobs)} />
         {isOwner && draftCostingsCount !== null ? (
           <SummaryCard label="Draft costings" value={String(draftCostingsCount)} />
+        ) : null}
+        <SummaryCard label="Finished stock (Available)" value={String(finishedStock.availableCount)} />
+        <SummaryCard label="Finished stock weight" value={carat(finishedStock.availableFineWeight)} unit="g fine" />
+        {isOwner && finishedStock.availableInventoryValue !== undefined ? (
+          <SummaryCard label="Finished stock value" value={money(finishedStock.availableInventoryValue)} />
         ) : null}
       </section>
 

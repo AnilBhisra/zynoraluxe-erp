@@ -14,7 +14,8 @@
     "db:migrate:dev": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
     "db:seed": "prisma db seed",
-    "db:cleanup-login-rate-limits": "tsx scripts/cleanupLoginRateLimits.ts"
+    "db:cleanup-login-rate-limits": "tsx scripts/cleanupLoginRateLimits.ts",
+    "db:backfill-finished-jewellery-stock": "tsx scripts/backfillFinishedJewelleryStock.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",

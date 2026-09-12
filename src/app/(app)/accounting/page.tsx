@@ -9,8 +9,12 @@ import {
   getPartyBalances,
   getPartyLedger,
   getProfitAndLoss,
+  listManualSalesWithoutLinkedCogs,
   listVouchers,
 } from "@/lib/accounting/reports";
+import { listAvailableFinishedJewelleryForSale, listFinishedJewellerySaleLines } from "@/lib/jewellery/reports";
+import { resolveJewelleryAssetUrl } from "@/lib/storage/jewelleryMedia";
+import type { SerializedFinishedStockRow } from "@/components/jewellery/FinishedStockTab";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { PartyForm } from "@/components/accounting/PartyForm";
 import { PartyEditForm } from "@/components/accounting/PartyEditForm";
@@ -20,6 +24,7 @@ import { AccountingSettingsPanel } from "@/components/accounting/AccountingSetti
 import { LedgerPartyPicker, LedgerTable } from "@/components/accounting/LedgerView";
 import {
   CashBankReportView,
+  FinishedSalesReportView,
   GstSummaryView,
   OutstandingReportView,
   ProfitAndLossView,
@@ -135,13 +140,37 @@ async function TransactionsTabContent({
   userRole: "OWNER" | "STAFF";
   initialOpen?: "PURCHASE" | "SALE" | "PAYMENT_GIVEN" | "PAYMENT_RECEIVED" | "EXPENSE";
 }) {
-  const [parties, paymentAccounts, gstRates, fy, vouchers] = await Promise.all([
+  const [parties, paymentAccounts, gstRates, fy, vouchers, availableFinishedRows] = await Promise.all([
     prisma.party.findMany({ where: { isActive: true }, orderBy: { name: "asc" } }),
     prisma.paymentAccount.findMany({ where: { isActive: true }, orderBy: { name: "asc" } }),
     prisma.gstRate.findMany({ where: { isActive: true }, orderBy: { ratePercent: "asc" } }),
     getCompanyFySettings(),
     listVouchers({ take: 50 }),
+    listAvailableFinishedJewelleryForSale(),
   ]);
+
+  const availableFinishedItems: SerializedFinishedStockRow[] = await Promise.all(
+    availableFinishedRows.map(async (r) => ({
+      id: r.id,
+      finishedCode: r.finishedCode,
+      jobCode: r.jobCode,
+      designName: r.designName,
+      karigarName: r.karigarName,
+      jewelleryType: r.jewelleryType,
+      metalType: r.metalType,
+      purityDisplayName: r.purityDisplayName,
+      netMetalWeight: r.netMetalWeight.toFixed(3),
+      fineMetalWeight: r.fineMetalWeight.toFixed(3),
+      grossWeight: r.grossWeight ? r.grossWeight.toFixed(3) : null,
+      diamondCount: r.diamondCount,
+      totalCarat: r.totalCarat.toFixed(3),
+      status: r.status,
+      producedAt: r.producedAt.toISOString(),
+      photoUrl: await resolveJewelleryAssetUrl(r.photoAssetId),
+      saleCode: r.saleCode,
+      saleDate: r.saleDate ? r.saleDate.toISOString() : null,
+    }))
+  );
 
   return (
     <div className="flex flex-col gap-6">
@@ -153,6 +182,7 @@ async function TransactionsTabContent({
         vouchers={vouchers.map((v) => ({ ...v, amount: v.amount.toFixed(2) }))}
         canCancel={userRole === "OWNER"}
         initialOpen={initialOpen ?? null}
+        availableFinishedItems={availableFinishedItems}
       />
       {userRole === "OWNER" ? (
         <AccountingSettingsPanel
@@ -326,7 +356,16 @@ async function ReportBody({
   }
   if (report === "outstanding") {
     const parties = await getPartyBalances({ includeInactive: false });
-    return <OutstandingReportView parties={parties} />;
+    const paymentAccounts = canSeeOwnerReports
+      ? await prisma.paymentAccount.findMany({ where: { isActive: true }, orderBy: { name: "asc" } })
+      : [];
+    return (
+      <OutstandingReportView
+        parties={parties}
+        isOwner={canSeeOwnerReports}
+        paymentAccounts={paymentAccounts.map((p) => ({ id: p.id, name: p.name, method: p.method }))}
+      />
+    );
   }
   if (report === "gst") {
     if (!canSeeOwnerReports) {
@@ -341,6 +380,16 @@ async function ReportBody({
     }
     const pnl = await getProfitAndLoss({ dateFrom, dateTo });
     return <ProfitAndLossView pnl={pnl} />;
+  }
+  if (report === "finishedSales") {
+    if (!canSeeOwnerReports) {
+      return <p className="text-sm text-zinc-500 dark:text-zinc-400">Owner only.</p>;
+    }
+    const [lines, manualSales] = await Promise.all([
+      listFinishedJewellerySaleLines({ dateFrom, dateTo }),
+      listManualSalesWithoutLinkedCogs({ dateFrom, dateTo }),
+    ]);
+    return <FinishedSalesReportView lines={lines} manualSales={manualSales} />;
   }
   return null;
 }

@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   roughLotFindUnique: vi.fn(),
   metalPurchaseFindUnique: vi.fn(),
   metalStockMovementFindFirst: vi.fn(),
+  finishedJewellerySaleFindUnique: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/dal", () => ({
@@ -29,6 +30,7 @@ vi.mock("@/lib/db/prisma", () => ({
     roughLot: { findUnique: mocks.roughLotFindUnique },
     metalPurchase: { findUnique: mocks.metalPurchaseFindUnique },
     metalStockMovement: { findFirst: mocks.metalStockMovementFindFirst },
+    finishedJewellerySale: { findUnique: mocks.finishedJewellerySaleFindUnique },
   },
 }));
 
@@ -74,6 +76,7 @@ beforeEach(() => {
   mocks.roughLotFindUnique.mockResolvedValue(null);
   mocks.metalPurchaseFindUnique.mockResolvedValue(null);
   mocks.metalStockMovementFindFirst.mockResolvedValue(null);
+  mocks.finishedJewellerySaleFindUnique.mockResolvedValue(null);
 });
 
 describe("createPaymentGiven validation", () => {
@@ -318,6 +321,30 @@ describe("cancelVoucherAction permissions", () => {
     mocks.voucherFindUnique.mockResolvedValue({ voucherType: "PURCHASE" });
     // roughLot/metalPurchase mocks already resolve to null in beforeEach —
     // this is a plain Phase 2 accounting purchase (e.g. office supplies).
+    await cancelVoucherAction(undefined, formData({ voucherId: "v1", cancellationReason: "Entered by mistake" }));
+    expect(mocks.cancelVoucher).toHaveBeenCalled();
+  });
+
+  // Phase 6: a Finished Jewellery Sale posts as a plain "SALE" voucher
+  // (same reuse pattern as Rough/Metal Purchase reusing "PURCHASE" above)
+  // — without this guard, generic cancellation would reverse the
+  // accounting while leaving the FinishedJewellery item's status stuck at
+  // SOLD and creating no stock movement, desyncing stock from accounting.
+  it("blocks cancelling a SALE voucher linked to a Finished Jewellery Sale, directing the Owner to the Finished Stock page instead", async () => {
+    mocks.voucherFindUnique.mockResolvedValue({ voucherType: "SALE" });
+    mocks.finishedJewellerySaleFindUnique.mockResolvedValue({ id: "fjs-1" });
+    const result = await cancelVoucherAction(
+      undefined,
+      formData({ voucherId: "v1", cancellationReason: "Trying to cancel generically" })
+    );
+    expect(result?.error).toMatch(/Finished Stock page/i);
+    expect(mocks.cancelVoucher).not.toHaveBeenCalled();
+  });
+
+  it("allows cancelling an ordinary SALE voucher that isn't linked to any Finished Jewellery Sale", async () => {
+    mocks.voucherFindUnique.mockResolvedValue({ voucherType: "SALE" });
+    // finishedJewellerySale mock already resolves to null in beforeEach —
+    // this is a plain "Other / Accounting-only" Sale.
     await cancelVoucherAction(undefined, formData({ voucherId: "v1", cancellationReason: "Entered by mistake" }));
     expect(mocks.cancelVoucher).toHaveBeenCalled();
   });

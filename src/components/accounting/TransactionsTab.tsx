@@ -12,9 +12,11 @@ import {
 } from "@/app/actions/vouchers";
 import { InvoiceVoucherForm } from "@/components/accounting/InvoiceVoucherForm";
 import { CashVoucherForm } from "@/components/accounting/CashVoucherForm";
+import { FinishedJewellerySaleForm } from "@/components/accounting/FinishedJewellerySaleForm";
 import { VoucherList, type SerializedVoucherRow } from "@/components/accounting/VoucherList";
 import { Button } from "@/components/ui/Button";
 import type { PartyOption } from "@/components/accounting/PartySelect";
+import type { SerializedFinishedStockRow } from "@/components/jewellery/FinishedStockTab";
 
 type EntryKind = "PURCHASE" | "SALE" | "PAYMENT_GIVEN" | "PAYMENT_RECEIVED" | "EXPENSE";
 
@@ -26,6 +28,8 @@ const ENTRY_BUTTONS: { kind: EntryKind; label: string }[] = [
   { kind: "EXPENSE", label: "New Expense" },
 ];
 
+type SaleMode = "CHOOSE" | "FINISHED" | "MANUAL";
+
 export function TransactionsTab({
   parties,
   paymentAccounts,
@@ -34,6 +38,7 @@ export function TransactionsTab({
   vouchers,
   canCancel,
   initialOpen,
+  availableFinishedItems,
 }: {
   parties: PartyOption[];
   paymentAccounts: { id: string; name: string; method: string }[];
@@ -42,9 +47,13 @@ export function TransactionsTab({
   vouchers: SerializedVoucherRow[];
   canCancel: boolean;
   initialOpen?: EntryKind | null;
+  availableFinishedItems: SerializedFinishedStockRow[];
 }) {
   const router = useRouter();
   const [open, setOpen] = useState<EntryKind | null>(initialOpen ?? null);
+  const [saleMode, setSaleMode] = useState<SaleMode>("CHOOSE");
+  const [manualConfirmed, setManualConfirmed] = useState(false);
+  const customers = parties.filter((p) => p.type === "CUSTOMER");
 
   // Deliberately does NOT close the form on success — closing immediately
   // would unmount the form (and its "Saved as ..." confirmation) before the
@@ -64,7 +73,13 @@ export function TransactionsTab({
             type="button"
             variant={open === btn.kind ? "primary" : "secondary"}
             size="md"
-            onClick={() => setOpen(open === btn.kind ? null : btn.kind)}
+            onClick={() => {
+              setOpen(open === btn.kind ? null : btn.kind);
+              if (btn.kind === "SALE") {
+                setSaleMode("CHOOSE");
+                setManualConfirmed(false);
+              }
+            }}
           >
             {btn.label}
           </Button>
@@ -82,16 +97,89 @@ export function TransactionsTab({
           onDone={handleSaved}
         />
       ) : null}
-      {open === "SALE" ? (
-        <InvoiceVoucherForm
-          voucherType="SALE"
-          action={createSale}
-          parties={parties}
-          paymentAccounts={paymentAccounts}
-          gstRates={gstRates}
-          companyStateCode={companyStateCode}
-          onDone={handleSaved}
-        />
+      {open === "SALE" && saleMode === "CHOOSE" ? (
+        <div className="flex flex-col gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
+          <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">What are you selling?</h3>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => setSaleMode("FINISHED")}
+              className="rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-4 text-left hover:border-zinc-400 dark:hover:border-zinc-500"
+            >
+              <p className="font-medium text-zinc-900 dark:text-zinc-50">Sell Finished Jewellery</p>
+              <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                Pick one or more Available pieces from stock. Updates stock, revenue, GST and COGS together.
+              </p>
+            </button>
+            <button
+              type="button"
+              onClick={() => setSaleMode("MANUAL")}
+              className="rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-4 text-left hover:border-zinc-400 dark:hover:border-zinc-500"
+            >
+              <p className="font-medium text-zinc-900 dark:text-zinc-50">Other / Accounting-only Sale</p>
+              <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                A manual invoice line that does not touch Finished Jewellery stock or cost of goods sold.
+              </p>
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {open === "SALE" && saleMode === "FINISHED" ? (
+        <div className="flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={() => setSaleMode("CHOOSE")}
+            className="self-start text-xs font-medium text-zinc-500 underline hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+          >
+            ← Change sale type
+          </button>
+          <FinishedJewellerySaleForm
+            customers={customers}
+            availableItems={availableFinishedItems}
+            paymentAccounts={paymentAccounts}
+            gstRates={gstRates}
+            companyStateCode={companyStateCode}
+            onDone={handleSaved}
+          />
+        </div>
+      ) : null}
+      {open === "SALE" && saleMode === "MANUAL" ? (
+        <div className="flex flex-col gap-3">
+          <button
+            type="button"
+            onClick={() => setSaleMode("CHOOSE")}
+            className="self-start text-xs font-medium text-zinc-500 underline hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+          >
+            ← Change sale type
+          </button>
+          <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+            <p className="font-medium">This is an accounting-only sale.</p>
+            <p className="mt-1 text-xs">
+              No Finished Jewellery stock or cost of goods sold will be affected. It appears in reports clearly
+              marked as a manual sale with no linked stock/COGS.
+            </p>
+            <label className="mt-3 flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={manualConfirmed}
+                onChange={(e) => setManualConfirmed(e.target.checked)}
+                className="h-3.5 w-3.5 rounded border-amber-400"
+              />
+              I understand — continue with a manual sale
+            </label>
+          </div>
+          {manualConfirmed ? (
+            <InvoiceVoucherForm
+              voucherType="SALE"
+              action={createSale}
+              parties={parties}
+              paymentAccounts={paymentAccounts}
+              gstRates={gstRates}
+              companyStateCode={companyStateCode}
+              onDone={handleSaved}
+            />
+          ) : null}
+        </div>
       ) : null}
       {open === "PAYMENT_GIVEN" ? (
         <CashVoucherForm

@@ -83,6 +83,31 @@ describe("requireUser", () => {
     const { requireUser } = await loadDal();
     await expect(requireUser()).rejects.toThrow("REDIRECT:/login");
   });
+
+  /** Regression for a real live-reproduced bug: proxy.ts used to redirect
+   * ANY visitor with a structurally-valid (unexpired, correctly-signed)
+   * JWT away from /login straight to /dashboard, using only the token's
+   * validity — not this DB-backed check. For a deactivated account whose
+   * JWT simply hasn't expired yet, that meant /login -> /dashboard (proxy,
+   * JWT-only) -> /login (here, DB-authoritative) forever, until the
+   * browser gave up with ERR_TOO_MANY_REDIRECTS. The fix removed that
+   * proxy-level shortcut; this test locks in the half of the contract the
+   * proxy now depends on staying true: a deactivated account's still-valid
+   * JWT must land on /login, not /unauthorized or anywhere else that could
+   * itself redirect and resume a loop. */
+  it("redirects to /login (not /unauthorized) for a deactivated account's still-cryptographically-valid session — the other half of the proxy redirect-loop fix", async () => {
+    mockCookieValue = await encryptSession({ userId: "u1", expiresAt: Date.now() + 60_000 });
+    mockFindUnique.mockResolvedValue({
+      id: "u1",
+      email: "a@b.com",
+      name: "A",
+      role: "STAFF",
+      isActive: false,
+    });
+
+    const { requireUser } = await loadDal();
+    await expect(requireUser()).rejects.toThrow("REDIRECT:/login");
+  });
 });
 
 describe("requireOwner", () => {

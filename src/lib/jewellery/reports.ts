@@ -3,7 +3,9 @@ import "server-only";
 import { prisma } from "@/lib/db/prisma";
 import { Decimal, round2, ZERO } from "@/lib/accounting/money";
 import { round3 } from "@/lib/diamond/allocation";
+import { getAuthoritativeInventoryCost } from "@/lib/jewellery/finishedSalesPosting";
 import type {
+  FinishedJewelleryStockStatus,
   JewelleryJobStatus,
   JewelleryType,
   MetalType,
@@ -546,6 +548,248 @@ export async function listFinishedJewellery(filters?: { search?: string }): Prom
 }
 
 // ---------------------------------------------------------------------------
+// Finished Jewellery Stock (Phase 6) — the FinishedJewelleryStockMovement
+// ledger in schema.prisma is the immutable audit trail; `status` on
+// FinishedJewellery is the fast, concurrency-safe derived gate. This list
+// reads from `status` (cheap, indexed), never from re-deriving state by
+// summing movements, matching how RoughPiece/PolishedDiamond stock lists
+// already work elsewhere in this codebase.
+//
+// SECURITY BOUNDARY: cost/Costing fields are fetched from the database ONLY
+// when `includeCost` is true (a separate `select`, not merely a field
+// omitted after the fact) — the caller (page-level, keyed off
+// `user.role === "OWNER"`) must never pass includeCost:true for a Staff
+// viewer. See src/app/(app)/jewellery-jobs/page.tsx and
+// FinishedStockTab.tsx.
+// ---------------------------------------------------------------------------
+
+export type FinishedJewelleryStockRow = {
+  id: string;
+  finishedCode: string;
+  jobCode: string;
+  designName: string;
+  karigarName: string;
+  jewelleryType: JewelleryType;
+  metalType: MetalType;
+  purityDisplayName: string;
+  netMetalWeight: Decimal;
+  fineMetalWeight: Decimal;
+  grossWeight: Decimal | null;
+  diamondCount: number;
+  totalCarat: Decimal;
+  status: FinishedJewelleryStockStatus;
+  producedAt: Date;
+  photoAssetId: string | null;
+  saleCode: string | null;
+  saleDate: Date | null;
+  // Owner-only. Present only when the query was run with includeCost:true.
+  inventoryCost?: Decimal;
+  costSheetNumber?: string | null;
+};
+
+type StockRowSource = {
+  id: string;
+  finishedCode: string;
+  jewelleryType: JewelleryType;
+  metalType: MetalType;
+  netMetalWeight: Decimal;
+  fineMetalWeight: Decimal;
+  grossWeight: Decimal | null;
+  photoAssetId: string | null;
+  status: FinishedJewelleryStockStatus;
+  createdAt: Date;
+  job: { jobCode: string; designName: string; karigar: { name: string } };
+  purity: { displayName: string };
+  diamonds: { caratAtIssue: Decimal }[];
+  saleLines: { sale: { saleCode: string; saleDate: Date } }[];
+};
+
+function toStockRow(o: StockRowSource, cost?: { inventoryCost: Decimal; costSheetNumber: string | null }): FinishedJewelleryStockRow {
+  const activeSaleLine = o.saleLines[0] ?? null;
+  return {
+    id: o.id,
+    finishedCode: o.finishedCode,
+    jobCode: o.job.jobCode,
+    designName: o.job.designName,
+    karigarName: o.job.karigar.name,
+    jewelleryType: o.jewelleryType,
+    metalType: o.metalType,
+    purityDisplayName: o.purity.displayName,
+    netMetalWeight: round3(o.netMetalWeight),
+    fineMetalWeight: round3(o.fineMetalWeight),
+    grossWeight: o.grossWeight ? round3(o.grossWeight) : null,
+    diamondCount: o.diamonds.length,
+    totalCarat: round3(o.diamonds.reduce((sum, d) => sum.plus(d.caratAtIssue), new Decimal(0))),
+    status: o.status,
+    producedAt: o.createdAt,
+    photoAssetId: o.photoAssetId,
+    saleCode: activeSaleLine?.sale.saleCode ?? null,
+    saleDate: activeSaleLine?.sale.saleDate ?? null,
+    ...(cost ? { inventoryCost: cost.inventoryCost, costSheetNumber: cost.costSheetNumber } : {}),
+  };
+}
+
+const ACTIVE_SALE_LINE_ARGS = {
+  where: { returnStatus: "NONE" as const, sale: { status: "POSTED" as const } },
+  select: { sale: { select: { saleCode: true, saleDate: true } } },
+  orderBy: { createdAt: "desc" as const },
+  take: 1,
+};
+
+export async function listFinishedJewelleryStock(filters?: {
+  search?: string;
+  status?: FinishedJewelleryStockStatus;
+  includeCost?: boolean;
+}): Promise<FinishedJewelleryStockRow[]> {
+  const where = {
+    ...(filters?.status ? { status: filters.status } : {}),
+    ...(filters?.search
+      ? {
+          OR: [
+            { finishedCode: { contains: filters.search, mode: "insensitive" as const } },
+            { job: { jobCode: { contains: filters.search, mode: "insensitive" as const } } },
+            { job: { designName: { contains: filters.search, mode: "insensitive" as const } } },
+          ],
+        }
+      : {}),
+  };
+
+  if (filters?.includeCost) {
+    const outputs = await prisma.finishedJewellery.findMany({
+      where,
+      select: {
+        id: true,
+        finishedCode: true,
+        jewelleryType: true,
+        metalType: true,
+        netMetalWeight: true,
+        fineMetalWeight: true,
+        grossWeight: true,
+        photoAssetId: true,
+        status: true,
+        createdAt: true,
+        metalCost: true,
+        diamondCost: true,
+        labourAllocated: true,
+        job: { select: { jobCode: true, designName: true, karigar: { select: { name: true } } } },
+        purity: { select: { displayName: true } },
+        diamonds: { select: { caratAtIssue: true } },
+        costSheets: {
+          where: { status: "FINALIZED", mode: "ACTUAL" },
+          select: { costingNumber: true },
+          orderBy: { finalizedAt: "desc" },
+          take: 1,
+        },
+        saleLines: ACTIVE_SALE_LINE_ARGS,
+      },
+      orderBy: { createdAt: "desc" },
+      take: 500,
+    });
+    return outputs.map((o) =>
+      toStockRow(o, {
+        inventoryCost: getAuthoritativeInventoryCost(o),
+        costSheetNumber: o.costSheets[0]?.costingNumber ?? null,
+      })
+    );
+  }
+
+  const outputs = await prisma.finishedJewellery.findMany({
+    where,
+    select: {
+      id: true,
+      finishedCode: true,
+      jewelleryType: true,
+      metalType: true,
+      netMetalWeight: true,
+      fineMetalWeight: true,
+      grossWeight: true,
+      photoAssetId: true,
+      status: true,
+      createdAt: true,
+      job: { select: { jobCode: true, designName: true, karigar: { select: { name: true } } } },
+      purity: { select: { displayName: true } },
+      diamonds: { select: { caratAtIssue: true } },
+      saleLines: ACTIVE_SALE_LINE_ARGS,
+    },
+    orderBy: { createdAt: "desc" },
+    take: 500,
+  });
+  return outputs.map((o) => toStockRow(o));
+}
+
+/**
+ * The one Available piece a Sale form list picker needs — deliberately the
+ * SAME shape/query as the Staff-safe branch above (never the includeCost
+ * branch): item selection during sale entry must never leak cost even to
+ * an Owner's own list-picking UI, since the picker is a shared component.
+ * The Owner-only cost view lives only in the Finished Stock tab.
+ */
+export async function listAvailableFinishedJewelleryForSale(search?: string): Promise<FinishedJewelleryStockRow[]> {
+  return listFinishedJewelleryStock({ search, status: "AVAILABLE", includeCost: false });
+}
+
+// ---------------------------------------------------------------------------
+// Finished Jewellery Sales & Profit report (Owner-only — every field here
+// is cost/margin data) — sale-line grain so it can be filtered/grouped by
+// item, customer or date on the client, and CSV-exported as-is.
+// ---------------------------------------------------------------------------
+
+export type FinishedJewellerySaleLineReportRow = {
+  saleId: string;
+  saleCode: string;
+  saleStatus: string;
+  saleDate: Date;
+  customerName: string;
+  finishedCode: string;
+  itemDescription: string;
+  taxableValue: Decimal;
+  cogsAmount: Decimal;
+  grossProfit: Decimal;
+  returnStatus: string;
+};
+
+export async function listFinishedJewellerySaleLines(filters?: {
+  finishedJewelleryId?: string;
+  customerId?: string;
+  dateFrom?: Date;
+  dateTo?: Date;
+}): Promise<FinishedJewellerySaleLineReportRow[]> {
+  const lines = await prisma.finishedJewellerySaleLine.findMany({
+    where: {
+      finishedJewelleryId: filters?.finishedJewelleryId,
+      sale: {
+        customerId: filters?.customerId,
+        saleDate: { gte: filters?.dateFrom, lte: filters?.dateTo },
+      },
+    },
+    include: {
+      sale: { include: { customer: true } },
+      finishedJewellery: { select: { finishedCode: true } },
+    },
+    orderBy: [{ sale: { saleDate: "desc" } }, { sortOrder: "asc" }],
+    take: 500,
+  });
+
+  return lines.map((l) => {
+    const taxableValue = round2(l.taxableValue);
+    const cogsAmount = round2(l.cogsAmount);
+    return {
+      saleId: l.saleId,
+      saleCode: l.sale.saleCode,
+      saleStatus: l.sale.status,
+      saleDate: l.sale.saleDate,
+      customerName: l.sale.customer.name,
+      finishedCode: l.finishedJewellery.finishedCode,
+      itemDescription: l.itemDescriptionSnapshot,
+      taxableValue,
+      cogsAmount,
+      grossProfit: round2(taxableValue.minus(cogsAmount)),
+      returnStatus: l.returnStatus,
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Dashboard integration
 // ---------------------------------------------------------------------------
 
@@ -553,4 +797,102 @@ export async function getPendingJewelleryJobsCount(): Promise<number> {
   return prisma.jewelleryJob.count({
     where: { status: { in: ["DRAFT", "MATERIALS_ISSUED", "IN_PROGRESS", "PARTIALLY_RECEIVED", "NEEDS_CORRECTION"] } },
   });
+}
+
+export type FinishedJewelleryStockSummary = {
+  availableCount: number;
+  availableFineWeight: Decimal;
+  // Owner-only — undefined unless includeValue was requested.
+  availableInventoryValue?: Decimal;
+};
+
+// ---------------------------------------------------------------------------
+// Finished Jewellery Sale management (Owner-only — cancellation/return UI)
+// ---------------------------------------------------------------------------
+
+export type FinishedJewellerySaleLineForManagement = {
+  id: string;
+  finishedCode: string;
+  itemDescription: string;
+  taxableValue: Decimal;
+  taxAmount: Decimal;
+  lineTotal: Decimal;
+  returnStatus: string;
+};
+
+export type FinishedJewellerySaleForManagement = {
+  id: string;
+  saleCode: string;
+  saleDate: Date;
+  customerName: string;
+  status: string;
+  grandTotal: Decimal;
+  lines: FinishedJewellerySaleLineForManagement[];
+};
+
+/** Recent Finished Jewellery Sales with their lines, for the Owner-only
+ * cancellation/return management UI. Cost fields are deliberately NOT
+ * included here — this view only needs enough to identify a sale/line and
+ * drive the cancel/return actions, not COGS/margin. */
+export async function listFinishedJewellerySalesForManagement(
+  search?: string
+): Promise<FinishedJewellerySaleForManagement[]> {
+  const sales = await prisma.finishedJewellerySale.findMany({
+    where: search
+      ? {
+          OR: [
+            { saleCode: { contains: search, mode: "insensitive" } },
+            { customer: { name: { contains: search, mode: "insensitive" } } },
+          ],
+        }
+      : undefined,
+    include: {
+      customer: { select: { name: true } },
+      lines: { include: { finishedJewellery: { select: { finishedCode: true } } }, orderBy: { sortOrder: "asc" } },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 100,
+  });
+
+  return sales.map((s) => ({
+    id: s.id,
+    saleCode: s.saleCode,
+    saleDate: s.saleDate,
+    customerName: s.customer.name,
+    status: s.status,
+    grandTotal: round2(s.grandTotal),
+    lines: s.lines.map((l) => ({
+      id: l.id,
+      finishedCode: l.finishedJewellery.finishedCode,
+      itemDescription: l.itemDescriptionSnapshot,
+      taxableValue: round2(l.taxableValue),
+      taxAmount: round2(l.taxAmount),
+      lineTotal: round2(l.lineTotal),
+      returnStatus: l.returnStatus,
+    })),
+  }));
+}
+
+export async function getFinishedJewelleryStockSummary(includeValue = false): Promise<FinishedJewelleryStockSummary> {
+  if (includeValue) {
+    const rows = await prisma.finishedJewellery.findMany({
+      where: { status: "AVAILABLE" },
+      select: { fineMetalWeight: true, metalCost: true, diamondCost: true, labourAllocated: true },
+    });
+    return {
+      availableCount: rows.length,
+      availableFineWeight: round3(rows.reduce((sum, r) => sum.plus(r.fineMetalWeight), new Decimal(0))),
+      availableInventoryValue: round2(
+        rows.reduce((sum, r) => sum.plus(getAuthoritativeInventoryCost(r)), ZERO)
+      ),
+    };
+  }
+  const rows = await prisma.finishedJewellery.findMany({
+    where: { status: "AVAILABLE" },
+    select: { fineMetalWeight: true },
+  });
+  return {
+    availableCount: rows.length,
+    availableFineWeight: round3(rows.reduce((sum, r) => sum.plus(r.fineMetalWeight), new Decimal(0))),
+  };
 }
