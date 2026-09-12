@@ -43,3 +43,27 @@ body {
 * {
   border-color: var(--border);
 }
+
+/* Phase 5 customer quotation print view — hides every OTHER part of the
+   page (sidebar, tabs, Owner-only surrounding UI) when printing, leaving
+   only the quotation itself. Applied via the .quotation-print-area class
+   on QuotationPrintView.tsx; nothing else in the app opts into this. */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .quotation-print-area,
+  .quotation-print-area * {
+    visibility: visible;
+  }
+  .quotation-print-area {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    margin: 0;
+    padding: 1.5rem;
+  }
+  .quotation-no-print {
+    display: none !important;
+  }
+}

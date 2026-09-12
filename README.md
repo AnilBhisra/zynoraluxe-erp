@@ -9,21 +9,30 @@ Phase 3: Rough-to-Polished Diamond Manufacturing — Rough purchase/stock,
 Issue Rough to Karigar, Cutting-Polishing Jobs, Receive Polished (yield/
 loss, multi-output), Polished Stock, all fully integrated into the
 Phase 2 accounting engine.
-Phase 4 (this branch, `phase-4-jewellery-jobs`): Jewellery Jobs and
-Manufacturing — Metal/Purity master, Metal Stock (purchase, opening,
-issue, return/scrap, authorized adjustment), Jewellery Job creation,
-Issue Materials (metal + real Phase 3 polished diamonds + manual other
-material), Receive Finished Jewellery (partial receipts, multi-output,
-fine-weight/diamond reconciliation), cancellation/reversal, all fully
-integrated into the Phase 2 accounting engine and Phase 3's diamond
-stock.
+Phase 4: Jewellery Jobs and Manufacturing — Metal/Purity master, Metal
+Stock (purchase, opening, issue, return/scrap, authorized adjustment),
+Jewellery Job creation, Issue Materials (metal + real Phase 3 polished
+diamonds + manual other material), Receive Finished Jewellery (partial
+receipts, multi-output, fine-weight/diamond reconciliation),
+cancellation/reversal, all fully integrated into the Phase 2 accounting
+engine and Phase 3's diamond stock.
+Phase 5 (this branch, `phase-5-costing`): Jewellery Costing and
+Selling-Price Calculation — cost a real finished Phase 4 output
+("Actual" costing, sourced 1:1 from Phase 4's already-resolved figures,
+never re-derived) or build a pre-manufacturing quotation ("Estimate"
+costing, full multi-line metal/diamond/other-material/labour form),
+suggested selling price via markup-on-cost or target-margin-on-price,
+GST, discount, selling expenses, an immutable Finalized snapshot with
+revisions, and a customer-facing quotation that never reveals cost or
+profit. Informational only — never posts a Voucher/JournalEntry/
+StockMovement.
 
 Full Phase 1–6 scope is defined in
 `../ZYNORALUXE_JEWELLERY_ERP_MASTER_PLAN.md` (the locked source of truth).
-This build implements **Phase 1 + Phase 2 + Phase 3 + Phase 4 only** —
-Costing (selling price/profit) is still a route foundation, not working
-business logic. See `PHASE_2_VERIFICATION.md`, `PHASE_3_VERIFICATION.md`,
-and `PHASE_4_VERIFICATION.md` for the detailed verification reports.
+This build implements **Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5**.
+See `PHASE_2_VERIFICATION.md`, `PHASE_3_VERIFICATION.md`,
+`PHASE_4_VERIFICATION.md`, and `PHASE_5_VERIFICATION.md` for the
+detailed verification reports.
 
 ## Stack
 
@@ -256,7 +265,69 @@ same Decimal-everywhere rule (weight columns `Decimal(10,3)`, fineness
   human-readable Phase 4 code types (same atomic-upsert pattern as
   `diamond_sequences`, its own table so Phase 3's is never touched).
 
-Phase 5 tables (costing) are intentionally **not** created yet.
+**Phase 5 tables** (migrations `20260911170009_phase5_costing` +
+`20260911170402_phase5_costing_charge_line_is_labour`), same
+Decimal-everywhere rule:
+
+- **`costing_sequences`** — financial-year-aware, concurrency-safe
+  numbering (`CST/2026-27/0001`), same atomic-upsert pattern as
+  `voucher_sequences`, its own table so no other phase's numbering is
+  touched.
+- **`costing_settings`** — Owner-only singleton (`id: "default"`,
+  same pattern as `company_settings`) holding new-Draft defaults
+  (pricing method, markup/margin %, discount, GST, validity days,
+  rounding step, selling-expense fixed/percent, quotation terms).
+  Affects a **new** Draft's initial values only — read once at
+  creation time, never re-applied to an existing Draft or Finalized
+  sheet.
+- **`cost_sheets`** — one costing, either mode:
+  - **Actual** — `sourceFinishedJewelleryId` points at a real Phase 4
+    `finished_jewellery` row (only eligible while that row's job is
+    `COMPLETED`); every displayed source detail (job/receipt/output
+    code, source voucher number, purity display name, fineness, GST
+    rate percent) is copied into its own snapshot column at creation/
+    finalize time — a Finalized sheet never re-queries the live
+    master. "Refresh from source" re-copies the four cost fields from
+    the source output, but only while the sheet is still `DRAFT`.
+  - **Estimate** — no source link; every metal/diamond/other-material/
+    charge line is entered directly.
+  - Pricing/GST fields (`pricingMethod`, `markupPercent`,
+    `targetMarginPercent`, `discountType`/`discountValue`,
+    `gstTreatment`/`gstRatePercentSnapshot`, `priceType`,
+    `roundingStep`, `sellingExpenseFixed`/`sellingExpensePercent`) are
+    frozen forever once `status` becomes `FINALIZED` — a correction is
+    always a new revision (`previousVersionId`/`revisionNumber`/
+    `revisionGroupId`), never an edit.
+  - `linkedEstimateId` is an optional, Owner-picked (never inferred)
+    link from an Actual sheet back to the Estimate it started from,
+    purely for a variance display — comparing two unrelated records is
+    never possible since the link must be explicit.
+  - `costingNumber` (`CST/2026-27/0001`) is unique; status is
+    `DRAFT`→`FINALIZED`→(optionally)`ARCHIVED` — a Finalized sheet is
+    never hard-deleted, only archived; only a Draft can be deleted, and
+    only by Owner.
+- **`cost_sheet_metal_lines`** / **`cost_sheet_diamond_lines`** /
+  **`cost_sheet_other_material_lines`** / **`cost_sheet_charge_lines`**
+  — the priced line items. A diamond line may optionally point at a
+  real `polished_diamonds` row (Estimate mode) for a specific-stone
+  quote. A charge line's `method` is one of `FLAT`/`PER_GRAM`/
+  `PER_CARAT`/`PER_PIECE`/`PERCENT_OF_MATERIAL_COST` (the last based on
+  metal+diamond+other-material cost only, never other charge lines, so
+  several percentage charges never become order-dependent); `isLabour`
+  splits the calculation summary's "Labour cost" line from "Additional
+  manufacturing charges".
+- **`cost_sheet_audit_events`** — immutable audit trail
+  (`CREATED`/`UPDATED`/`REFRESHED`/`FINALIZED`/`REVISED`/`ARCHIVED`/
+  `UNARCHIVED`/`DRAFT_DELETED`), who/when, same append-only principle as
+  every stock-movement ledger elsewhere in this codebase.
+
+The 15-line calculation summary (Metal/Diamond/Other-material/Labour
+cost, additional charges, total production cost, suggested selling
+value, discount, taxable value, GST, customer total, selling expenses,
+net realization, profit, margin) is **never a stored column** — it is
+always derived at read time from a sheet's own (frozen-once-Finalized)
+inputs by `computeCostSheetTotals()` in `src/lib/costing/calculations.ts`,
+guaranteeing immutability automatically.
 
 ## Accounting workflow (Phase 2)
 
@@ -604,6 +675,110 @@ prefixes (`jewellery-design/`, `jewellery-finished/`) — set
 into the job's design-image field and each finished output's photo
 field.
 
+## Costing workflow (Phase 5)
+
+The `/costing` page has exactly three tabs (`?tab=sheets|new|settings`),
+**Owner-only** end to end — the nav link itself is hidden from Staff,
+and every server-side entry point (`page.tsx`, every Server Action)
+independently calls `requireOwner()`, never relying on the hidden nav
+link alone. Costing is **informational only**: `src/lib/costing/engine.ts`
+(deliberately not named `posting.ts`) never creates a Voucher,
+JournalEntry, StockMovement, or MetalStockMovement, and never mutates
+any Phase 1–4 row.
+
+- **Cost Sheets** — search/filter by mode (Actual/Estimate)/status
+  (Draft/Finalized/Archived)/date, CSV export, mobile-friendly cards.
+- **New Costing** — two modes, picked in plain language ("A piece we
+  already finished" / "An estimate before making it"):
+  - **Actual** — pick any real Phase 4 finished output whose job is
+    `COMPLETED` (see "Why `COMPLETED`-only" below); its metal/diamond/
+    other-material/labour cost is copied 1:1 from Phase 4's own
+    already-resolved figures — **never recomputed**, since Phase 4's
+    allocation math has already fully settled it. A Draft can be
+    re-synced from its source at any time via an explicit "Refresh from
+    source" action (Draft only).
+  - **Estimate** — a full multi-line form: any number of metal lines
+    (rate basis + wastage %), diamond lines (10 standard shapes +
+    Custom, or an optional link to a real Phase 3 polished diamond),
+    other-material lines (Moissanite/Coloured stone/Small stone/
+    Findings/Alloy/Enamel/Plating/Packaging/Other — display-only, same
+    as Phase 4's own other-material lines), and charge lines (Flat/
+    Per-gram/Per-carat/Per-piece/% of material cost, each optionally
+    flagged as labour). A live client-side preview
+    (`src/lib/costing/previewMath.ts`) shows the calculation summary as
+    you type — the server always recomputes authoritatively with
+    `Decimal` math on save, the preview is never trusted as-is.
+  - Either mode: pricing method (markup-on-cost **or** target-margin-
+    on-price — never both, never confused: switching recomputes the
+    selling value from the same production cost under the newly chosen
+    formula), discount (%/fixed), GST (reusing Phase 2's masters and
+    CGST+SGST/IGST state-code suggestion — never silently forced),
+    inclusive/exclusive pricing, optional rounding, optional fixed +
+    percentage selling expenses, and an optional manual override (shown
+    with a visible "manually overridden" indicator) — profit/margin
+    shown after a manual override or after discount/selling-expenses is
+    always the *real*, recalculated figure, never the unachieved target.
+- **Costing Settings** — Owner-only defaults for every pricing/GST/
+  rounding/selling-expense/quotation-terms field above. Affects a
+  **new** Draft's starting values only; saving Settings never rewrites
+  an existing Draft or Finalized sheet.
+
+### Why `COMPLETED`-only for Actual costing
+
+Phase 4's `receiveFinishedJewellery` retroactively re-splits an *open*
+job's earlier outputs' `otherMaterialCost`/`totalCost` every time a
+later receipt adds a new output (see "Cost allocation" under Phase 4
+above) — so an output's cost fields are only permanently settled once
+its job can never receive another output, i.e. once `status ===
+"COMPLETED"`. Costing enforces this as the single Actual-costing
+eligibility rule, which also cleanly covers "never cost a cancelled,
+incomplete, unresolved, or Needs-Correction job" in one check.
+
+### Lifecycle and immutability
+
+`DRAFT` → `FINALIZED` → (optionally) `ARCHIVED`. A Draft is fully
+editable (Estimate: every line/pricing field; Actual: pricing fields
+plus an explicit "Refresh from source" for the sourced cost fields).
+The moment a sheet is Finalized, **every** field — cost lines, pricing,
+GST, source snapshot — is frozen forever, even if the Metal/Purity
+master, a GST rate, or Costing Settings changes afterward; a real
+browser test proved this by editing the live 22K purity's fineness and
+display name after finalizing a costing sourced from a 22K output, then
+confirming the Finalized costing's money figures and displayed purity
+name were both completely unchanged. A correction is always a new
+**revision** (a linked new row, `revisionNumber` incremented,
+`previousVersionId` pointing back) — the original Finalized row is
+never edited. A Finalized sheet can be Archived (still searchable,
+never hard-deleted) and Unarchived. Only a Draft can be deleted, and
+only by Owner.
+
+### Customer quotation
+
+A clean, print-friendly view generated only from a `FINALIZED` or
+`ARCHIVED` sheet (`src/lib/costing/quotation.ts`'s
+`getCustomerQuotationView()` returns an exhaustively allow-listed field
+set — company/customer/item/metal/diamond/quantity/selling
+value/discount/GST breakdown/final total/valid-until/notes/terms/
+image) — it structurally cannot leak cost, Karigar cost, overhead,
+markup, margin, profit, or any internal source/audit reference, because
+those fields are never read into the object the view returns, not
+merely hidden by the component that renders it. Uses `window.print()` /
+"Save as PDF" (`.quotation-print-area` print CSS in
+`src/app/globals.css`) — there is no public, unauthenticated URL; it's
+the same Owner-only `/costing` route, just a different render.
+
+### Media storage
+
+Costing's optional design-image upload reuses
+`src/lib/storage/jewelleryMedia.ts` unchanged (same private bucket,
+server-only secret key, magic-byte validation, signed URLs) — only the
+category union type gained one additive value, `"costing-estimate"`.
+Unlike Jewellery's own upload actions (which correctly allow Staff,
+since Staff legitimately creates Jewellery Jobs), Costing's
+`uploadCostingPhotoAction`/`deleteCostingPhotoAction` are deliberately
+separate, Owner-gated wrappers — every Costing action, image uploads
+included, independently enforces `requireOwner()`.
+
 ## Posting / cancellation rules
 
 Every voucher type posts a balanced set of journal lines inside one DB
@@ -840,6 +1015,27 @@ rejected the same way a Staff click would be.
   instruction, Phase 4 stops at manufacturing cost; Phase 5 owns
   Costing/selling-price/profit.
 
+## Permissions (Phase 5 additions)
+
+- **Owner**: full access — create/edit/refresh-from-source/finalize/
+  revise/archive/unarchive/delete-Draft, Costing Settings, CSV export,
+  the customer quotation view, and every cost/profit/margin/markup/
+  rate/internal-quotation figure.
+- **Staff**: **no access at all**, the strictest permission boundary in
+  the app. `Costing` does not appear in the Staff navigation
+  (`src/lib/nav.ts`); a direct request to `/costing` redirects to
+  `/unauthorized` (`requireOwner()` at the top of
+  `src/app/(app)/costing/page.tsx`); **every** Server Action in
+  `src/app/actions/costing.ts` independently calls `requireOwner()`
+  before doing anything else, including the image-upload actions — so
+  a hand-crafted direct Server Action call, or a request with a
+  manipulated URL/query parameter, is rejected exactly the same way a
+  Staff click would be, never relying on a hidden button or a client-
+  side check alone. Dashboard's "Draft costings" card and "New
+  Costing" quick action are only ever fetched inside the `isOwner`
+  branch of `src/app/(app)/dashboard/page.tsx` — a Staff-rendered
+  Dashboard request never even queries for costing data.
+
 ## Authentication & authorization model
 
 - `src/lib/auth/password.ts` — bcrypt hashing (12 rounds).
@@ -872,9 +1068,45 @@ runtime bundle. `npm audit fix --force` would downgrade Prisma to 6.19.3,
 losing Prisma 7's driver-adapter setup used throughout this codebase; that
 trade is not worth it for a transitive, dev-only, unreachable code path.
 
+## Known Phase 5 limitations
+
+- **CSV export is client-side**, same as every earlier phase's export —
+  fine at small-shop row counts, not built for very large exports.
+- **Reports/lists are not paginated** beyond a reasonable cap, matching
+  the same known limitation already documented for Phase 2–4.
+- **Actual-vs-Estimate variance only ever compares a genuinely linked
+  pair** (`linkedEstimateId`, set explicitly by Owner, never inferred)
+  — there is no "closest match" heuristic that could compare two
+  unrelated records.
+- **No automatic internet/market price fetching** for Costing Settings'
+  defaults — every default is a plain Owner-entered number, by
+  explicit instruction.
+- **Costing Settings changes only affect new Drafts created after the
+  change** — an existing Draft or Finalized sheet never gets its
+  pricing/GST/rounding silently rewritten by a later Settings edit.
+
+See `PHASE_5_VERIFICATION.md` for the full verification report,
+including two real UI bugs found and fixed during live browser
+testing (a nested-`<form>` bug and a missing Finalize button for
+Draft Estimates), manual reconciliation of real sourced figures, and
+end-to-end cleanup/baseline proof. Its "Gap-closure verification pass"
+section adds a second round requested after review: a real
+diamond-integrated Actual costing (two real polished diamonds, one
+`SET` one `RETURNED`, real recognized metal process loss, hand-verified
+against direct database reads with zero mismatches), a full
+GST+discount+selling-expense+rounding Estimate reconciled line by line,
+deep quotation verification (raw server HTML + print media +
+unauthenticated-fetch check), an explicit before/after database
+snapshot proving zero accounting/stock mutation across every single
+Costing action, and a real manipulated-request replay of a captured
+Server Action using a Staff session. That pass also found and fixed two
+real data-integrity bugs in the (temporary, never-committed) cleanup
+tooling — not the product code — that had left orphaned
+`MetalStockMovement` and job/receipt `Voucher` rows silently inflating
+real ledger/stock figures.
+
 ## What's deliberately not built yet
 
-Accounting, Diamond, and Jewellery Jobs are real, working business
-logic. Costing (`/costing`) is still a route foundation only — it
-renders a page explaining Phase 5 will implement it. No selling-price or
-profit calculation exists yet, real or fake.
+Accounting, Diamond, Jewellery Jobs, and Costing are real, working
+business logic. Sale-of-jewellery / invoicing integration, deployment,
+and marketplace/e-commerce integration are Phase 6+ and not started.

@@ -4,6 +4,7 @@ import { requireUser } from "@/lib/auth/dal";
 import { getCashBankSummary, getReceivablePayableSummary } from "@/lib/accounting/reports";
 import { getDashboardDiamondSummary } from "@/lib/diamond/reports";
 import { getPendingJewelleryJobsCount } from "@/lib/jewellery/reports";
+import { getDraftCostingsCount } from "@/lib/costing/reports";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { SummaryCard } from "@/components/dashboard/SummaryCard";
 import { QuickActionButton } from "@/components/dashboard/QuickActionButton";
@@ -23,15 +24,18 @@ function carat(value: { toFixed: (n: number) => string }) {
   return `${value.toFixed(3)}`;
 }
 
-const PLACEHOLDER_ACTIONS = [{ label: "New Costing", href: "/costing", phase: 5 }];
-
 export default async function DashboardPage() {
   const user = await requireUser();
-  const [cashBank, receivablePayable, diamondSummary, pendingJewelleryJobs] = await Promise.all([
+  const isOwner = user.role === "OWNER";
+  const [cashBank, receivablePayable, diamondSummary, pendingJewelleryJobs, draftCostingsCount] = await Promise.all([
     getCashBankSummary(),
     getReceivablePayableSummary(),
     getDashboardDiamondSummary(),
     getPendingJewelleryJobsCount(),
+    // Costing figures are Owner-only — Staff must never receive even a
+    // draft COUNT through this query, so it is only ever fetched when
+    // isOwner is true (never fetched-then-hidden).
+    isOwner ? getDraftCostingsCount() : Promise.resolve(null),
   ]);
 
   return (
@@ -50,6 +54,9 @@ export default async function DashboardPage() {
         <SummaryCard label="Polished stock" value={carat(diamondSummary.polishedStockCarat)} unit="carat" />
         <SummaryCard label="Material with Karigar" value={carat(diamondSummary.materialWithKarigarCarat)} unit="carat" />
         <SummaryCard label="Pending jewellery jobs" value={String(pendingJewelleryJobs)} />
+        {isOwner && draftCostingsCount !== null ? (
+          <SummaryCard label="Draft costings" value={String(draftCostingsCount)} />
+        ) : null}
       </section>
 
       <section aria-label="Quick actions" className="mt-8">
@@ -70,9 +77,7 @@ export default async function DashboardPage() {
           <QuickActionButton label="Issue Rough" href="/diamond?tab=jobs&issue=1" enabled />
           <QuickActionButton label="Receive Polished" href="/diamond?tab=jobs" enabled />
           <QuickActionButton label="New Jewellery Job" href="/jewellery-jobs?tab=jobs&issue=1" enabled />
-          {PLACEHOLDER_ACTIONS.map((action) => (
-            <QuickActionButton key={action.label} {...action} />
-          ))}
+          {isOwner ? <QuickActionButton label="New Costing" href="/costing?tab=new" enabled /> : null}
         </div>
       </section>
     </div>

@@ -9,16 +9,11 @@ describe("getVisibleNavItems", () => {
     expect(items.some((item) => item.label === "Settings")).toBe(true);
   });
 
-  it("hides Settings from Staff but keeps every other item", () => {
+  it("hides Settings and Costing from Staff but keeps every other item", () => {
     const items = getVisibleNavItems("STAFF");
     expect(items.some((item) => item.label === "Settings")).toBe(false);
-    expect(items).toHaveLength(NAV_ITEMS.length - 1);
-    expect(items.map((item) => item.label)).toEqual([
-      "Dashboard",
-      "Accounting",
-      "Diamond",
-      "Jewellery Job",
-      "Costing",
-    ]);
+    expect(items.some((item) => item.label === "Costing")).toBe(false);
+    expect(items).toHaveLength(NAV_ITEMS.length - 2);
+    expect(items.map((item) => item.label)).toEqual(["Dashboard", "Accounting", "Diamond", "Jewellery Job"]);
   });
 });

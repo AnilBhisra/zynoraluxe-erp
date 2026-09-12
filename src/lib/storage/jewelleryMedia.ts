@@ -41,7 +41,11 @@ export class JewelleryStorageError extends Error {}
 const ALLOWED_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
 
-export type JewelleryAssetCategory = "jewellery-design" | "jewellery-finished";
+// "costing-estimate" added in Phase 5 (design photo on an Estimate
+// costing) — reuses this exact module rather than duplicating it, since
+// Costing's image needs (private bucket, signed URLs, magic-byte
+// validation) are identical, not a new security surface.
+export type JewelleryAssetCategory = "jewellery-design" | "jewellery-finished" | "costing-estimate";
 
 function getConfig() {
   const url = process.env.SUPABASE_URL;

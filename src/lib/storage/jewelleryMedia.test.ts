@@ -73,6 +73,12 @@ describe("uploadJewelleryAsset — allowed types", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("accepts a real JPEG under Phase 5's costing-estimate category — same security path, just a new path prefix", async () => {
+    mockFetchOnce({ ok: true });
+    const result = await uploadJewelleryAsset("costing-estimate", file(JPEG_BYTES, "image/jpeg"));
+    expect(result.assetId).toMatch(/^costing-estimate\/[0-9a-f-]{36}\.jpg$/);
+  });
+
   it("accepts a real PNG under the jewellery-finished category", async () => {
     mockFetchOnce({ ok: true });
     const result = await uploadJewelleryAsset("jewellery-finished", file(PNG_BYTES, "image/png"));

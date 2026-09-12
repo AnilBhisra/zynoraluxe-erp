@@ -30,14 +30,20 @@ describe("AppShell navigation", () => {
     expect(screen.getByRole("link", { name: /settings/i })).toBeInTheDocument();
   });
 
-  it("hides Settings from Staff", () => {
+  it("hides Settings and Costing from Staff", () => {
     renderShell("STAFF");
     expect(screen.queryByRole("link", { name: /settings/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /costing/i })).not.toBeInTheDocument();
   });
 
-  it("always shows Dashboard, Accounting, Diamond, Jewellery Job and Costing", () => {
+  it("shows Costing to an Owner", () => {
+    renderShell("OWNER");
+    expect(screen.getByRole("link", { name: /costing/i })).toBeInTheDocument();
+  });
+
+  it("always shows Dashboard, Accounting and Diamond and Jewellery Job to Staff", () => {
     renderShell("STAFF");
-    for (const label of ["Dashboard", "Accounting", "Diamond", "Jewellery Job", "Costing"]) {
+    for (const label of ["Dashboard", "Accounting", "Diamond", "Jewellery Job"]) {
       expect(screen.getByRole("link", { name: label })).toBeInTheDocument();
     }
   });

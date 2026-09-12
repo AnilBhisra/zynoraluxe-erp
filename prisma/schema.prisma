@@ -85,6 +85,13 @@ model User {
   jewelleryReceiptsCreated   JewelleryReceipt[]           @relation("JewelleryReceiptCreatedBy")
   finishedJewelleryCreated   FinishedJewellery[]          @relation("FinishedJewelleryCreatedBy")
 
+  costingSettingsUpdated CostingSettings[]      @relation("CostingSettingsUpdatedBy")
+  costSheetsCreated      CostSheet[]            @relation("CostSheetCreatedBy")
+  costSheetsUpdated      CostSheet[]            @relation("CostSheetUpdatedBy")
+  costSheetsFinalized    CostSheet[]            @relation("CostSheetFinalizedBy")
+  costSheetsArchived     CostSheet[]            @relation("CostSheetArchivedBy")
+  costSheetAuditEvents   CostSheetAuditEvent[]  @relation("CostSheetAuditEventUser")
+
   @@map("users")
 }
 
@@ -168,6 +175,8 @@ model Party {
   jewelleryJobsAsCustomer  JewelleryJob[]  @relation("JewelleryJobCustomer")
   jewelleryJobsAsKarigar   JewelleryJob[]  @relation("JewelleryJobKarigar")
 
+  costSheetsAsCustomer CostSheet[] @relation("CostSheetCustomer")
+
   @@index([type])
   @@index([name])
   @@map("parties")
@@ -241,9 +250,11 @@ model GstRate {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  invoiceLines   InvoiceLine[]
-  roughLots      RoughLot[]
-  metalPurchases MetalPurchase[]
+  invoiceLines     InvoiceLine[]
+  roughLots        RoughLot[]
+  metalPurchases   MetalPurchase[]
+  costSheets       CostSheet[]       @relation("CostSheetGstRate")
+  costingSettings  CostingSettings[] @relation("CostingSettingsGstRate")
 
   @@map("gst_rates")
 }
@@ -794,8 +805,9 @@ model PolishedDiamond {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  stockMovements      StockMovement[]
-  jewelleryIssueLines JewelleryDiamondIssueLine[]
+  stockMovements       StockMovement[]
+  jewelleryIssueLines  JewelleryDiamondIssueLine[]
+  costSheetDiamondLines CostSheetDiamondLine[]
 
   @@index([jobId])
   @@index([status])
@@ -913,6 +925,7 @@ model MetalPurity {
   jobsAsTargetPurity  JewelleryJob[]            @relation("JewelleryJobTargetPurity")
   metalIssueLines     JewelleryMetalIssueLine[]
   finishedJewellery   FinishedJewellery[]
+  costSheetMetalLines CostSheetMetalLine[]
 
   @@unique([metalType, displayName])
   @@map("metal_purities")
@@ -1309,7 +1322,8 @@ model FinishedJewellery {
 
   createdAt DateTime @default(now())
 
-  diamonds JewelleryDiamondIssueLine[]
+  diamonds   JewelleryDiamondIssueLine[]
+  costSheets CostSheet[]
 
   @@index([jobId])
   @@index([receiptId])
@@ -1336,4 +1350,397 @@ model JewellerySequence {
 
   @@unique([sequenceType, yearLabel])
   @@map("jewellery_sequences")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 — Jewellery Costing and Selling-Price Calculation
+// ---------------------------------------------------------------------------
+//
+// Informational only: creating, editing, finalizing, revising, or archiving
+// a CostSheet NEVER creates a Voucher/JournalEntry/StockMovement/
+// MetalStockMovement of any kind, and never mutates any Phase 1-4 row —
+// only ever reads from them (see src/lib/costing/engine.ts, deliberately
+// NOT named "posting.ts" like every other module's write engine, so no
+// reader ever assumes it touches the accounting ledger).
+//
+// Two source modes:
+//   ACTUAL   — snapshots real, already-posted Phase 3/4 figures from one
+//              FinishedJewellery output. Only allowed once that output's
+//              parent JewelleryJob is COMPLETED: Phase 4's own
+//              receiveFinishedJewellery legitimately keeps retroactively
+//              correcting an OPEN job's earlier outputs' otherMaterialCost/
+//              totalCost every time a later receipt adds a new output (see
+//              the "priorOutputs" reallocation there) — so sourcing from an
+//              output whose job isn't finished yet would risk snapshotting
+//              a number Phase 4 is still going to change underneath it.
+//              This one rule also naturally rejects a cancelled, still-
+//              in-progress, partially-received, or Needs-Correction job's
+//              outputs, since none of those statuses is COMPLETED.
+//   ESTIMATE — a manual, editable quotation built before any manufacturing
+//              exists; never reserves or issues real Phase 3/4 stock.
+//
+// A DRAFT sheet's inputs are fully editable (ACTUAL mode's "Refresh from
+// source" re-pulls the latest snapshot on demand — never automatically,
+// and only while still DRAFT). Once FINALIZED, every input column is
+// frozen forever: a later Metal/Purity, GST-rate, or Costing-Settings
+// change can never alter a finalized sheet's stored figures. A correction
+// to a finalized sheet is always a NEW revision (a new CostSheet row,
+// linked via previousVersionId/revisionGroupId) — never an edit in place.
+//
+// The full calculation summary (production cost, suggested selling
+// price, discount, GST, customer total, profit, margin, ...) is
+// deliberately NEVER a stored column here — see
+// src/lib/costing/calculations.ts. It is always DERIVED at read time from
+// this row's own (already-frozen, once finalized) inputs, the same
+// "compute on read from immutable stored facts, never a cached total"
+// principle every other module in this codebase already follows
+// (pendingFineWeightOf, getMetalStockBalanceInTx, ...) — so a finalized
+// sheet's displayed numbers can never drift out of sync with what was
+// actually frozen.
+
+enum CostSheetMode {
+  ACTUAL
+  ESTIMATE
+}
+
+enum CostSheetStatus {
+  DRAFT
+  FINALIZED
+  ARCHIVED
+}
+
+// Suggested selling value = Production cost x (1 + markup% / 100).
+// Never confused with margin — see MARGIN_ON_PRICE below.
+enum PricingMethod {
+  MARKUP_ON_COST
+  // Suggested selling value = Production cost / (1 - margin% / 100).
+  // Rejected server-side at margin% >= 100 (division by zero/negative).
+  MARGIN_ON_PRICE
+}
+
+enum DiscountType {
+  NONE
+  PERCENT
+  FIXED
+}
+
+// PERCENT_OF_MATERIAL_COST is deliberately based on metal + diamond +
+// other-material cost ONLY (never other charge lines) — so any number of
+// percentage-based charge lines on the same sheet can be computed
+// independently and simultaneously, with no order-dependency or
+// circularity between them. See src/lib/costing/calculations.ts.
+enum ChargeMethod {
+  FLAT
+  PER_GRAM
+  PER_CARAT
+  PER_PIECE
+  PERCENT_OF_MATERIAL_COST
+}
+
+enum OtherMaterialCategory {
+  MOISSANITE
+  COLOURED_STONE
+  SMALL_STONE
+  FINDINGS
+  ALLOY
+  ENAMEL
+  PLATING
+  PACKAGING
+  OTHER
+}
+
+enum CostSheetEventType {
+  CREATED
+  UPDATED
+  REFRESHED
+  FINALIZED
+  REVISED
+  ARCHIVED
+  UNARCHIVED
+  DRAFT_DELETED
+}
+
+// Financial-year-aware, concurrency-safe numbering (same atomic-upsert
+// pattern as VoucherSequence) — kept as its own table, own prefix, so
+// Phase 2-4's numbering is never touched by this phase.
+model CostingSequence {
+  id                 String @id @default(cuid())
+  financialYearLabel String @unique
+  lastNumber         Int    @default(0)
+
+  updatedAt DateTime @updatedAt
+
+  @@map("costing_sequences")
+}
+
+// Owner-only defaults. Singleton row (fixed id "default"), same pattern as
+// CompanySettings — no seed-time row is created; code falls back to safe
+// defaults when absent (see getCostingSettings). Affects a NEW Draft's
+// initial values ONLY — read once at creation time, never re-applied to
+// an existing Draft or Finalized sheet.
+model CostingSettings {
+  id String @id @default("default")
+
+  defaultPricingMethod         PricingMethod @default(MARKUP_ON_COST)
+  defaultMarkupPercent         Decimal       @default(0) @db.Decimal(8, 3)
+  defaultTargetMarginPercent   Decimal       @default(0) @db.Decimal(8, 3)
+  defaultDiscountType          DiscountType  @default(NONE)
+  defaultDiscountValue         Decimal       @default(0) @db.Decimal(14, 2)
+  defaultGstTreatment          GstTreatment  @default(NONE)
+  defaultGstRateId             String?
+  defaultGstRate               GstRate?      @relation("CostingSettingsGstRate", fields: [defaultGstRateId], references: [id])
+  defaultPriceType             TaxType       @default(EXCLUSIVE)
+  defaultValidityDays          Int           @default(15)
+  defaultRoundingStep          Decimal       @default(0) @db.Decimal(14, 2)
+  defaultSellingExpenseFixed   Decimal       @default(0) @db.Decimal(14, 2)
+  defaultSellingExpensePercent Decimal       @default(0) @db.Decimal(8, 3)
+  quotationTerms               String?
+
+  updatedByUserId String?
+  updatedBy       User?   @relation("CostingSettingsUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("costing_settings")
+}
+
+model CostSheet {
+  id            String          @id @default(cuid())
+  costingNumber String          @unique
+  mode          CostSheetMode
+  status        CostSheetStatus @default(DRAFT)
+
+  costingDate     DateTime
+  jewelleryType   JewelleryType
+  itemName        String
+  referenceNumber String?
+  quantity        Int     @default(1)
+  sizeOrLength    String?
+  designImageAssetId String?
+  notes           String?
+
+  customerId String?
+  customer   Party?  @relation("CostSheetCustomer", fields: [customerId], references: [id])
+
+  // ---- Actual-mode source (null for Estimate) — see file header note. ----
+  sourceFinishedJewelleryId String?
+  sourceFinishedJewellery   FinishedJewellery? @relation(fields: [sourceFinishedJewelleryId], references: [id])
+  sourceJobCode             String?
+  sourceReceiptCode         String?
+  sourceFinishedCode        String?
+  sourceVoucherNumber       String?
+  sourceRefreshedAt         DateTime?
+
+  // ---- Optional, Owner-picked (never inferred) link from an ACTUAL sheet
+  // back to the ESTIMATE it started from, purely for a variance display. ----
+  linkedEstimateId    String?
+  linkedEstimate      CostSheet?  @relation("CostSheetEstimateLink", fields: [linkedEstimateId], references: [id])
+  actualsFromEstimate CostSheet[] @relation("CostSheetEstimateLink")
+
+  // ---- Pricing / GST — every field below is frozen forever once
+  // status becomes FINALIZED; a correction is always a new revision. ----
+  pricingMethod              PricingMethod @default(MARKUP_ON_COST)
+  markupPercent              Decimal       @default(0) @db.Decimal(8, 3)
+  targetMarginPercent        Decimal       @default(0) @db.Decimal(8, 3)
+  manualSellingPriceOverride Decimal?      @db.Decimal(14, 2)
+  isManualOverride           Boolean       @default(false)
+  discountType               DiscountType  @default(NONE)
+  discountValue              Decimal       @default(0) @db.Decimal(14, 2)
+  gstTreatment               GstTreatment  @default(NONE)
+  gstRateId                  String?
+  gstRate                    GstRate?      @relation("CostSheetGstRate", fields: [gstRateId], references: [id])
+  gstRatePercentSnapshot     Decimal       @default(0) @db.Decimal(5, 2)
+  priceType                  TaxType       @default(EXCLUSIVE)
+  roundingStep               Decimal       @default(0) @db.Decimal(14, 2)
+  sellingExpenseFixed        Decimal       @default(0) @db.Decimal(14, 2)
+  sellingExpensePercent      Decimal       @default(0) @db.Decimal(8, 3)
+  quotationValidUntil        DateTime?
+  quotationTerms             String?
+
+  // ---- Lifecycle / revisions ----
+  revisionGroupId   String
+  revisionNumber    Int        @default(1)
+  previousVersionId String?    @unique
+  previousVersion   CostSheet? @relation("CostSheetRevision", fields: [previousVersionId], references: [id])
+  nextVersion       CostSheet? @relation("CostSheetRevision")
+
+  finalizedAt       DateTime?
+  finalizedByUserId String?
+  finalizedBy       User?     @relation("CostSheetFinalizedBy", fields: [finalizedByUserId], references: [id])
+
+  archivedAt       DateTime?
+  archivedByUserId String?
+  archivedBy       User?     @relation("CostSheetArchivedBy", fields: [archivedByUserId], references: [id])
+
+  idempotencyKey String? @unique
+
+  createdByUserId String
+  createdBy       User    @relation("CostSheetCreatedBy", fields: [createdByUserId], references: [id])
+  updatedByUserId String?
+  updatedBy       User?   @relation("CostSheetUpdatedBy", fields: [updatedByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  metalLines         CostSheetMetalLine[]
+  diamondLines       CostSheetDiamondLine[]
+  otherMaterialLines CostSheetOtherMaterialLine[]
+  chargeLines        CostSheetChargeLine[]
+  auditEvents        CostSheetAuditEvent[]
+
+  @@index([mode])
+  @@index([status])
+  @@index([customerId])
+  @@index([costingDate])
+  @@index([revisionGroupId])
+  @@index([sourceFinishedJewelleryId])
+  @@map("cost_sheets")
+}
+
+// One line per metal/purity in a costing. ACTUAL mode always has exactly
+// one (mirroring its single-purity FinishedJewellery source); ESTIMATE
+// mode may have several. wastagePercent/wastageWeight are ALWAYS zero in
+// ACTUAL mode — Phase 4's real recognized manufacturing loss is already
+// embedded inside the sourced amount (see calculations.ts); they exist
+// here only to model an ESTIMATE's own separate, clearly-labelled
+// wastage ALLOWANCE, never to be confused with that real, already-
+// resolved figure.
+model CostSheetMetalLine {
+  id          String    @id @default(cuid())
+  costSheetId String
+  costSheet   CostSheet @relation(fields: [costSheetId], references: [id], onDelete: Cascade)
+
+  metalType                 MetalType
+  purityId                  String?
+  purity                    MetalPurity? @relation(fields: [purityId], references: [id])
+  purityDisplayNameSnapshot String
+  finenessPercentSnapshot   Decimal      @db.Decimal(6, 3)
+
+  grossWeight    Decimal @default(0) @db.Decimal(10, 3)
+  wastagePercent Decimal @default(0) @db.Decimal(8, 3)
+  wastageWeight  Decimal @default(0) @db.Decimal(10, 3)
+  fineWeight     Decimal @default(0) @db.Decimal(10, 3)
+
+  rateBasis MetalRateBasis @default(PER_GROSS_GRAM)
+  rate      Decimal        @default(0) @db.Decimal(14, 4)
+
+  amount Decimal @default(0) @db.Decimal(14, 2)
+
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([costSheetId])
+  @@map("cost_sheet_metal_lines")
+}
+
+// One line per diamond (or diamond group) in a costing. ACTUAL mode's
+// line(s) mirror the real JewelleryDiamondIssueLine rows resolved SET into
+// the source output (sourcePolishedDiamondId set, amount = that diamond's
+// own real costAtIssue — never a fixed/rate computation). ESTIMATE mode
+// is fully manual (sourcePolishedDiamondId null).
+model CostSheetDiamondLine {
+  id          String    @id @default(cuid())
+  costSheetId String
+  costSheet   CostSheet @relation(fields: [costSheetId], references: [id], onDelete: Cascade)
+
+  sourcePolishedDiamondId String?
+  sourcePolishedDiamond   PolishedDiamond? @relation(fields: [sourcePolishedDiamondId], references: [id])
+  polishedCodeSnapshot    String?
+
+  diamondType     String?
+  shape           DiamondShape @default(ROUND)
+  customShapeName String?
+  quantity        Int          @default(1)
+  totalCarat      Decimal      @default(0) @db.Decimal(10, 3)
+
+  ratePerCarat      Decimal? @db.Decimal(14, 2)
+  fixedAmount       Decimal? @db.Decimal(14, 2)
+  certificateCharge Decimal  @default(0) @db.Decimal(14, 2)
+
+  amount Decimal @default(0) @db.Decimal(14, 2)
+  notes  String?
+
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([costSheetId])
+  @@map("cost_sheet_diamond_lines")
+}
+
+// Simple manual lines (Moissanite, coloured/small stone, findings, alloy,
+// enamel, plating, packaging, other) — never stock-tracked, exactly like
+// Phase 4's own JewelleryOtherMaterialLine. ACTUAL mode gets exactly one
+// such line, copying the source output's single blended
+// FinishedJewellery.otherMaterialCost figure (Phase 4 never breaks that
+// figure down per-line at the output level, so this sheet honestly
+// reflects the same granularity rather than fabricating a breakdown that
+// doesn't exist in the source).
+model CostSheetOtherMaterialLine {
+  id          String    @id @default(cuid())
+  costSheetId String
+  costSheet   CostSheet @relation(fields: [costSheetId], references: [id], onDelete: Cascade)
+
+  category    OtherMaterialCategory @default(OTHER)
+  description String
+  quantity    Decimal? @db.Decimal(10, 3)
+  weight      Decimal? @db.Decimal(10, 3)
+  rate        Decimal? @db.Decimal(14, 2)
+  amount      Decimal  @default(0) @db.Decimal(14, 2)
+
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([costSheetId])
+  @@map("cost_sheet_other_material_lines")
+}
+
+// Labour / making / CAD / hallmark / certification / setting / packaging /
+// shipping / misc charge lines. ACTUAL mode gets exactly one line
+// ("Karigar labour & manufacturing charges"), copying the source output's
+// single blended FinishedJewellery.labourAllocated figure — Phase 4 only
+// tracks labour/making/setting/plating/other-expense as RECEIPT-level
+// totals, never broken out per output, so this sheet does not fabricate
+// a breakdown Phase 4 never computed. ESTIMATE mode supports any number
+// of manually-labelled lines with their own calculation method.
+model CostSheetChargeLine {
+  id          String    @id @default(cuid())
+  costSheetId String
+  costSheet   CostSheet @relation(fields: [costSheetId], references: [id], onDelete: Cascade)
+
+  label  String
+  // Splits the calculation summary's "Labour cost" (this flag true) from
+  // its separate "Additional manufacturing charges" (false) — a display
+  // grouping only, freely chosen per line, so any number of lines can be
+  // marked either way (e.g. both "Karigar labour" and "Setting labour").
+  isLabour Boolean      @default(false)
+  method   ChargeMethod @default(FLAT)
+  rate     Decimal      @default(0) @db.Decimal(14, 2)
+  amount   Decimal      @default(0) @db.Decimal(14, 2)
+
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([costSheetId])
+  @@map("cost_sheet_charge_lines")
+}
+
+// Immutable, append-only audit trail — never updated or deleted, same
+// principle as StockMovement/MetalStockMovement, applied to a costing's
+// lifecycle events instead of a stock ledger.
+model CostSheetAuditEvent {
+  id          String    @id @default(cuid())
+  costSheetId String
+  costSheet   CostSheet @relation(fields: [costSheetId], references: [id], onDelete: Cascade)
+
+  eventType CostSheetEventType
+  note      String?
+
+  userId String
+  user   User   @relation("CostSheetAuditEventUser", fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([costSheetId])
+  @@map("cost_sheet_audit_events")
 }
