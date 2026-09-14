@@ -129,3 +129,35 @@ export async function setStaffActive(formData: FormData): Promise<void> {
 
   revalidatePath("/settings");
 }
+
+export async function resetStaffPassword(
+  _prevState: SettingsFormState,
+  formData: FormData
+): Promise<SettingsFormState> {
+  await requireOwner();
+
+  const userId = formData.get("userId");
+  const newPassword = formData.get("newPassword");
+
+  if (typeof userId !== "string" || !userId) {
+    return { error: "Invalid user selection." };
+  }
+
+  if (typeof newPassword !== "string" || newPassword.length < 8) {
+    return { error: "New password must be at least 8 characters long." };
+  }
+
+  const target = await prisma.user.findUnique({ where: { id: userId } });
+  if (!target || target.role !== "STAFF") {
+    return { error: "Staff account not found." };
+  }
+
+  const passwordHash = await hashPassword(newPassword);
+  await prisma.user.update({
+    where: { id: userId },
+    data: { passwordHash },
+  });
+
+  revalidatePath("/settings");
+  return { success: true };
+}
