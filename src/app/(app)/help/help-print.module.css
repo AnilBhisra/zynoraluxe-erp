@@ -1,0 +1,44 @@
+/* Scoped print stylesheet for /help — only affects printing while this
+ * page's module CSS is loaded (Next.js CSS Modules emit a real, separate
+ * stylesheet <link>, never an inline <style>, so this needs no CSP nonce). */
+
+@media print {
+  :global([data-print-hide="true"]) {
+    display: none !important;
+  }
+
+  :global(html),
+  :global(body) {
+    background: #fff !important;
+  }
+
+  :global(main) {
+    padding: 0 !important;
+  }
+
+  .root {
+    max-width: none;
+  }
+
+  .noPrint {
+    display: none !important;
+  }
+
+  .section {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .section h3 {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+
+  :global(table) {
+    break-inside: avoid;
+  }
+
+  @page {
+    margin: 14mm 12mm;
+  }
+}

@@ -48,6 +48,16 @@ describe("AppShell navigation", () => {
     }
   });
 
+  it("shows the Help / મદદ nav item to an Owner", () => {
+    renderShell("OWNER");
+    expect(screen.getByRole("link", { name: "Help / મદદ" })).toHaveAttribute("href", "/help");
+  });
+
+  it("shows the Help / મદદ nav item to Staff too", () => {
+    renderShell("STAFF");
+    expect(screen.getByRole("link", { name: "Help / મદદ" })).toHaveAttribute("href", "/help");
+  });
+
   it("renders the signed-in user's name and role", () => {
     renderShell("OWNER");
     expect(screen.getByText("Asha Owner")).toBeInTheDocument();

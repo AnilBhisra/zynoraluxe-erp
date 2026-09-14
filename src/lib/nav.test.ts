@@ -14,6 +14,12 @@ describe("getVisibleNavItems", () => {
     expect(items.some((item) => item.label === "Settings")).toBe(false);
     expect(items.some((item) => item.label === "Costing")).toBe(false);
     expect(items).toHaveLength(NAV_ITEMS.length - 2);
-    expect(items.map((item) => item.label)).toEqual(["Dashboard", "Accounting", "Diamond", "Jewellery Job"]);
+    expect(items.map((item) => item.label)).toEqual([
+      "Dashboard",
+      "Accounting",
+      "Diamond",
+      "Jewellery Job",
+      "Help / મદદ",
+    ]);
   });
 });

@@ -43,6 +43,14 @@ describe("proxy", () => {
     expect(response.headers.get("location")).toContain("/login");
   });
 
+  it("protects /help while allowing an authenticated Owner or Staff session", async () => {
+    const anonymousResponse = await proxy(makeRequest("/help"));
+    expect(anonymousResponse.headers.get("location")).toContain("/login");
+
+    const authenticatedResponse = await proxy(makeRequest("/help", await validToken()));
+    expect(authenticatedResponse.headers.get("location")).toBeNull();
+  });
+
   it("lets an authenticated visitor reach a protected route", async () => {
     const response = await proxy(makeRequest("/dashboard", await validToken()));
     expect(response.headers.get("location")).toBeNull();

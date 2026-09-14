@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { requireUser } from "@/lib/auth/dal";
 import { prisma } from "@/lib/db/prisma";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { HelpLink } from "@/components/help/HelpLink";
 import {
   getDiamondJobDetail,
   getKarigarMaterialBalances,
@@ -62,7 +63,11 @@ export default async function DiamondPage({ searchParams }: { searchParams: Prom
 
   return (
     <div>
-      <PageHeader title="Diamond" description="Rough purchase and stock, cutting-polishing jobs, and polished stock." />
+      <PageHeader
+        title="Diamond"
+        description="Rough purchase and stock, cutting-polishing jobs, and polished stock."
+        actions={<HelpLink anchor="diamond" />}
+      />
 
       <nav aria-label="Diamond sections" className="mb-6 flex flex-wrap gap-1 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1.5">
         <TabLink tab="rough" label="Rough Stock" active={tab === "rough"} />

@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { requireOwner } from "@/lib/auth/dal";
 import { prisma } from "@/lib/db/prisma";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { HelpLink } from "@/components/help/HelpLink";
 import { getCostSheetDetail, getCostingSettings, listCostSheets } from "@/lib/costing/reports";
 import { listEligibleFinishedJewelleryOutputs } from "@/lib/costing/sourcing";
 import { getCustomerQuotationView } from "@/lib/costing/quotation";
@@ -61,6 +62,7 @@ export default async function CostingPage({ searchParams }: { searchParams: Prom
       <PageHeader
         title="Costing"
         description="Work out the real cost of a finished piece, or put together a quotation before you start making it."
+        actions={<HelpLink anchor="costing" />}
       />
 
       <nav aria-label="Costing sections" className="mb-6 flex flex-wrap gap-1 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1.5">

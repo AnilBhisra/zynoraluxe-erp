@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { requireOwner } from "@/lib/auth/dal";
 import { prisma } from "@/lib/db/prisma";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { HelpLink } from "@/components/help/HelpLink";
 import { Card, CardHeader, CardTitle } from "@/components/ui/Card";
 import { CompanySettingsForm } from "@/components/settings/CompanySettingsForm";
 import { AddStaffForm } from "@/components/settings/AddStaffForm";
@@ -32,7 +33,11 @@ export default async function SettingsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Settings" description="Company details and Staff accounts." />
+      <PageHeader
+        title="Settings"
+        description="Company details and Staff accounts."
+        actions={<HelpLink anchor="settings" />}
+      />
 
       <Card>
         <CardHeader>

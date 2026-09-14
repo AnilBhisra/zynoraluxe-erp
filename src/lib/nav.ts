@@ -11,6 +11,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Jewellery Job", href: "/jewellery-jobs" },
   { label: "Costing", href: "/costing", ownerOnly: true },
   { label: "Settings", href: "/settings", ownerOnly: true },
+  { label: "Help / મદદ", href: "/help" },
 ];
 
 export function getVisibleNavItems(role: "OWNER" | "STAFF"): NavItem[] {

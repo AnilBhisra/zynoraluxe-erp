@@ -16,6 +16,7 @@ import { listAvailableFinishedJewelleryForSale, listFinishedJewellerySaleLines }
 import { resolveJewelleryAssetUrl } from "@/lib/storage/jewelleryMedia";
 import type { SerializedFinishedStockRow } from "@/components/jewellery/FinishedStockTab";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { HelpLink } from "@/components/help/HelpLink";
 import { PartyForm } from "@/components/accounting/PartyForm";
 import { PartyEditForm } from "@/components/accounting/PartyEditForm";
 import { PartyList } from "@/components/accounting/PartyList";
@@ -101,7 +102,11 @@ export default async function AccountingPage({
 
   return (
     <div>
-      <PageHeader title="Accounting" description="Transactions, parties, ledger and reports." />
+      <PageHeader
+        title="Accounting"
+        description="Transactions, parties, ledger and reports."
+        actions={<HelpLink anchor="accounting" />}
+      />
 
       <nav aria-label="Accounting sections" className="mb-6 flex flex-wrap gap-1 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1.5">
         <TabLink tab="transactions" label="Transactions" active={tab === "transactions"} />

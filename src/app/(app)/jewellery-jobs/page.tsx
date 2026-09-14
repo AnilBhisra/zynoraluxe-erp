@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { requireUser } from "@/lib/auth/dal";
 import { prisma } from "@/lib/db/prisma";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { HelpLink } from "@/components/help/HelpLink";
 import {
   getJewelleryJobDetail,
   getKarigarJewelleryMaterialBalances,
@@ -68,7 +69,11 @@ export default async function JewelleryJobsPage({ searchParams }: { searchParams
 
   return (
     <div>
-      <PageHeader title="Jewellery Jobs" description="Create jobs, issue metal and diamonds, receive finished jewellery, and track Metal Stock and Finished Stock." />
+      <PageHeader
+        title="Jewellery Jobs"
+        description="Create jobs, issue metal and diamonds, receive finished jewellery, and track Metal Stock and Finished Stock."
+        actions={<HelpLink anchor="metal-jewellery" />}
+      />
 
       <nav aria-label="Jewellery sections" className="mb-6 flex flex-wrap gap-1 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1.5">
         <TabLink tab="jobs" label="Jewellery Jobs" active={tab === "jobs"} />

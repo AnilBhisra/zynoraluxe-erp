@@ -131,7 +131,10 @@ export function AppShell({
   return (
     <div className="flex min-h-dvh flex-col lg:flex-row">
       {/* Desktop sidebar */}
-      <aside className="hidden w-64 shrink-0 flex-col border-r border-[var(--border)] bg-[var(--surface)] py-4 lg:flex">
+      <aside
+        data-print-hide="true"
+        className="hidden w-64 shrink-0 flex-col border-r border-[var(--border)] bg-[var(--surface)] py-4 lg:flex"
+      >
         <div className="mb-6">
           <BrandMark />
         </div>
@@ -140,7 +143,10 @@ export function AppShell({
       </aside>
 
       {/* Mobile top bar */}
-      <header className="flex items-center justify-between border-b border-[var(--border)] bg-[var(--surface)] px-4 py-3 lg:hidden">
+      <header
+        data-print-hide="true"
+        className="flex items-center justify-between border-b border-[var(--border)] bg-[var(--surface)] px-4 py-3 lg:hidden"
+      >
         <BrandMark />
         <button
           ref={openButtonRef}

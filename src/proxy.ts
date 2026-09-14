@@ -14,6 +14,7 @@ const PROTECTED_PREFIXES = [
   "/jewellery-jobs",
   "/costing",
   "/settings",
+  "/help",
 ];
 
 const isProduction = process.env.NODE_ENV === "production";
