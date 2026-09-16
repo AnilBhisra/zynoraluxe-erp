@@ -323,6 +323,13 @@ describe("cancelVoucherAction permissions", () => {
   // Phase 7: a direct Polished Diamond Purchase is also a plain "PURCHASE"
   // voucher; generic cancellation would reverse accounting but leave every
   // packet's PURCHASE_IN movement standing.
+  it("rejects cancelling a packet stock adjustment voucher through the generic action", async () => {
+    mocks.voucherFindUnique.mockResolvedValue({ voucherType: "STOCK_ADJUSTMENT" });
+    const result = await cancelVoucherAction(undefined, formData({ voucherId: "v1", cancellationReason: "Wrong count" }));
+    expect(result?.error).toMatch(/opposite adjustment/);
+    expect(mocks.cancelVoucher).not.toHaveBeenCalled();
+  });
+
   it("rejects cancelling a Polished Diamond Purchase voucher through the generic action", async () => {
     mocks.voucherFindUnique.mockResolvedValue({ voucherType: "PURCHASE" });
     mocks.polishedPurchaseFindUnique.mockResolvedValue({ id: "pp1" });

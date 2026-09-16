@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { CsvDownloadButton } from "@/components/accounting/CsvDownloadButton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import type { PartyOption } from "@/components/accounting/PartySelect";
+import { AdjustPacketForm } from "@/components/diamond/AdjustPacketForm";
 import { CancelPolishedPurchaseForm } from "@/components/diamond/CancelPolishedPurchaseForm";
 import { PolishedPurchaseForm } from "@/components/diamond/PolishedPurchaseForm";
 import { shapeLabel } from "@/lib/diamond/shapes";
@@ -204,6 +205,7 @@ export function PolishedPacketsSection({
                   {p.purchaseCode ? ` · ${p.purchaseCode}` : ""}
                   {p.supplierName ? ` · Party / Supplier: ${p.supplierName}` : ""}
                 </p>
+                {isOwner ? <AdjustPacketForm packetId={p.id} packetCode={p.packetCode} /> : null}
               </li>
             ))}
           </ul>

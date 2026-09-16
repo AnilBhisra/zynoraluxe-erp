@@ -10,6 +10,7 @@ import { parseDateOnly } from "@/lib/accounting/financialYear";
 import * as diamondPosting from "@/lib/diamond/posting";
 import * as polishedPurchasePosting from "@/lib/diamond/polishedPurchase";
 import * as packetProcessPosting from "@/lib/diamond/packetProcess";
+import * as packetAdjustmentPosting from "@/lib/diamond/packetAdjustment";
 import {
   deleteDiamondAsset,
   isDiamondStorageConfigured,
@@ -17,6 +18,7 @@ import {
   type DiamondAssetCategory,
 } from "@/lib/storage/diamondMedia";
 import {
+  adjustPacketSchema,
   cancelJobSchema,
   cancelPacketProcessJobSchema,
   cancelPolishedPurchaseSchema,
@@ -969,6 +971,57 @@ export async function cancelPacketProcessJobAction(
     return { error: "Could not cancel this job. Please try again." };
   }
 
+  revalidateDiamond();
+  return { success: true };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7 — Owner packet count adjustment
+// ---------------------------------------------------------------------------
+
+export async function adjustPacketStockAction(
+  _prevState: DiamondFormState,
+  formData: FormData
+): Promise<DiamondFormState> {
+  const owner = await requireOwner();
+
+  const parsed = adjustPacketSchema.safeParse({
+    packetId: formData.get("packetId"),
+    direction: formData.get("direction"),
+    adjustmentDate: formData.get("adjustmentDate"),
+    pieces: formData.get("pieces") || "0",
+    carat: formData.get("carat") || "0",
+    costValue: formData.get("costValue") || undefined,
+    reason: formData.get("reason"),
+  });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
+  }
+  const data = parsed.data;
+  const adjustmentDate = safeParseDateOnly(data.adjustmentDate);
+  if (!adjustmentDate) return { error: "Enter a valid date." };
+
+  const fy = await getCompanyFySettings();
+  try {
+    await prisma.$transaction((tx) =>
+      packetAdjustmentPosting.adjustPacketStock(tx, {
+        fyStartMonth: fy.fyStartMonth,
+        fyStartDay: fy.fyStartDay,
+        packetId: data.packetId,
+        direction: data.direction,
+        pieces: data.pieces,
+        carat: data.carat,
+        costValue: data.costValue ?? null,
+        adjustmentDate,
+        reason: data.reason,
+        createdByUserId: owner.id,
+      })
+    );
+  } catch (error) {
+    if (error instanceof packetAdjustmentPosting.PostingError) return { error: error.message };
+    console.error("adjustPacketStockAction failed:", error);
+    return { error: "Could not save this adjustment. Please try again." };
+  }
   revalidateDiamond();
   return { success: true };
 }

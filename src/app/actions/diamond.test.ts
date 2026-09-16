@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   cancelPacketProcessJob: vi.fn(),
   packetProcessReceiptFindUnique: vi.fn(),
   diamondProcessCreate: vi.fn(),
+  adjustPacketStock: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/dal", () => ({
@@ -85,6 +86,11 @@ vi.mock("@/lib/diamond/packetProcess", async () => {
   };
 });
 
+vi.mock("@/lib/diamond/packetAdjustment", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/diamond/packetAdjustment")>("@/lib/diamond/packetAdjustment");
+  return { ...actual, adjustPacketStock: mocks.adjustPacketStock };
+});
+
 vi.mock("@/lib/storage/diamondMedia", () => ({
   isDiamondStorageConfigured: mocks.isDiamondStorageConfigured,
   uploadDiamondAsset: mocks.uploadDiamondAsset,
@@ -93,6 +99,7 @@ vi.mock("@/lib/storage/diamondMedia", () => ({
 
 import {
   cancelDiamondJobAction,
+  adjustPacketStockAction,
   cancelPacketProcessJobAction,
   cancelPolishedPurchaseAction,
   createPolishedPurchaseAction,
@@ -479,7 +486,14 @@ describe("Phase 7 — Manufacturer and Job Manufacturer actions", () => {
     await expect(
       saveDiamondProcessAction(undefined, formData({ name: "4P / Laser", outputKind: "ROUGH" }))
     ).rejects.toThrow();
+    await expect(
+      adjustPacketStockAction(
+        undefined,
+        formData({ packetId: "pkt-1", direction: "OUT", adjustmentDate: "2026-09-18", pieces: "1", carat: "0.1", reason: "Count" })
+      )
+    ).rejects.toThrow();
     expect(mocks.cancelPacketProcessJob).not.toHaveBeenCalled();
     expect(mocks.diamondProcessCreate).not.toHaveBeenCalled();
+    expect(mocks.adjustPacketStock).not.toHaveBeenCalled();
   });
 });

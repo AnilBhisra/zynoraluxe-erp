@@ -302,3 +302,13 @@ export const packetProcessReturnSchema = z.object({
 });
 
 export const cancelPacketProcessJobSchema = cancelJobSchema;
+
+export const adjustPacketSchema = z.object({
+  packetId: z.string().trim().min(1),
+  direction: z.enum(["IN", "OUT"]),
+  adjustmentDate: DATE_ONLY,
+  pieces: z.coerce.number().int().min(0, "Pieces cannot be negative."),
+  carat: z.coerce.number().min(0, "Carat cannot be negative."),
+  costValue: z.coerce.number().min(0, "Cost cannot be negative.").optional(),
+  reason: z.string().trim().min(3, "Give a short reason for this adjustment.").max(300),
+});

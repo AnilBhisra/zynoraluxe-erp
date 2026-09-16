@@ -306,6 +306,10 @@ enum VoucherType {
   // interprets as "mirror every original line exactly").
   SALE_RETURN
   CUSTOMER_REFUND
+  // Phase 7 — Owner-authorized polished packet count correction. Posted
+  // together with its packet ledger movement; never cancelled through the
+  // generic voucher flow (an opposite adjustment is the correction).
+  STOCK_ADJUSTMENT
 }
 
 // Concurrency-safe voucher numbering: one row per (type, financial year),

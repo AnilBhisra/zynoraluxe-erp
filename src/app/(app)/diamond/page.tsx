@@ -337,7 +337,8 @@ async function PolishedStockTabContent({ search, isOwner }: { search: string; is
   const [polished, summary, packetRows, purchaseRows, suppliers, brokers, paymentAccounts, gstRates] = await Promise.all([
     listPolishedDiamonds({ search: search || undefined }),
     getPolishedStockSummary(),
-    listPolishedPackets({ search: search || undefined }),
+    // The Owner also sees emptied packets, so a count correction can add stones back.
+    listPolishedPackets({ search: search || undefined, includeEmpty: isOwner }),
     listPolishedPurchases({ search: search || undefined }),
     prisma.party.findMany({ where: { type: "SUPPLIER", isActive: true }, orderBy: { name: "asc" } }),
     prisma.party.findMany({ where: { type: "BROKER", isActive: true }, orderBy: { name: "asc" } }),

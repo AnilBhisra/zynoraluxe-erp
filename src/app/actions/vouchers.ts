@@ -451,6 +451,9 @@ export async function cancelVoucherAction(
     where: { id: parsed.data.voucherId },
     select: { voucherType: true },
   });
+  if (target?.voucherType === "STOCK_ADJUSTMENT") {
+    return { error: "A stock adjustment is corrected with an opposite adjustment on the Polished Diamond page, so packet stock stays in sync." };
+  }
   if (target?.voucherType === "DIAMOND_ISSUE") {
     return { error: "Cancel this from the Diamond module's job detail view instead, so stock stays in sync." };
   }
