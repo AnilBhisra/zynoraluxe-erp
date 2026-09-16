@@ -29,6 +29,16 @@ const ENTRY_BUTTONS: { kind: EntryKind; label: string }[] = [
 ];
 
 type SaleMode = "CHOOSE" | "FINISHED" | "MANUAL";
+type PurchaseMode = "CHOOSE" | "OTHER";
+
+// Stock purchases must be recorded where their stock lives, so the stock
+// movements post in the same transaction as the voucher. Plain links, not
+// client navigation, per the existing same-page navigation rule.
+const STOCK_PURCHASE_LINKS: { href: string; title: string; description: string }[] = [
+  { href: "/diamond?tab=rough", title: "Rough Diamond", description: "Rough lots and pieces — Diamond → Rough Diamond → New purchase." },
+  { href: "/diamond?tab=polished", title: "Polished Diamond", description: "Packets with Party / Supplier and Dalal / Broker — Diamond → Polished Diamond." },
+  { href: "/jewellery-jobs?tab=metal", title: "Metal", description: "Gold, silver, platinum or Copper/Alloy — Jewellery Jobs → Metal Stock." },
+];
 
 export function TransactionsTab({
   parties,
@@ -52,6 +62,7 @@ export function TransactionsTab({
   const router = useRouter();
   const [open, setOpen] = useState<EntryKind | null>(initialOpen ?? null);
   const [saleMode, setSaleMode] = useState<SaleMode>("CHOOSE");
+  const [purchaseMode, setPurchaseMode] = useState<PurchaseMode>("CHOOSE");
   const [manualConfirmed, setManualConfirmed] = useState(false);
   const customers = parties.filter((p) => p.type === "CUSTOMER");
 
@@ -75,6 +86,7 @@ export function TransactionsTab({
             size="md"
             onClick={() => {
               setOpen(open === btn.kind ? null : btn.kind);
+              if (btn.kind === "PURCHASE") setPurchaseMode("CHOOSE");
               if (btn.kind === "SALE") {
                 setSaleMode("CHOOSE");
                 setManualConfirmed(false);
@@ -86,7 +98,32 @@ export function TransactionsTab({
         ))}
       </div>
 
-      {open === "PURCHASE" ? (
+      {open === "PURCHASE" && purchaseMode === "CHOOSE" ? (
+        <div className="flex flex-col gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
+          <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">What are you buying?</h3>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {STOCK_PURCHASE_LINKS.map((link) => (
+              <a
+                key={link.href}
+                href={link.href}
+                className="rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-4 text-left hover:border-zinc-400 dark:hover:border-zinc-500"
+              >
+                <p className="font-medium text-zinc-900 dark:text-zinc-50">{link.title}</p>
+                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{link.description}</p>
+              </a>
+            ))}
+            <button
+              type="button"
+              onClick={() => setPurchaseMode("OTHER")}
+              className="rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-4 text-left hover:border-zinc-400 dark:hover:border-zinc-500"
+            >
+              <p className="font-medium text-zinc-900 dark:text-zinc-50">Other purchase</p>
+              <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Anything that is not diamond or metal stock — accounting only.</p>
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {open === "PURCHASE" && purchaseMode === "OTHER" ? (
         <InvoiceVoucherForm
           voucherType="PURCHASE"
           action={createPurchase}

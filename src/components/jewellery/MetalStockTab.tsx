@@ -11,6 +11,7 @@ import { Field } from "@/components/ui/Field";
 import { Alert } from "@/components/ui/Alert";
 import { EmptyState } from "@/components/ui/EmptyState";
 import type { PartyOption } from "@/components/accounting/PartySelect";
+import { CsvDownloadButton } from "@/components/accounting/CsvDownloadButton";
 import { metalTypeLabel } from "@/lib/jewellery/types";
 
 /** Usable stock (issuable, valued in Metal Inventory) and recoverable scrap
@@ -243,6 +244,34 @@ export function MetalStockTab({
           </div>
         ) : null}
       </div>
+
+      {buckets.length > 0 ? (
+        <div className="self-start">
+          <CsvDownloadButton
+            filename="metal-stock.csv"
+            headers={[
+              "Metal",
+              "Purity",
+              "Usable gross (g)",
+              "Usable fine (g)",
+              ...(isOwner ? ["Usable cost"] : []),
+              "Scrap gross (g)",
+              "Scrap fine (g)",
+              ...(isOwner ? ["Scrap cost"] : []),
+            ]}
+            rows={buckets.map((b) => [
+              metalTypeLabel(b.metalType),
+              b.purityDisplayName,
+              b.grossWeight,
+              b.fineWeight,
+              ...(isOwner ? [b.costValue ?? ""] : []),
+              b.scrapGrossWeight,
+              b.scrapFineWeight,
+              ...(isOwner ? [b.scrapCostValue ?? ""] : []),
+            ])}
+          />
+        </div>
+      ) : null}
 
       {buckets.length > 0 ? (
         <div className="overflow-x-auto rounded-xl border border-[var(--border)]">

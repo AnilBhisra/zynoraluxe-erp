@@ -123,7 +123,7 @@ export function JobsTab({
                   <StatusPill status={job.status} />
                 </div>
                 <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                  {job.karigarName} · {job.processName ? `${job.processName} · ` : ""}{job.customShapeName || shapeLabel(job.requiredShape)} · {job.issuedPiecesCount} piece
+                  {job.karigarName} · {job.processName ?? "Cutting-Polishing (legacy)"} · {job.customShapeName || shapeLabel(job.requiredShape)} · {job.issuedPiecesCount} piece
                   {job.issuedPiecesCount === 1 ? "" : "s"} · {job.issuedRoughCarat}ct issued · {job.pendingCarat}ct pending
                 </p>
               </div>

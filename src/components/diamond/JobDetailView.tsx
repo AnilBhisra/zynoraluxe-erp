@@ -102,7 +102,9 @@ export function JobDetailView({ job, isOwner }: { job: SerializedJobDetail; isOw
                   ? ` · charge ${CHARGE_RATE_BASIS_LABELS[job.chargeRateBasis].toLowerCase()}${isOwner && job.chargeRate ? ` ₹${Number(job.chargeRate).toFixed(2)}` : ""}`
                   : ""}
               </p>
-            ) : null}
+            ) : (
+              <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Process: Cutting-Polishing (legacy)</p>
+            )}
           </div>
           <div className="flex items-center gap-2">
             {canIssueInProgress ? (

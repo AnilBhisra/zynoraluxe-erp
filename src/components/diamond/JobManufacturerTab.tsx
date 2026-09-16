@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/Button";
+import { CsvDownloadButton } from "@/components/accounting/CsvDownloadButton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import type { PartyOption } from "@/components/accounting/PartySelect";
 import type { ProcessOption } from "@/components/diamond/IssueRoughForm";
@@ -83,6 +84,24 @@ export function JobManufacturerTab({
         <button type="submit" className="h-11 rounded-lg border border-zinc-300 px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-zinc-800">
           Filter
         </button>
+        {jobs.length > 0 ? (
+          <CsvDownloadButton
+            filename="job-manufacturer.csv"
+            headers={["Job", "Manufacturer", "Process", "Issue date", "Status", "Issued pcs", "Issued ct", "Pending pcs", "Pending ct", ...(isOwner ? ["Process charge"] : [])]}
+            rows={jobs.map((j) => [
+              j.jobCode,
+              j.manufacturerName,
+              j.processName,
+              j.issueDate.slice(0, 10),
+              PACKET_JOB_STATUS_LABELS[j.status] ?? j.status,
+              j.issuedPieces,
+              j.issuedCarat,
+              j.pendingPieces,
+              j.pendingCarat,
+              ...(isOwner ? [j.totalCharge ?? ""] : []),
+            ])}
+          />
+        ) : null}
       </form>
 
       {jobs.length === 0 ? (

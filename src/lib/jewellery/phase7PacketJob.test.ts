@@ -164,6 +164,13 @@ describe("Phase 7 — issuing polished packets to a Jewellery Job", () => {
     await expect(issue([{ packetId: packet.id, pieces: 5, carat: 1 }])).rejects.toThrow(/every carat/i);
   });
 
+  it("refuses to issue from a packet that is no longer active (row lock re-checks status)", async () => {
+    const { f, issue } = await newJob(5);
+    const packet = f.seedPolishedPacket({ packetCode: "ZL-PKT-X", pieces: 10, carat: "1.000", costValue: "1000.00" });
+    f.state.polishedPackets.get(packet.id)!.status = "CANCELLED";
+    await expect(issue([{ packetId: packet.id, pieces: 1, carat: 0.1 }])).rejects.toThrow(/no longer active/);
+  });
+
   it("refuses the same packet twice in one issue", async () => {
     const { f, issue } = await newJob(5);
     const packet = f.seedPolishedPacket({ packetCode: "ZL-PKT-5", pieces: 10, carat: "2.000", costValue: "2000.00" });
@@ -232,6 +239,11 @@ describe("Phase 7 — resolving packet stones at receipt", () => {
     expect(voucherLine(f, voucherId, SYSTEM_ACCOUNT_CODES.JEWELLERY_WIP, "credit")).toBe("90000.00");
     expect(new Decimal(result.outputs[0].diamondCost).toFixed(2)).toBe("20000.00");
     expect(new Decimal(result.outputs[0].totalCost).toFixed(2)).toBe("90000.00");
+    // Phase 6 COGS reads this PRODUCED_IN cost, so packet stones reach COGS on sale.
+    const produced = [...f.state.finishedJewelleryStockMovements.values()].find((m) => m.finishedJewelleryId === result.outputs[0].id)!;
+    expect(produced.type).toBe("PRODUCED_IN");
+    expect(new Decimal(produced.costValue as string).toFixed(2)).toBe("90000.00");
+    expect(produced.totalCaratSnapshot).toBe("4.000");
     expect(result.job.status).toBe("COMPLETED");
     expectEveryVoucherBalanced(f);
   });

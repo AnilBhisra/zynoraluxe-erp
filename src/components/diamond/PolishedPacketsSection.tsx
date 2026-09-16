@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
+import { CsvDownloadButton } from "@/components/accounting/CsvDownloadButton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import type { PartyOption } from "@/components/accounting/PartySelect";
 import { CancelPolishedPurchaseForm } from "@/components/diamond/CancelPolishedPurchaseForm";
@@ -108,6 +109,7 @@ export function PolishedPacketsSection({
         />
       ) : null}
 
+      <div className="flex flex-wrap items-center justify-between gap-2">
       <div role="tablist" aria-label="Packet views" className="flex flex-wrap gap-1">
         <button type="button" role="tab" aria-selected={view === "grouped"} className={tabClass(view === "grouped")} onClick={() => setView("grouped")}>
           Grouped stock
@@ -118,6 +120,34 @@ export function PolishedPacketsSection({
         <button type="button" role="tab" aria-selected={view === "purchases"} className={tabClass(view === "purchases")} onClick={() => setView("purchases")}>
           Purchases
         </button>
+      </div>
+      {view === "grouped" && groups.length > 0 ? (
+        <CsvDownloadButton
+          filename="polished-diamond-grouped.csv"
+          headers={["Stones", "Provenance", "Pieces", "Carat", ...(isOwner ? ["Cost"] : []), "Packets"]}
+          rows={groups.map((g) => [g.label, PROVENANCE_LABELS[g.provenance] ?? g.provenance, g.pieces, g.carat, ...(isOwner ? [g.costValue ?? ""] : []), g.packetCodes.join(" ")])}
+        />
+      ) : null}
+      {view === "packets" && packets.length > 0 ? (
+        <CsvDownloadButton
+          filename="polished-diamond-packets.csv"
+          headers={["Packet", "Shape", "Size", "Quality", "Colour", "Certificate", "Provenance", "Purchase", "Party / Supplier", "Pieces", "Carat", ...(isOwner ? ["Cost"] : [])]}
+          rows={packets.map((p) => [
+            p.packetCode,
+            p.customShapeName ?? shapeLabel(p.shape),
+            p.sizeLabel,
+            p.quality ?? "",
+            p.colour ?? "",
+            p.certNumber ?? "",
+            PROVENANCE_LABELS[p.provenance] ?? p.provenance,
+            p.purchaseCode ?? "",
+            p.supplierName ?? "",
+            p.pieces,
+            p.carat,
+            ...(isOwner ? [p.costValue ?? ""] : []),
+          ])}
+        />
+      ) : null}
       </div>
 
       {view === "grouped" ? (

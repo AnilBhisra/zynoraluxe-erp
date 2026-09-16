@@ -38,6 +38,14 @@ import { JobManufacturerTab, type SerializedPacketProcessJob } from "@/component
 import { PacketProcessJobDetailView, type SerializedPacketProcessJobDetail } from "@/components/diamond/PacketProcessJobDetailView";
 import type { PacketProcessJobStatus } from "@/generated/prisma/enums";
 import { shapeLabel } from "@/lib/diamond/shapes";
+import {
+  serializeJobProcessFields,
+  serializePacket,
+  serializePacketGroup,
+  serializePacketProcessJob,
+  serializePacketProcessJobDetail,
+  serializePolishedPurchase,
+} from "@/lib/diamond/phase7Serializers";
 import { resolveDiamondAssetUrl } from "@/lib/storage/diamondMedia";
 import { ownerOnly } from "@/lib/security/ownerOnly";
 import type { DiamondJobStatus } from "@/generated/prisma/enums";
@@ -227,10 +235,7 @@ async function JobsTabContent({
       finalWeightLossCarat: detail.finalWeightLossCarat ? detail.finalWeightLossCarat.toFixed(3) : null,
       finalYieldPercent: detail.finalYieldPercent ? detail.finalYieldPercent.toFixed(3) : null,
       cancellationReason: detail.cancellationReason,
-      processName: detail.processNameSnapshot,
-      processOutputKind: detail.processOutputKindSnapshot,
-      chargeRateBasis: detail.chargeRateBasis,
-      chargeRate: ownerOnly(isOwner, detail.chargeRate ? detail.chargeRate.toFixed(4) : null),
+      ...serializeJobProcessFields(detail, isOwner),
       pieces: detail.pieces.map((p) => ({ roughCode: p.roughCode, carat: p.carat.toFixed(3), lotCode: p.lotCode })),
       receipts: detail.receipts.map((r) => ({
         id: r.id,
@@ -340,53 +345,9 @@ async function PolishedStockTabContent({ search, isOwner }: { search: string; is
     prisma.gstRate.findMany({ where: { isActive: true }, orderBy: { ratePercent: "asc" } }),
   ]);
 
-  const packets: SerializedPacket[] = packetRows.map((p) => ({
-    id: p.id,
-    packetCode: p.packetCode,
-    provenance: p.provenance,
-    shape: p.shape,
-    customShapeName: p.customShapeName,
-    sizeLabel: p.sizeLabel,
-    quality: p.quality,
-    colour: p.colour,
-    certificateStatus: p.certificateStatus,
-    certNumber: p.certNumber,
-    purchaseCode: p.purchaseCode,
-    supplierName: p.supplierName,
-    pieces: p.pieces,
-    carat: p.carat,
-    costValue: ownerOnly(isOwner, p.costValue),
-  }));
-  const packetGroups: SerializedPacketGroup[] = groupPacketRows(packetRows).map((g) => ({
-    mergeKey: g.mergeKey,
-    label: [
-      g.sample.shape === "CUSTOM" && g.sample.customShapeName ? g.sample.customShapeName : shapeLabel(g.sample.shape),
-      g.sample.sizeLabel,
-      g.sample.quality,
-      g.sample.colour,
-      g.sample.lab,
-    ]
-      .filter(Boolean)
-      .join(" · "),
-    provenance: g.sample.provenance,
-    pieces: g.pieces,
-    carat: g.carat,
-    costValue: ownerOnly(isOwner, g.costValue),
-    packetCodes: g.packetCodes,
-  }));
-  const purchases: SerializedPolishedPurchase[] = purchaseRows.map((p) => ({
-    id: p.id,
-    purchaseCode: p.purchaseCode,
-    purchaseDate: p.purchaseDate.toISOString(),
-    supplierName: p.supplierName,
-    brokerName: p.brokerName,
-    lineCount: p.lineCount,
-    totalPieces: p.totalPieces,
-    totalCarat: p.totalCarat,
-    status: p.status,
-    landedCost: ownerOnly(isOwner, p.landedCost),
-    brokerageAmount: ownerOnly(isOwner, p.brokerageAmount),
-  }));
+  const packets: SerializedPacket[] = packetRows.map((p) => serializePacket(p, isOwner));
+  const packetGroups: SerializedPacketGroup[] = groupPacketRows(packetRows).map((g) => serializePacketGroup(g, isOwner));
+  const purchases: SerializedPolishedPurchase[] = purchaseRows.map((p) => serializePolishedPurchase(p, isOwner));
 
   const serialized: SerializedPolishedDiamond[] = await Promise.all(
     polished.map(async (p) => ({
@@ -443,41 +404,7 @@ async function JobManufacturerTabContent({
   if (jobId) {
     const [detail, jewelleryJobs] = await Promise.all([getPacketProcessJobDetail(jobId), listOpenJewelleryJobOptions()]);
     if (!detail) return <p className="text-sm text-zinc-500 dark:text-zinc-400">Job not found.</p>;
-    const serialized: SerializedPacketProcessJobDetail = {
-      id: detail.id,
-      jobCode: detail.jobCode,
-      manufacturerName: detail.manufacturerName,
-      processName: detail.processName,
-      issueDate: detail.issueDate.toISOString(),
-      dueDate: detail.dueDate ? detail.dueDate.toISOString() : null,
-      status: detail.status,
-      issuedPieces: detail.issuedPieces,
-      issuedCarat: detail.issuedCarat,
-      pendingPieces: detail.pendingPieces,
-      pendingCarat: detail.pendingCarat,
-      returnedPieces: detail.returnedPieces,
-      usedPieces: detail.usedPieces,
-      damagedPieces: detail.damagedPieces,
-      lossCarat: detail.lossCarat,
-      chargeRateBasis: detail.chargeRateBasis,
-      notes: detail.notes,
-      cancellationReason: detail.cancellationReason,
-      hasReceipts: detail.hasReceipts,
-      issuedCostValue: ownerOnly(isOwner, detail.issuedCostValue),
-      remainingWipCost: ownerOnly(isOwner, detail.remainingWipCost),
-      totalCharge: ownerOnly(isOwner, detail.totalCharge),
-      chargeRate: ownerOnly(isOwner, detail.chargeRate),
-      lines: detail.lines.map((l) => ({ ...l, costAtIssue: ownerOnly(isOwner, l.costAtIssue) })),
-      receipts: detail.receipts.map((r) => ({
-        id: r.id,
-        receiptCode: r.receiptCode,
-        receiveDate: r.receiveDate.toISOString(),
-        isFinal: r.isFinal,
-        lossCarat: r.lossCarat,
-        processCharge: ownerOnly(isOwner, r.processCharge),
-        lines: r.lines.map((l) => ({ ...l, costValue: ownerOnly(isOwner, l.costValue) })),
-      })),
-    };
+    const serialized: SerializedPacketProcessJobDetail = serializePacketProcessJobDetail(detail, isOwner);
     return <PacketProcessJobDetailView job={serialized} jewelleryJobs={jewelleryJobs} isOwner={isOwner} />;
   }
 
@@ -489,19 +416,7 @@ async function JobManufacturerTabContent({
     listDiamondProcesses({ activeOnly: true }),
     listPolishedPackets(),
   ]);
-  const serializedJobs: SerializedPacketProcessJob[] = jobs.map((j) => ({
-    id: j.id,
-    jobCode: j.jobCode,
-    manufacturerName: j.manufacturerName,
-    processName: j.processName,
-    issueDate: j.issueDate.toISOString(),
-    status: j.status,
-    issuedPieces: j.issuedPieces,
-    issuedCarat: j.issuedCarat,
-    pendingPieces: j.pendingPieces,
-    pendingCarat: j.pendingCarat,
-    totalCharge: ownerOnly(isOwner, j.totalCharge),
-  }));
+  const serializedJobs: SerializedPacketProcessJob[] = jobs.map((j) => serializePacketProcessJob(j, isOwner));
   return (
     <JobManufacturerTab
       jobs={serializedJobs}
