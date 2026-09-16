@@ -10,6 +10,8 @@ const PREFIX_BY_TYPE: Record<DiamondSequenceType, string> = {
   // Phase 7
   POLISHED_PURCHASE: "ZL-PP",
   POLISHED_PACKET: "ZL-PKT",
+  PACKET_PROCESS_JOB: "ZL-PJ",
+  PACKET_PROCESS_RECEIPT: "ZL-PJR",
 };
 
 /**

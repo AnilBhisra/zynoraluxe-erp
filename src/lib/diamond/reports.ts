@@ -5,7 +5,9 @@ import { Decimal, round2, ZERO } from "@/lib/accounting/money";
 import { round3 } from "@/lib/diamond/allocation";
 import type {
   DiamondJobStatus,
+  DiamondProcessOutputKind,
   DiamondShape,
+  ProcessChargeRateBasis,
   PolishedDiamondStatus,
   RoughPieceStatus,
 } from "@/generated/prisma/enums";
@@ -263,6 +265,11 @@ export type DiamondJobRow = {
   issuedCostValue: Decimal;
   remainingWipCost: Decimal;
   totalLabourCharge: Decimal;
+  /** Phase 7 — null for cutting-polishing jobs created before processes existed. */
+  processNameSnapshot: string | null;
+  processOutputKindSnapshot: DiamondProcessOutputKind | null;
+  chargeRateBasis: ProcessChargeRateBasis | null;
+  chargeRate: Decimal | null;
 };
 
 function toJobRow(j: {
@@ -282,6 +289,10 @@ function toJobRow(j: {
   issuedCostValue: Decimal;
   remainingWipCost: Decimal;
   totalLabourCharge: Decimal;
+  processNameSnapshot: string | null;
+  processOutputKindSnapshot: DiamondProcessOutputKind | null;
+  chargeRateBasis: ProcessChargeRateBasis | null;
+  chargeRate: Decimal | null;
 }): DiamondJobRow {
   const pendingCarat = round3(
     new Decimal(j.issuedRoughCarat).minus(j.receivedPolishedCarat).minus(j.returnedRoughCarat)
@@ -304,6 +315,10 @@ function toJobRow(j: {
     issuedCostValue: round2(j.issuedCostValue),
     remainingWipCost: round2(j.remainingWipCost),
     totalLabourCharge: round2(j.totalLabourCharge),
+    processNameSnapshot: j.processNameSnapshot,
+    processOutputKindSnapshot: j.processOutputKindSnapshot,
+    chargeRateBasis: j.chargeRateBasis,
+    chargeRate: j.chargeRate,
   };
 }
 
@@ -320,6 +335,7 @@ export async function listDiamondJobs(filters?: {
         ? [
             { jobCode: { contains: filters.search, mode: "insensitive" } },
             { karigar: { name: { contains: filters.search, mode: "insensitive" } } },
+            { processNameSnapshot: { contains: filters.search, mode: "insensitive" } },
           ]
         : undefined,
     },

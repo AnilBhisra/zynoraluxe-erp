@@ -7,6 +7,7 @@ import type {
   CertificateStatus,
   DiamondShape,
   GstTreatment,
+  PolishedPacketStatus,
   PolishedRateBasis,
 } from "@/generated/prisma/enums";
 
@@ -28,6 +29,27 @@ export { PostingError };
 
 type Tx = Prisma.TransactionClient;
 type FyInput = { fyStartMonth: number; fyStartDay: number };
+
+/**
+ * Takes the packet's row lock before its ledger is read. The conditional
+ * UPDATE blocks any other transaction touching the same packet until this
+ * one commits, and Postgres re-checks the status condition against the
+ * committed row — so two concurrent issues can never both read the same
+ * balance, and an issue racing a cancellation fails cleanly instead of
+ * drawing on a cancelled packet. Returns false when the packet is missing or
+ * not in one of the allowed statuses.
+ */
+export async function lockPacketInTx(
+  tx: Tx,
+  packetId: string,
+  allowedStatuses: PolishedPacketStatus[] = ["ACTIVE"]
+): Promise<boolean> {
+  const touched = await tx.polishedPacket.updateMany({
+    where: { id: packetId, status: { in: allowedStatuses } },
+    data: { updatedAt: new Date() },
+  });
+  return touched.count === 1;
+}
 
 /** Live balance of one packet, summed from its immutable movements. */
 export async function getPacketBalanceInTx(
@@ -419,6 +441,9 @@ export async function cancelPolishedPurchase(
 
   const packets = purchase.lines.map((line) => line.packet).filter((packet) => packet !== null);
   for (const packet of packets) {
+    if (!(await lockPacketInTx(tx, packet.id, ["ACTIVE", "EMPTY"]))) {
+      throw new PostingError(`Packet ${packet.packetCode} is no longer active — this purchase cannot be cancelled.`);
+    }
     const movements = await tx.polishedPacketMovement.findMany({
       where: { packetId: packet.id },
       select: { type: true },

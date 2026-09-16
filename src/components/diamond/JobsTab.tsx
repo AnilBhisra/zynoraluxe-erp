@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-import { IssueRoughForm, type AvailablePieceOption } from "@/components/diamond/IssueRoughForm";
+import { IssueRoughForm, type AvailablePieceOption, type ProcessOption } from "@/components/diamond/IssueRoughForm";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import type { PartyOption } from "@/components/accounting/PartySelect";
@@ -24,6 +24,7 @@ export type SerializedDiamondJob = {
   status: string;
   /** Owner-only — null for Staff (redacted on the server). */
   totalLabourCharge: string | null;
+  processName: string | null;
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -48,6 +49,7 @@ export function JobsTab({
   jobs,
   karigars,
   availablePieces,
+  processes = [],
   isOwner,
   search,
   statusFilter,
@@ -56,6 +58,7 @@ export function JobsTab({
   jobs: SerializedDiamondJob[];
   karigars: PartyOption[];
   availablePieces: AvailablePieceOption[];
+  processes?: ProcessOption[];
   isOwner: boolean;
   search: string;
   statusFilter: string;
@@ -71,14 +74,14 @@ export function JobsTab({
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Cutting-polishing jobs</h2>
+        <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Manufacturer jobs (rough issued for a process)</h2>
         <Button type="button" variant={showForm ? "primary" : "secondary"} size="md" onClick={() => setShowForm((v) => !v)}>
           {showForm ? "Close" : "Issue Rough"}
         </Button>
       </div>
 
       {showForm ? (
-        <IssueRoughForm karigars={karigars} availablePieces={availablePieces} isOwner={isOwner} onDone={handleSaved} />
+        <IssueRoughForm karigars={karigars} availablePieces={availablePieces} processes={processes} isOwner={isOwner} onDone={handleSaved} />
       ) : null}
 
       <form method="GET" action="/diamond" className="flex flex-wrap gap-2">
@@ -87,7 +90,7 @@ export function JobsTab({
           type="text"
           name="jobSearch"
           defaultValue={search}
-          placeholder="Search by job code or Karigar…"
+          placeholder="Search by job code, Karigar / Manufacturer or process…"
           className="h-11 w-full max-w-sm rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
         />
         <select
@@ -109,7 +112,7 @@ export function JobsTab({
       </form>
 
       {jobs.length === 0 ? (
-        <EmptyState title="No jobs match" description="Issue rough to a Karigar to create the first job." />
+        <EmptyState title="No jobs match" description="Issue rough to a Karigar or Manufacturer to create the first job." />
       ) : (
         <ul className="divide-y divide-[var(--border)] overflow-hidden rounded-xl border border-[var(--border)]">
           {jobs.map((job) => (
@@ -120,7 +123,7 @@ export function JobsTab({
                   <StatusPill status={job.status} />
                 </div>
                 <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                  {job.karigarName} · {job.customShapeName || shapeLabel(job.requiredShape)} · {job.issuedPiecesCount} piece
+                  {job.karigarName} · {job.processName ? `${job.processName} · ` : ""}{job.customShapeName || shapeLabel(job.requiredShape)} · {job.issuedPiecesCount} piece
                   {job.issuedPiecesCount === 1 ? "" : "s"} · {job.issuedRoughCarat}ct issued · {job.pendingCarat}ct pending
                 </p>
               </div>

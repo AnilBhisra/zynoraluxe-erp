@@ -9,6 +9,8 @@ import { CompanySettingsForm } from "@/components/settings/CompanySettingsForm";
 import { AddStaffForm } from "@/components/settings/AddStaffForm";
 import { StaffList } from "@/components/settings/StaffList";
 import { MetalPuritySettingsPanel } from "@/components/settings/MetalPuritySettingsPanel";
+import { DiamondProcessSettingsPanel } from "@/components/settings/DiamondProcessSettingsPanel";
+import { listDiamondProcesses } from "@/lib/diamond/packetReports";
 import { listMetalPurities } from "@/lib/jewellery/reports";
 
 export const metadata: Metadata = {
@@ -21,7 +23,7 @@ export default async function SettingsPage() {
   // is fetched or rendered.
   await requireOwner();
 
-  const [companySettings, staff, metalPurities] = await Promise.all([
+  const [companySettings, staff, metalPurities, diamondProcesses] = await Promise.all([
     prisma.companySettings.findUnique({ where: { id: "default" } }),
     prisma.user.findMany({
       where: { role: "STAFF" },
@@ -29,6 +31,7 @@ export default async function SettingsPage() {
       select: { id: true, name: true, email: true, isActive: true },
     }),
     listMetalPurities(true),
+    listDiamondProcesses(),
   ]);
 
   return (
@@ -88,6 +91,16 @@ export default async function SettingsPage() {
           metalType: p.metalType,
           displayName: p.displayName,
           finenessPercent: p.finenessPercent.toString(),
+          isActive: p.isActive,
+        }))}
+      />
+
+      <DiamondProcessSettingsPanel
+        processes={diamondProcesses.map((p) => ({
+          id: p.id,
+          name: p.name,
+          outputKind: p.outputKind,
+          defaultRateBasis: p.defaultRateBasis,
           isActive: p.isActive,
         }))}
       />

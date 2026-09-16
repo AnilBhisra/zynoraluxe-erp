@@ -1,3 +1,4 @@
+import { buildPacketMergeKey } from "../../src/lib/diamond/packets";
 import { createFakePolishedTx } from "./fakePolishedTx";
 
 /**
@@ -75,7 +76,7 @@ export function createFakeJewelleryTx() {
     provenance?: string;
   }) {
     const row = {
-      id: nextId("pkt"),
+      id: nextId("seed-pkt"),
       packetCode: input.packetCode,
       status: "ACTIVE",
       shape: input.shape ?? "ROUND",
@@ -83,9 +84,11 @@ export function createFakeJewelleryTx() {
       certificateStatus: "NOT_CERTIFIED",
       provenance: input.provenance ?? "PURCHASED",
       currencyCode: "INR",
+      mergeKey: "",
     };
+    row.mergeKey = buildPacketMergeKey(row);
     base.state.polishedPackets.set(row.id, row);
-    const movementId = nextId("pktmov");
+    const movementId = nextId("seed-pktmov");
     base.state.polishedPacketMovements.set(movementId, {
       id: movementId,
       type: "PURCHASE_IN",
@@ -195,6 +198,7 @@ export function createFakeJewelleryTx() {
           issuedMetalFineWeight: "0",
           issuedMetalCost: "0",
           issuedDiamondCost: "0",
+          issuedPacketDiamondCost: "0",
           otherMaterialCost: "0",
           remainingWipCost: "0",
           totalLabourCharge: "0",
@@ -429,6 +433,7 @@ export function createFakeJewelleryTx() {
     },
     paymentAccountIdByMethod: base.paymentAccountIdByMethod,
     seedParty: base.seedParty,
+    seedDiamondProcess: base.seedDiamondProcess,
     seedMetalPurity,
     seedPolishedDiamond,
     seedPolishedPacket,

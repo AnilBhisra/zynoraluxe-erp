@@ -5,6 +5,8 @@ import { useState } from "react";
 
 import { markJobInProgressAction } from "@/app/actions/diamond";
 import { ReceivePolishedForm } from "@/components/diamond/ReceivePolishedForm";
+import { ReceiveProcessedRoughForm } from "@/components/diamond/ReceiveProcessedRoughForm";
+import { CHARGE_RATE_BASIS_LABELS, type ChargeRateBasis } from "@/lib/diamond/processCharge";
 import { CancelJobForm } from "@/components/diamond/CancelJobForm";
 import { Button } from "@/components/ui/Button";
 import { shapeLabel } from "@/lib/diamond/shapes";
@@ -36,6 +38,12 @@ export type SerializedJobDetail = {
   finalWeightLossCarat: string | null;
   finalYieldPercent: string | null;
   cancellationReason: string | null;
+  /** Phase 7 — null for plain cutting-polishing jobs. */
+  processName: string | null;
+  processOutputKind: "ROUGH" | "POLISHED" | null;
+  chargeRateBasis: ChargeRateBasis | null;
+  /** Owner-only — null for Staff. */
+  chargeRate: string | null;
   pieces: { roughCode: string; carat: string; lotCode: string | null }[];
   receipts: {
     id: string;
@@ -56,7 +64,7 @@ const MOVEMENT_LABELS: Record<string, string> = {
   ROUGH_ISSUE_OUT: "Issued to Karigar",
   ROUGH_ISSUE_CANCEL_IN: "Issue cancelled — returned to stock",
   ROUGH_CONSUMED_OUT: "Rough consumed (polished + loss)",
-  ROUGH_RETURN_IN: "Unused rough returned",
+  ROUGH_RETURN_IN: "Rough returned (unused or processed)",
   POLISHED_RECEIVE_IN: "Polished received",
   POLISHED_RECUT_OUT: "Marked for recut",
 };
@@ -86,6 +94,15 @@ export function JobDetailView({ job, isOwner }: { job: SerializedJobDetail; isOw
             <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
               {job.karigarName} · {job.customShapeName || shapeLabel(job.requiredShape)}
             </p>
+            {job.processName ? (
+              <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                Process: <span className="font-medium text-zinc-700 dark:text-zinc-300">{job.processName}</span> · returns{" "}
+                {job.processOutputKind === "ROUGH" ? "rough" : "polished"}
+                {job.chargeRateBasis
+                  ? ` · charge ${CHARGE_RATE_BASIS_LABELS[job.chargeRateBasis].toLowerCase()}${isOwner && job.chargeRate ? ` ₹${Number(job.chargeRate).toFixed(2)}` : ""}`
+                  : ""}
+              </p>
+            ) : null}
           </div>
           <div className="flex items-center gap-2">
             {canIssueInProgress ? (
@@ -155,17 +172,29 @@ export function JobDetailView({ job, isOwner }: { job: SerializedJobDetail; isOw
       {canReceive ? (
         <div>
           <Button type="button" variant={showReceiveForm ? "primary" : "secondary"} size="md" onClick={() => setShowReceiveForm((v) => !v)}>
-            {showReceiveForm ? "Close" : "Receive Polished"}
+            {showReceiveForm ? "Close" : job.processOutputKind === "ROUGH" ? "Receive processed rough" : "Receive Polished"}
           </Button>
           {showReceiveForm ? (
             <div className="mt-3">
-              <ReceivePolishedForm
-                jobId={job.id}
-                jobCode={job.jobCode}
-                pendingCarat={Number(job.pendingCarat)}
-                defaultShape={job.requiredShape}
-                onDone={handleSaved}
-              />
+              {job.processOutputKind === "ROUGH" ? (
+                <ReceiveProcessedRoughForm
+                  jobId={job.id}
+                  jobCode={job.jobCode}
+                  processName={job.processName ?? "This process"}
+                  pendingCarat={job.pendingCarat}
+                  chargeFromAgreedRate={job.chargeRateBasis !== null}
+                  onDone={handleSaved}
+                />
+              ) : (
+                <ReceivePolishedForm
+                  jobId={job.id}
+                  jobCode={job.jobCode}
+                  pendingCarat={Number(job.pendingCarat)}
+                  defaultShape={job.requiredShape}
+                  chargeFromAgreedRate={job.chargeRateBasis !== null}
+                  onDone={handleSaved}
+                />
+              )}
             </div>
           ) : null}
         </div>

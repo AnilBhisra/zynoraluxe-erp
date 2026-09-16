@@ -25,7 +25,18 @@ import {
   type SerializedPacketGroup,
   type SerializedPolishedPurchase,
 } from "@/components/diamond/PolishedPacketsSection";
-import { groupPacketRows, listPolishedPackets, listPolishedPurchases } from "@/lib/diamond/packetReports";
+import {
+  getPacketProcessJobDetail,
+  groupPacketRows,
+  listDiamondProcesses,
+  listOpenJewelleryJobOptions,
+  listPacketProcessJobs,
+  listPolishedPackets,
+  listPolishedPurchases,
+} from "@/lib/diamond/packetReports";
+import { JobManufacturerTab, type SerializedPacketProcessJob } from "@/components/diamond/JobManufacturerTab";
+import { PacketProcessJobDetailView, type SerializedPacketProcessJobDetail } from "@/components/diamond/PacketProcessJobDetailView";
+import type { PacketProcessJobStatus } from "@/generated/prisma/enums";
 import { shapeLabel } from "@/lib/diamond/shapes";
 import { resolveDiamondAssetUrl } from "@/lib/storage/diamondMedia";
 import { ownerOnly } from "@/lib/security/ownerOnly";
@@ -48,9 +59,13 @@ type SearchParams = {
   jobId?: string;
   polishedSearch?: string;
   issue?: string;
+  jmSearch?: string;
+  jmStatus?: string;
+  jmJobId?: string;
 };
 
-const TABS = ["rough", "jobs", "polished"] as const;
+// "jobs" is the Manufacturer section (kept as the URL key so existing links work).
+const TABS = ["rough", "jobs", "job-manufacturer", "polished"] as const;
 type Tab = (typeof TABS)[number];
 
 function TabLink({ tab, label, active }: { tab: Tab; label: string; active: boolean }) {
@@ -79,13 +94,14 @@ export default async function DiamondPage({ searchParams }: { searchParams: Prom
     <div>
       <PageHeader
         title="Diamond"
-        description="Rough Diamond purchase and stock, cutting-polishing jobs, and Polished Diamond stock and purchases."
+        description="Rough Diamond purchase and stock, Manufacturer and Job Manufacturer processes, and Polished Diamond stock and purchases."
         actions={<HelpLink anchor="diamond" />}
       />
 
       <nav aria-label="Diamond sections" className="mb-6 flex flex-wrap gap-1 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1.5">
         <TabLink tab="rough" label="Rough Diamond" active={tab === "rough"} />
-        <TabLink tab="jobs" label="Cutting-Polishing Jobs" active={tab === "jobs"} />
+        <TabLink tab="jobs" label="Manufacturer" active={tab === "jobs"} />
+        <TabLink tab="job-manufacturer" label="Job Manufacturer" active={tab === "job-manufacturer"} />
         <TabLink tab="polished" label="Polished Diamond" active={tab === "polished"} />
       </nav>
 
@@ -97,6 +113,14 @@ export default async function DiamondPage({ searchParams }: { searchParams: Prom
           jobId={params.jobId ?? ""}
           isOwner={isOwner}
           initialShowForm={params.issue === "1"}
+        />
+      ) : null}
+      {tab === "job-manufacturer" ? (
+        <JobManufacturerTabContent
+          search={params.jmSearch ?? ""}
+          statusFilter={params.jmStatus ?? ""}
+          jobId={params.jmJobId ?? ""}
+          isOwner={isOwner}
         />
       ) : null}
       {tab === "polished" ? <PolishedStockTabContent search={params.polishedSearch ?? ""} isOwner={isOwner} /> : null}
@@ -203,6 +227,10 @@ async function JobsTabContent({
       finalWeightLossCarat: detail.finalWeightLossCarat ? detail.finalWeightLossCarat.toFixed(3) : null,
       finalYieldPercent: detail.finalYieldPercent ? detail.finalYieldPercent.toFixed(3) : null,
       cancellationReason: detail.cancellationReason,
+      processName: detail.processNameSnapshot,
+      processOutputKind: detail.processOutputKindSnapshot,
+      chargeRateBasis: detail.chargeRateBasis,
+      chargeRate: ownerOnly(isOwner, detail.chargeRate ? detail.chargeRate.toFixed(4) : null),
       pieces: detail.pieces.map((p) => ({ roughCode: p.roughCode, carat: p.carat.toFixed(3), lotCode: p.lotCode })),
       receipts: detail.receipts.map((r) => ({
         id: r.id,
@@ -237,11 +265,12 @@ async function JobsTabContent({
           ? undefined
           : ["ISSUED", "IN_PROGRESS", "PARTIALLY_RECEIVED"];
 
-  const [jobs, karigars, availablePiecesRaw, karigarBalances] = await Promise.all([
+  const [jobs, karigars, availablePiecesRaw, karigarBalances, processes] = await Promise.all([
     listDiamondJobs({ status: statusList, search: search || undefined }),
-    prisma.party.findMany({ where: { type: "KARIGAR", isActive: true }, orderBy: { name: "asc" } }),
+    prisma.party.findMany({ where: { type: { in: ["KARIGAR", "MANUFACTURER"] }, isActive: true }, orderBy: { name: "asc" } }),
     listRoughPieces({ status: "AVAILABLE" }),
     getKarigarMaterialBalances(),
+    listDiamondProcesses({ activeOnly: true }),
   ]);
 
   const serializedJobs: SerializedDiamondJob[] = jobs.map((j) => ({
@@ -257,6 +286,7 @@ async function JobsTabContent({
     pendingCarat: j.pendingCarat.toFixed(3),
     status: j.status,
     totalLabourCharge: ownerOnly(isOwner, j.totalLabourCharge.toFixed(2)),
+    processName: j.processNameSnapshot,
   }));
 
   const availablePieces: AvailablePieceOption[] = availablePiecesRaw.map((p) => ({
@@ -288,6 +318,7 @@ async function JobsTabContent({
         jobs={serializedJobs}
         karigars={karigars.map((k) => ({ id: k.id, name: k.name, type: k.type, stateCode: k.stateCode }))}
         availablePieces={availablePieces}
+        processes={processes.map((p) => ({ id: p.id, name: p.name, outputKind: p.outputKind, defaultRateBasis: p.defaultRateBasis }))}
         isOwner={isOwner}
         search={search}
         statusFilter={statusFilter}
@@ -395,6 +426,94 @@ async function PolishedStockTabContent({ search, isOwner }: { search: string; is
       />
       <PolishedStockTab polished={serialized} isOwner={isOwner} search={search} />
     </div>
+  );
+}
+
+async function JobManufacturerTabContent({
+  search,
+  statusFilter,
+  jobId,
+  isOwner,
+}: {
+  search: string;
+  statusFilter: string;
+  jobId: string;
+  isOwner: boolean;
+}) {
+  if (jobId) {
+    const [detail, jewelleryJobs] = await Promise.all([getPacketProcessJobDetail(jobId), listOpenJewelleryJobOptions()]);
+    if (!detail) return <p className="text-sm text-zinc-500 dark:text-zinc-400">Job not found.</p>;
+    const serialized: SerializedPacketProcessJobDetail = {
+      id: detail.id,
+      jobCode: detail.jobCode,
+      manufacturerName: detail.manufacturerName,
+      processName: detail.processName,
+      issueDate: detail.issueDate.toISOString(),
+      dueDate: detail.dueDate ? detail.dueDate.toISOString() : null,
+      status: detail.status,
+      issuedPieces: detail.issuedPieces,
+      issuedCarat: detail.issuedCarat,
+      pendingPieces: detail.pendingPieces,
+      pendingCarat: detail.pendingCarat,
+      returnedPieces: detail.returnedPieces,
+      usedPieces: detail.usedPieces,
+      damagedPieces: detail.damagedPieces,
+      lossCarat: detail.lossCarat,
+      chargeRateBasis: detail.chargeRateBasis,
+      notes: detail.notes,
+      cancellationReason: detail.cancellationReason,
+      hasReceipts: detail.hasReceipts,
+      issuedCostValue: ownerOnly(isOwner, detail.issuedCostValue),
+      remainingWipCost: ownerOnly(isOwner, detail.remainingWipCost),
+      totalCharge: ownerOnly(isOwner, detail.totalCharge),
+      chargeRate: ownerOnly(isOwner, detail.chargeRate),
+      lines: detail.lines.map((l) => ({ ...l, costAtIssue: ownerOnly(isOwner, l.costAtIssue) })),
+      receipts: detail.receipts.map((r) => ({
+        id: r.id,
+        receiptCode: r.receiptCode,
+        receiveDate: r.receiveDate.toISOString(),
+        isFinal: r.isFinal,
+        lossCarat: r.lossCarat,
+        processCharge: ownerOnly(isOwner, r.processCharge),
+        lines: r.lines.map((l) => ({ ...l, costValue: ownerOnly(isOwner, l.costValue) })),
+      })),
+    };
+    return <PacketProcessJobDetailView job={serialized} jewelleryJobs={jewelleryJobs} isOwner={isOwner} />;
+  }
+
+  const statusList: PacketProcessJobStatus[] | undefined =
+    statusFilter === "COMPLETED" ? ["COMPLETED"] : statusFilter === "CANCELLED" ? ["CANCELLED"] : statusFilter === "ALL" ? undefined : ["ISSUED", "PARTIALLY_RETURNED"];
+  const [jobs, manufacturers, processes, packetRows] = await Promise.all([
+    listPacketProcessJobs({ status: statusList, search: search || undefined }),
+    prisma.party.findMany({ where: { type: { in: ["MANUFACTURER", "KARIGAR"] }, isActive: true }, orderBy: { name: "asc" } }),
+    listDiamondProcesses({ activeOnly: true }),
+    listPolishedPackets(),
+  ]);
+  const serializedJobs: SerializedPacketProcessJob[] = jobs.map((j) => ({
+    id: j.id,
+    jobCode: j.jobCode,
+    manufacturerName: j.manufacturerName,
+    processName: j.processName,
+    issueDate: j.issueDate.toISOString(),
+    status: j.status,
+    issuedPieces: j.issuedPieces,
+    issuedCarat: j.issuedCarat,
+    pendingPieces: j.pendingPieces,
+    pendingCarat: j.pendingCarat,
+    totalCharge: ownerOnly(isOwner, j.totalCharge),
+  }));
+  return (
+    <JobManufacturerTab
+      jobs={serializedJobs}
+      manufacturers={manufacturers.map((m) => ({ id: m.id, name: m.name, type: m.type, stateCode: m.stateCode }))}
+      processes={processes.map((p) => ({ id: p.id, name: p.name, outputKind: p.outputKind, defaultRateBasis: p.defaultRateBasis }))}
+      packets={packetRows
+        .filter((p) => p.pieces > 0)
+        .map((p) => ({ id: p.id, packetCode: p.packetCode, label: [shapeLabel(p.shape), p.sizeLabel, p.quality, p.colour].filter(Boolean).join(" · "), pieces: p.pieces, carat: p.carat }))}
+      isOwner={isOwner}
+      search={search}
+      statusFilter={statusFilter}
+    />
   );
 }
 

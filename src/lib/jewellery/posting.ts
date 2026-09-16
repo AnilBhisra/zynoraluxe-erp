@@ -21,7 +21,7 @@ import {
 import { cancelVoucher } from "@/lib/accounting/posting";
 import { allocateProportionally, round3 } from "@/lib/diamond/allocation";
 import { checkPacketQuantity } from "@/lib/diamond/packets";
-import { getPacketBalanceInTx } from "@/lib/diamond/polishedPurchase";
+import { getPacketBalanceInTx, lockPacketInTx } from "@/lib/diamond/polishedPurchase";
 import {
   computeOutputMetal,
   formatThousandths,
@@ -599,7 +599,11 @@ export async function issueMaterialsToJewelleryJob(
       throw new PostingError("The same polished packet was selected more than once.");
     }
     seenPacketIds.add(pl.packetId);
-    const packet = await tx.polishedPacket.findUnique({ where: { id: pl.packetId } });
+    if (!Number.isInteger(pl.pieces) || pl.pieces < 1) {
+      throw new PostingError("Each packet line must issue a whole number of pieces, at least one.");
+    }
+    const locked = await lockPacketInTx(tx, pl.packetId);
+    const packet = locked ? await tx.polishedPacket.findUnique({ where: { id: pl.packetId } }) : null;
     if (!packet || packet.status !== "ACTIVE") {
       throw new PostingError("One or more selected polished packets were not found or are no longer active.");
     }
@@ -905,6 +909,34 @@ export async function cancelJewelleryJob(
   }
 
   const packetIssueLines = await tx.jewelleryPacketIssueLine.findMany({ where: { jobId: job.id } });
+  // Stones that reached this job from a Job Manufacturer return were debited
+  // to Jewellery WIP by that return, not by this job's issue voucher, so the
+  // reversal above does not cover them: move their cost back explicitly.
+  const processSourcedCost = round2(
+    packetIssueLines
+      .filter((l) => l.sourcePacketProcessReceiptLineId)
+      .reduce((sum, l) => sum.plus(new Decimal(l.costAtIssue)), ZERO)
+  );
+  if (processSourcedCost.greaterThan(0)) {
+    const voucher = await createVoucherHeader(
+      tx,
+      {
+        date: new Date(),
+        fyStartMonth: input.fyStartMonth,
+        fyStartDay: input.fyStartDay,
+        currencyCode: "INR",
+        exchangeRate: 1,
+        note: `Job ${job.jobCode} cancelled — Job Manufacturer stones back to Polished stock`,
+        createdByUserId: input.cancelledByUserId,
+      },
+      "JEWELLERY_ISSUE",
+      { amount: processSourcedCost }
+    );
+    await insertBalancedJournalLines(tx, voucher.id, [
+      { accountCode: SYSTEM_ACCOUNT_CODES.POLISHED_DIAMOND_INVENTORY, debit: processSourcedCost, description: `Cancel ${job.jobCode}` },
+      { accountCode: SYSTEM_ACCOUNT_CODES.JEWELLERY_WIP, credit: processSourcedCost, description: `Cancel ${job.jobCode}` },
+    ]);
+  }
   for (const line of packetIssueLines) {
     await tx.polishedPacketMovement.create({
       data: {
@@ -918,6 +950,7 @@ export async function cancelJewelleryJob(
         createdByUserId: input.cancelledByUserId,
       },
     });
+    await lockPacketInTx(tx, line.packetId, ["ACTIVE", "EMPTY"]);
     // The stones are back in the packet, so a packet emptied by this issue
     // becomes active again. A packet emptied by something else stays EMPTY
     // only if it is still at zero, which a zero-carat reversal cannot change.
@@ -1964,6 +1997,7 @@ export async function receiveFinishedJewellery(
       // Nothing about these stones changed, so they go back into the packet
       // they came from — which becomes issuable again if it had emptied.
       resultPacketId = r.packetId;
+      await lockPacketInTx(tx, r.packetId, ["ACTIVE", "EMPTY"]);
       const packet = await tx.polishedPacket.findUnique({ where: { id: r.packetId } });
       if (packet && packet.status === "EMPTY") {
         await tx.polishedPacket.update({ where: { id: r.packetId }, data: { status: "ACTIVE" } });

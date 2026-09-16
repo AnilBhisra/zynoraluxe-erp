@@ -25,6 +25,8 @@ export const SHAPE_ENUM = z.enum([
   "CUSTOM",
 ]);
 
+export const CHARGE_RATE_BASIS_ENUM = z.enum(["FIXED", "PER_CARAT", "PER_PIECE"]);
+
 export const roughPieceDraftSchema = z.object({
   carat: z.coerce.number().positive("Each piece's carat must be greater than zero."),
   lengthMm: z.coerce.number().nonnegative().optional(),
@@ -79,6 +81,10 @@ export const issueRoughSchema = z
     targetWidthMm: z.coerce.number().nonnegative().optional(),
     targetHeightMm: z.coerce.number().nonnegative().optional(),
     notes: optionalString(1000),
+    // Phase 7 — Manufacturer process and agreed charge rate (all optional).
+    processId: optionalString(100),
+    chargeRateBasis: CHARGE_RATE_BASIS_ENUM.optional(),
+    chargeRate: z.coerce.number().min(0, "The charge rate cannot be negative.").optional(),
     idempotencyKey: z.string().trim().max(100).optional(),
   })
   .refine((data) => data.requiredShape !== "CUSTOM" || !!data.customShapeName, {
@@ -222,3 +228,77 @@ export const cancelPolishedPurchaseSchema = z.object({
   purchaseId: z.string().trim().min(1),
   cancellationReason: z.string().trim().min(3, "Give a short reason for cancelling.").max(300),
 });
+
+// ---------------------------------------------------------------------------
+// Phase 7 — Manufacturer processes and Job Manufacturer
+// ---------------------------------------------------------------------------
+
+export const diamondProcessSchema = z.object({
+  processId: optionalString(100),
+  name: z.string().trim().min(2, "Give the process a name.").max(60),
+  outputKind: z.enum(["ROUGH", "POLISHED"]),
+  defaultRateBasis: CHARGE_RATE_BASIS_ENUM.default("PER_CARAT"),
+  isActive: booleanFlag,
+});
+
+export const processedRoughPieceSchema = z.object({
+  carat: z.coerce.number().positive("Each processed piece's carat must be greater than zero."),
+  colorEstimate: optionalString(100),
+  clarityNote: optionalString(200),
+  internalNote: optionalString(500),
+});
+
+export const receiveProcessedRoughSchema = z.object({
+  jobId: z.string().trim().min(1),
+  receiveDate: DATE_ONLY,
+  manualCharge: z.coerce.number().min(0, "The charge cannot be negative.").default(0),
+  notes: optionalString(1000),
+  markJobComplete: booleanFlag,
+  idempotencyKey: z.string().trim().max(100).optional(),
+  pieces: z.array(processedRoughPieceSchema).min(1, "Add at least one processed rough piece."),
+});
+
+export const packetProcessIssueSchema = z.object({
+  manufacturerId: z.string().trim().min(1, "Choose the Manufacturer."),
+  processId: z.string().trim().min(1, "Choose the process."),
+  issueDate: DATE_ONLY,
+  dueDate: DATE_ONLY.optional().or(z.literal("")),
+  chargeRateBasis: CHARGE_RATE_BASIS_ENUM,
+  chargeRate: z.coerce.number().min(0, "The charge rate cannot be negative.").default(0),
+  notes: optionalString(1000),
+  idempotencyKey: z.string().trim().max(100).optional(),
+  lines: z
+    .array(
+      z.object({
+        packetId: z.string().trim().min(1),
+        pieces: z.coerce.number().int().min(1, "Each packet line needs at least one piece."),
+        carat: z.coerce.number().positive("Each packet line's carat must be greater than zero."),
+      })
+    )
+    .min(1, "Issue at least one packet."),
+});
+
+export const packetProcessReturnSchema = z.object({
+  jobId: z.string().trim().min(1),
+  receiveDate: DATE_ONLY,
+  markJobComplete: booleanFlag,
+  isAbnormalLoss: booleanFlag,
+  abnormalLossReason: optionalString(300),
+  notes: optionalString(1000),
+  idempotencyKey: z.string().trim().max(100).optional(),
+  rows: z
+    .array(
+      z.object({
+        jobLineId: z.string().trim().min(1),
+        disposition: z.enum(["RETURNED_TO_STOCK", "USED_IN_JEWELLERY_JOB", "DAMAGED_LOST"]),
+        pieces: z.coerce.number().int().min(1, "Each return line needs at least one piece."),
+        carat: z.coerce.number().positive("Each return line's carat must be greater than zero."),
+        sizeLabel: optionalString(100),
+        jewelleryJobId: optionalString(100),
+        damagedLostReason: optionalString(300),
+      })
+    )
+    .default([]),
+});
+
+export const cancelPacketProcessJobSchema = cancelJobSchema;

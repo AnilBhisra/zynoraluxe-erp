@@ -21,6 +21,7 @@ export function createFakeDiamondTx() {
   const polishedReceipts = new Map<string, Row>();
   const polishedDiamonds = new Map<string, Row>();
   const stockMovements = new Map<string, Row>();
+  const diamondProcesses = new Map<string, Row>();
 
   let counter = 0;
   const nextId = (prefix: string) => `${prefix}-${++counter}`;
@@ -35,8 +36,19 @@ export function createFakeDiamondTx() {
     });
   }
 
+  /** Test helper — seed a Phase 7 Manufacturer process master row. */
+  function seedDiamondProcess(input: { name: string; outputKind: "ROUGH" | "POLISHED"; isActive?: boolean }) {
+    const row = { id: nextId("proc"), name: input.name, outputKind: input.outputKind, defaultRateBasis: "PER_CARAT", isActive: input.isActive ?? true };
+    diamondProcesses.set(row.id, row);
+    return row;
+  }
+
   const tx = {
     ...base.tx,
+    diamondProcess: {
+      findUnique: async ({ where }: { where: { id?: string; name?: string } }) =>
+        (where.id ? diamondProcesses.get(where.id) : [...diamondProcesses.values()].find((p) => p.name === where.name)) ?? null,
+    },
     diamondSequence: {
       upsert: async ({
         where,
@@ -213,8 +225,10 @@ export function createFakeDiamondTx() {
       polishedReceipts,
       polishedDiamonds,
       stockMovements,
+      diamondProcesses,
     },
     paymentAccountIdByMethod: base.paymentAccountIdByMethod,
+    seedDiamondProcess,
   };
 }
 

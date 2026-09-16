@@ -9,6 +9,7 @@ import { getCompanyFySettings } from "@/lib/accounting/company";
 import { parseDateOnly } from "@/lib/accounting/financialYear";
 import * as diamondPosting from "@/lib/diamond/posting";
 import * as polishedPurchasePosting from "@/lib/diamond/polishedPurchase";
+import * as packetProcessPosting from "@/lib/diamond/packetProcess";
 import {
   deleteDiamondAsset,
   isDiamondStorageConfigured,
@@ -17,13 +18,18 @@ import {
 } from "@/lib/storage/diamondMedia";
 import {
   cancelJobSchema,
+  cancelPacketProcessJobSchema,
   cancelPolishedPurchaseSchema,
+  diamondProcessSchema,
   issueRoughSchema,
   markJobInProgressSchema,
   overridePolishedAllocationSchema,
   overrideRoughAllocationSchema,
+  packetProcessIssueSchema,
+  packetProcessReturnSchema,
   polishedPurchaseSchema,
   receivePolishedSchema,
+  receiveProcessedRoughSchema,
   recutPolishedSchema,
   roughPurchaseSchema,
 } from "@/lib/validation/diamond";
@@ -226,6 +232,9 @@ export async function issueRoughAction(
     targetWidthMm: formData.get("targetWidthMm") || undefined,
     targetHeightMm: formData.get("targetHeightMm") || undefined,
     notes: formData.get("notes") || "",
+    processId: formData.get("processId") || "",
+    chargeRateBasis: formData.get("chargeRateBasis") || undefined,
+    chargeRate: formData.get("chargeRate") || undefined,
     idempotencyKey: formData.get("idempotencyKey") || undefined,
   });
   if (!parsed.success) {
@@ -263,6 +272,9 @@ export async function issueRoughAction(
         targetWidthMm: data.targetWidthMm ?? null,
         targetHeightMm: data.targetHeightMm ?? null,
         notes: data.notes || null,
+        processId: data.processId || null,
+        chargeRateBasis: data.chargeRateBasis ?? null,
+        chargeRate: data.chargeRate ?? null,
         idempotencyKey: data.idempotencyKey || null,
         createdByUserId: user.id,
       })
@@ -659,6 +671,302 @@ export async function cancelPolishedPurchaseAction(
     if (error instanceof polishedPurchasePosting.PostingError) return { error: error.message };
     console.error("cancelPolishedPurchaseAction failed:", error);
     return { error: "Could not cancel this polished purchase. Please try again." };
+  }
+
+  revalidateDiamond();
+  return { success: true };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7 — Manufacturer process master (Owner-only)
+// ---------------------------------------------------------------------------
+
+export async function saveDiamondProcessAction(
+  _prevState: DiamondFormState,
+  formData: FormData
+): Promise<DiamondFormState> {
+  const owner = await requireOwner();
+
+  const parsed = diamondProcessSchema.safeParse({
+    processId: formData.get("processId") || "",
+    name: formData.get("name"),
+    outputKind: formData.get("outputKind"),
+    defaultRateBasis: formData.get("defaultRateBasis") || "PER_CARAT",
+    isActive: formData.get("isActive") || "true",
+  });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
+  }
+  const data = parsed.data;
+
+  try {
+    // Jobs snapshot the process name and output kind, so an edit here only
+    // affects jobs issued afterwards.
+    const saved = data.processId
+      ? await prisma.diamondProcess.update({
+          where: { id: data.processId },
+          data: { name: data.name, outputKind: data.outputKind, defaultRateBasis: data.defaultRateBasis, isActive: data.isActive },
+        })
+      : await prisma.diamondProcess.create({
+          data: {
+            name: data.name,
+            outputKind: data.outputKind,
+            defaultRateBasis: data.defaultRateBasis,
+            isActive: data.isActive,
+            createdByUserId: owner.id,
+          },
+        });
+    revalidatePath("/settings");
+    revalidateDiamond();
+    return { success: true, code: saved.name };
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      return { error: "A process with this name already exists." };
+    }
+    console.error("saveDiamondProcessAction failed:", error);
+    return { error: "Could not save this process. Please try again." };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7 — Manufacturer: receive processed rough
+// ---------------------------------------------------------------------------
+
+export async function receiveProcessedRoughAction(
+  _prevState: DiamondFormState,
+  formData: FormData
+): Promise<DiamondFormState> {
+  const user = await requireUser();
+
+  const parsed = receiveProcessedRoughSchema.safeParse({
+    jobId: formData.get("jobId"),
+    receiveDate: formData.get("receiveDate"),
+    manualCharge: formData.get("manualCharge") || "0",
+    notes: formData.get("notes") || "",
+    markJobComplete: formData.get("markJobComplete") || "false",
+    idempotencyKey: formData.get("idempotencyKey") || undefined,
+    pieces: readJsonArray(formData, "piecesJson"),
+  });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
+  }
+  const data = parsed.data;
+  const receiveDate = safeParseDateOnly(data.receiveDate);
+  if (!receiveDate) return { error: "Enter a valid receive date." };
+
+  if (data.idempotencyKey) {
+    const existing = await prisma.polishedReceipt.findUnique({ where: { idempotencyKey: data.idempotencyKey } });
+    if (existing) return { success: true, code: existing.receiptCode };
+  }
+
+  const fy = await getCompanyFySettings();
+  try {
+    const result = await prisma.$transaction(
+      (tx) =>
+        diamondPosting.receiveProcessedRough(tx, {
+          fyStartMonth: fy.fyStartMonth,
+          fyStartDay: fy.fyStartDay,
+          jobId: data.jobId,
+          receiveDate,
+          manualCharge: data.manualCharge,
+          markJobComplete: data.markJobComplete,
+          notes: data.notes || null,
+          idempotencyKey: data.idempotencyKey || null,
+          createdByUserId: user.id,
+          pieces: data.pieces.map((p) => ({
+            carat: p.carat,
+            colorEstimate: p.colorEstimate || null,
+            clarityNote: p.clarityNote || null,
+            internalNote: p.internalNote || null,
+          })),
+        }),
+      { timeout: 20000 }
+    );
+    revalidateDiamond();
+    return { success: true, code: result.receipt.receiptCode };
+  } catch (error) {
+    if (isIdempotencyConflict(error) && data.idempotencyKey) {
+      const existing = await prisma.polishedReceipt.findUnique({ where: { idempotencyKey: data.idempotencyKey } });
+      if (existing) return { success: true, code: existing.receiptCode };
+    }
+    if (error instanceof diamondPosting.PostingError) return { error: error.message };
+    console.error("receiveProcessedRoughAction failed:", error);
+    return { error: "Could not save this processed rough return. Please try again." };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7 — Job Manufacturer (bulk polished packets)
+// ---------------------------------------------------------------------------
+
+export async function createPacketProcessJobAction(
+  _prevState: DiamondFormState,
+  formData: FormData
+): Promise<DiamondFormState> {
+  const user = await requireUser();
+
+  const parsed = packetProcessIssueSchema.safeParse({
+    manufacturerId: formData.get("manufacturerId"),
+    processId: formData.get("processId"),
+    issueDate: formData.get("issueDate"),
+    dueDate: formData.get("dueDate") || "",
+    chargeRateBasis: formData.get("chargeRateBasis") || "PER_CARAT",
+    chargeRate: formData.get("chargeRate") || "0",
+    notes: formData.get("notes") || "",
+    idempotencyKey: formData.get("idempotencyKey") || undefined,
+    lines: readJsonArray(formData, "linesJson"),
+  });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
+  }
+  const data = parsed.data;
+  const issueDate = safeParseDateOnly(data.issueDate);
+  if (!issueDate) return { error: "Enter a valid issue date." };
+  const dueDate = data.dueDate ? safeParseDateOnly(data.dueDate) : null;
+
+  if (data.idempotencyKey) {
+    const existing = await prisma.packetProcessJob.findUnique({ where: { idempotencyKey: data.idempotencyKey } });
+    if (existing) return { success: true, code: existing.jobCode };
+  }
+
+  const fy = await getCompanyFySettings();
+  try {
+    const job = await prisma.$transaction(
+      (tx) =>
+        packetProcessPosting.createPacketProcessJob(tx, {
+          fyStartMonth: fy.fyStartMonth,
+          fyStartDay: fy.fyStartDay,
+          manufacturerId: data.manufacturerId,
+          processId: data.processId,
+          issueDate,
+          dueDate,
+          lines: data.lines,
+          chargeRateBasis: data.chargeRateBasis,
+          chargeRate: data.chargeRate,
+          notes: data.notes || null,
+          idempotencyKey: data.idempotencyKey || null,
+          createdByUserId: user.id,
+        }),
+      { timeout: 20000 }
+    );
+    revalidateDiamond();
+    return { success: true, code: job.jobCode };
+  } catch (error) {
+    if (isIdempotencyConflict(error) && data.idempotencyKey) {
+      const existing = await prisma.packetProcessJob.findUnique({ where: { idempotencyKey: data.idempotencyKey } });
+      if (existing) return { success: true, code: existing.jobCode };
+    }
+    if (error instanceof packetProcessPosting.PostingError) return { error: error.message };
+    console.error("createPacketProcessJobAction failed:", error);
+    return { error: "Could not issue these packets. Please try again." };
+  }
+}
+
+export async function receivePacketProcessReturnAction(
+  _prevState: DiamondFormState,
+  formData: FormData
+): Promise<DiamondFormState> {
+  const user = await requireUser();
+  const isOwner = user.role === "OWNER";
+
+  const parsed = packetProcessReturnSchema.safeParse({
+    jobId: formData.get("jobId"),
+    receiveDate: formData.get("receiveDate"),
+    markJobComplete: formData.get("markJobComplete") || "false",
+    isAbnormalLoss: formData.get("isAbnormalLoss") || "false",
+    abnormalLossReason: formData.get("abnormalLossReason") || "",
+    notes: formData.get("notes") || "",
+    idempotencyKey: formData.get("idempotencyKey") || undefined,
+    rows: readJsonArray(formData, "rowsJson"),
+  });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
+  }
+  const data = parsed.data;
+
+  // Damaged/lost and abnormal loss are Owner-only overrides — enforced here,
+  // not only by which controls the page renders for Staff.
+  if (!isOwner && (data.isAbnormalLoss || data.rows.some((r) => r.disposition === "DAMAGED_LOST"))) {
+    return { error: "Only the Owner can record damaged/lost stones or abnormal loss." };
+  }
+  const receiveDate = safeParseDateOnly(data.receiveDate);
+  if (!receiveDate) return { error: "Enter a valid receive date." };
+
+  if (data.idempotencyKey) {
+    const existing = await prisma.packetProcessReceipt.findUnique({ where: { idempotencyKey: data.idempotencyKey } });
+    if (existing) return { success: true, code: existing.receiptCode };
+  }
+
+  const fy = await getCompanyFySettings();
+  try {
+    const result = await prisma.$transaction(
+      (tx) =>
+        packetProcessPosting.receivePacketProcessReturn(tx, {
+          fyStartMonth: fy.fyStartMonth,
+          fyStartDay: fy.fyStartDay,
+          jobId: data.jobId,
+          receiveDate,
+          markJobComplete: data.markJobComplete,
+          isAbnormalLoss: data.isAbnormalLoss,
+          abnormalLossReason: data.abnormalLossReason || null,
+          notes: data.notes || null,
+          idempotencyKey: data.idempotencyKey || null,
+          createdByUserId: user.id,
+          rows: data.rows.map((r) => ({
+            jobLineId: r.jobLineId,
+            disposition: r.disposition,
+            pieces: r.pieces,
+            carat: r.carat,
+            sizeLabel: r.sizeLabel || null,
+            jewelleryJobId: r.jewelleryJobId || null,
+            damagedLostReason: r.damagedLostReason || null,
+          })),
+        }),
+      { timeout: 20000 }
+    );
+    revalidateDiamond();
+    revalidatePath("/jewellery-jobs");
+    return { success: true, code: result.receipt.receiptCode };
+  } catch (error) {
+    if (isIdempotencyConflict(error) && data.idempotencyKey) {
+      const existing = await prisma.packetProcessReceipt.findUnique({ where: { idempotencyKey: data.idempotencyKey } });
+      if (existing) return { success: true, code: existing.receiptCode };
+    }
+    if (error instanceof packetProcessPosting.PostingError) return { error: error.message };
+    console.error("receivePacketProcessReturnAction failed:", error);
+    return { error: "Could not save this return. Please try again." };
+  }
+}
+
+export async function cancelPacketProcessJobAction(
+  _prevState: DiamondFormState,
+  formData: FormData
+): Promise<DiamondFormState> {
+  const user = await requireOwner();
+
+  const parsed = cancelPacketProcessJobSchema.safeParse({
+    jobId: formData.get("jobId"),
+    cancellationReason: formData.get("cancellationReason"),
+  });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
+  }
+
+  const fy = await getCompanyFySettings();
+  try {
+    await prisma.$transaction((tx) =>
+      packetProcessPosting.cancelPacketProcessJob(tx, {
+        fyStartMonth: fy.fyStartMonth,
+        fyStartDay: fy.fyStartDay,
+        jobId: parsed.data.jobId,
+        cancelledByUserId: user.id,
+        cancellationReason: parsed.data.cancellationReason,
+      })
+    );
+  } catch (error) {
+    if (error instanceof packetProcessPosting.PostingError) return { error: error.message };
+    console.error("cancelPacketProcessJobAction failed:", error);
+    return { error: "Could not cancel this job. Please try again." };
   }
 
   revalidateDiamond();

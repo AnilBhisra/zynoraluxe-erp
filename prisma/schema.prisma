@@ -101,6 +101,10 @@ model User {
   polishedPurchasesCancelled     PolishedPurchase[]       @relation("PolishedPurchaseCancelledBy")
   polishedPacketsCreated         PolishedPacket[]         @relation("PolishedPacketCreatedBy")
   polishedPacketMovementsCreated PolishedPacketMovement[] @relation("PolishedPacketMovementCreatedBy")
+  diamondProcessesCreated        DiamondProcess[]         @relation("DiamondProcessCreatedBy")
+  packetProcessJobsCreated       PacketProcessJob[]       @relation("PacketProcessJobCreatedBy")
+  packetProcessJobsCancelled     PacketProcessJob[]       @relation("PacketProcessJobCancelledBy")
+  packetProcessReceiptsCreated   PacketProcessReceipt[]   @relation("PacketProcessReceiptCreatedBy")
 
   @@map("users")
 }
@@ -188,10 +192,11 @@ model Party {
 
   metalPurchasesAsSupplier MetalPurchase[] @relation("MetalPurchaseSupplier")
 
-  polishedPurchasesAsSupplier PolishedPurchase[] @relation("PolishedPurchaseSupplier")
-  polishedPurchasesAsBroker   PolishedPurchase[] @relation("PolishedPurchaseBroker")
-  jewelleryJobsAsCustomer  JewelleryJob[]  @relation("JewelleryJobCustomer")
-  jewelleryJobsAsKarigar   JewelleryJob[]  @relation("JewelleryJobKarigar")
+  polishedPurchasesAsSupplier     PolishedPurchase[] @relation("PolishedPurchaseSupplier")
+  polishedPurchasesAsBroker       PolishedPurchase[] @relation("PolishedPurchaseBroker")
+  packetProcessJobsAsManufacturer PacketProcessJob[] @relation("PacketProcessJobManufacturer")
+  jewelleryJobsAsCustomer         JewelleryJob[]     @relation("JewelleryJobCustomer")
+  jewelleryJobsAsKarigar          JewelleryJob[]     @relation("JewelleryJobKarigar")
 
   costSheetsAsCustomer CostSheet[] @relation("CostSheetCustomer")
 
@@ -274,8 +279,8 @@ model GstRate {
   roughLots         RoughLot[]
   metalPurchases    MetalPurchase[]
   polishedPurchases PolishedPurchase[]
-  costSheets      CostSheet[]       @relation("CostSheetGstRate")
-  costingSettings CostingSettings[] @relation("CostingSettingsGstRate")
+  costSheets        CostSheet[]        @relation("CostSheetGstRate")
+  costingSettings   CostingSettings[]  @relation("CostingSettingsGstRate")
 
   @@map("gst_rates")
 }
@@ -395,8 +400,10 @@ model Voucher {
   finishedJewellerySaleCancellationOf FinishedJewellerySale?   @relation("FinishedJewellerySaleCancellationVoucher")
   finishedJewelleryReturnPost         FinishedJewelleryReturn? @relation("FinishedJewelleryReturnVoucher")
 
-  polishedPurchase             PolishedPurchase? @relation("PolishedPurchaseVoucher")
-  polishedPurchaseCancellation PolishedPurchase? @relation("PolishedPurchaseCancellationVoucher")
+  polishedPurchase             PolishedPurchase?     @relation("PolishedPurchaseVoucher")
+  polishedPurchaseCancellation PolishedPurchase?     @relation("PolishedPurchaseCancellationVoucher")
+  packetProcessJobWip          PacketProcessJob?     @relation("PacketProcessJobWip")
+  packetProcessReceiptPost     PacketProcessReceipt? @relation("PacketProcessReceiptPosting")
 
   @@index([voucherType])
   @@index([partyId])
@@ -564,6 +571,8 @@ enum DiamondSequenceType {
   // Phase 7
   POLISHED_PURCHASE
   POLISHED_PACKET
+  PACKET_PROCESS_JOB
+  PACKET_PROCESS_RECEIPT
 }
 
 model DiamondSequence {
@@ -718,6 +727,18 @@ model DiamondJob {
   // exactly 0 when the job completes (see src/lib/diamond/posting.ts).
   issuedCostValue   Decimal @db.Decimal(14, 2)
   remainingWipCost  Decimal @db.Decimal(14, 2)
+
+  // Phase 7 — the Manufacturer process this job performs (null for jobs
+  // created before processes existed, which are cutting-polishing jobs).
+  // Name and output kind are snapshotted so a later master edit never
+  // changes what an old job did. A ROUGH-output process (4P / Laser,
+  // HPHT / Grow, Rough Polish) returns processed rough, never polished.
+  processId                 String?
+  process                   DiamondProcess?           @relation(fields: [processId], references: [id])
+  processNameSnapshot       String?
+  processOutputKindSnapshot DiamondProcessOutputKind?
+  chargeRateBasis           ProcessChargeRateBasis?
+  chargeRate                Decimal?                  @db.Decimal(14, 4)
 
   // Cumulative, updated atomically by each receipt.
   receivedPolishedCarat Decimal @default(0) @db.Decimal(10, 3)
@@ -1144,14 +1165,14 @@ model JewelleryJob {
   status JewelleryJobStatus @default(DRAFT)
 
   // Cumulative snapshots at issue time (never recomputed later).
-  issuedMetalFineWeight Decimal @default(0) @db.Decimal(10, 3)
-  issuedMetalCost       Decimal @default(0) @db.Decimal(14, 2)
-  issuedDiamondCost     Decimal @default(0) @db.Decimal(14, 2)
+  issuedMetalFineWeight   Decimal @default(0) @db.Decimal(10, 3)
+  issuedMetalCost         Decimal @default(0) @db.Decimal(14, 2)
+  issuedDiamondCost       Decimal @default(0) @db.Decimal(14, 2)
   // Phase 7 — polished PACKET diamonds issued to this job (bulk melee by
   // pieces + carat), separate from issuedDiamondCost which covers discrete
   // individually-costed Phase 3 stones.
   issuedPacketDiamondCost Decimal @default(0) @db.Decimal(14, 2)
-  otherMaterialCost     Decimal @default(0) @db.Decimal(14, 2)
+  otherMaterialCost       Decimal @default(0) @db.Decimal(14, 2)
 
   // Cumulative, updated atomically by each receipt.
   receivedFineWeight      Decimal @default(0) @db.Decimal(10, 3)
@@ -1194,15 +1215,16 @@ model JewelleryJob {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  metalIssueLines     JewelleryMetalIssueLine[]
-  diamondIssueLines   JewelleryDiamondIssueLine[]
-  packetIssueLines    JewelleryPacketIssueLine[]
-  packetMovements     PolishedPacketMovement[]
-  otherMaterialLines  JewelleryOtherMaterialLine[]
-  receipts            JewelleryReceipt[]
-  finishedJewellery   FinishedJewellery[]
-  metalStockMovements MetalStockMovement[]
-  stockMovements      StockMovement[]
+  metalIssueLines           JewelleryMetalIssueLine[]
+  diamondIssueLines         JewelleryDiamondIssueLine[]
+  packetIssueLines          JewelleryPacketIssueLine[]
+  packetMovements           PolishedPacketMovement[]
+  packetProcessReceiptLines PacketProcessReceiptLine[]
+  otherMaterialLines        JewelleryOtherMaterialLine[]
+  receipts                  JewelleryReceipt[]
+  finishedJewellery         FinishedJewellery[]
+  metalStockMovements       MetalStockMovement[]
+  stockMovements            StockMovement[]
 
   @@index([karigarId])
   @@index([customerId])
@@ -1400,8 +1422,8 @@ model FinishedJewellery {
   // Net weight not explained by consumed source metal (e.g. copper added to
   // 24K to make 18K), and its real cost share — alloyCost is already
   // INCLUDED inside metalCost below; stored separately for display only.
-  alloyAddedWeight Decimal @default(0) @db.Decimal(10, 3)
-  alloyCost        Decimal @default(0) @db.Decimal(14, 2)
+  alloyAddedWeight                Decimal  @default(0) @db.Decimal(10, 3)
+  alloyCost                       Decimal  @default(0) @db.Decimal(14, 2)
 
   // Allocated across outputs when a receipt has more than one — see
   // src/lib/jewellery/allocation.ts. Always sums exactly back to the
@@ -1448,8 +1470,8 @@ model FinishedJewellery {
   diamonds          JewelleryDiamondIssueLine[]
   packetResolutions JewelleryPacketResolution[]
   costSheets        CostSheet[]
-  stockMovements FinishedJewelleryStockMovement[]
-  saleLines      FinishedJewellerySaleLine[]
+  stockMovements    FinishedJewelleryStockMovement[]
+  saleLines         FinishedJewellerySaleLine[]
 
   @@index([jobId])
   @@index([receiptId])
@@ -2275,8 +2297,8 @@ model PolishedPurchase {
   supplierId String
   supplier   Party  @relation("PolishedPurchaseSupplier", fields: [supplierId], references: [id])
 
-  currencyCode String  @default("INR")
-  exchangeRate Decimal @default(1) @db.Decimal(10, 4)
+  currencyCode   String  @default("INR")
+  exchangeRate   Decimal @default(1) @db.Decimal(10, 4)
   /// Authoritative supplier cost in INR, before GST and before brokerage.
   supplierAmount Decimal @db.Decimal(14, 2)
 
@@ -2341,23 +2363,23 @@ model PolishedPurchaseLine {
   shape           DiamondShape
   customShapeName String?
   /// Size or size range exactly as traded, e.g. "+2-4", "1.00-1.10mm", "3.5mm".
-  sizeLabel    String
-  measurements String?
-  pieces       Int
-  carat        Decimal @db.Decimal(10, 3)
-  quality      String?
-  colour       String?
-  lab          String?
+  sizeLabel       String
+  measurements    String?
+  pieces          Int
+  carat           Decimal      @db.Decimal(10, 3)
+  quality         String?
+  colour          String?
+  lab             String?
 
   certificateStatus CertificateStatus @default(NOT_CERTIFIED)
   certNumber        String?
   certFileAssetId   String?
   photoAssetId      String?
 
-  rateBasis PolishedRateBasis @default(PER_CARAT)
-  rate      Decimal           @default(0) @db.Decimal(14, 4)
+  rateBasis  PolishedRateBasis @default(PER_CARAT)
+  rate       Decimal           @default(0) @db.Decimal(14, 4)
   /// This line's share of the purchase's landed cost.
-  landedCost Decimal @db.Decimal(14, 2)
+  landedCost Decimal           @db.Decimal(14, 2)
 
   notes     String?
   sortOrder Int     @default(0)
@@ -2406,6 +2428,10 @@ model PolishedPacket {
   parentPacket   PolishedPacket?  @relation("PacketParent", fields: [parentPacketId], references: [id])
   childPackets   PolishedPacket[] @relation("PacketParent")
 
+  /// Set when a Job Manufacturer return created this packet.
+  sourcePacketProcessJobId String?
+  sourcePacketProcessJob   PacketProcessJob? @relation("PacketProcessJobCreatedPackets", fields: [sourcePacketProcessJobId], references: [id])
+
   status PolishedPacketStatus @default(ACTIVE)
   notes  String?
 
@@ -2417,6 +2443,7 @@ model PolishedPacket {
 
   movements           PolishedPacketMovement[]
   jewelleryIssueLines JewelleryPacketIssueLine[]
+  processJobLines     PacketProcessJobLine[]
 
   @@index([mergeKey])
   @@index([status])
@@ -2443,6 +2470,9 @@ model PolishedPacketMovement {
   jewelleryJobId String?
   jewelleryJob   JewelleryJob? @relation(fields: [jewelleryJobId], references: [id])
 
+  packetProcessJobId String?
+  packetProcessJob   PacketProcessJob? @relation(fields: [packetProcessJobId], references: [id])
+
   reversalOfMovementId String?                 @unique
   reversalOfMovement   PolishedPacketMovement? @relation("PacketMovementReversal", fields: [reversalOfMovementId], references: [id])
   reversedByMovement   PolishedPacketMovement? @relation("PacketMovementReversal")
@@ -2455,6 +2485,7 @@ model PolishedPacketMovement {
   @@index([packetId])
   @@index([type])
   @@index([jewelleryJobId])
+  @@index([packetProcessJobId])
   @@map("polished_packet_movements")
 }
 
@@ -2485,6 +2516,11 @@ model JewelleryPacketIssueLine {
   damagedPieces Int     @default(0)
   damagedCarat  Decimal @default(0) @db.Decimal(10, 3)
   damagedCost   Decimal @default(0) @db.Decimal(14, 2)
+
+  /// Set when these stones arrived from a Job Manufacturer return marked
+  /// "used in Jewellery Job" rather than a direct issue from stock.
+  sourcePacketProcessReceiptLineId String?                   @unique
+  sourcePacketProcessReceiptLine   PacketProcessReceiptLine? @relation(fields: [sourcePacketProcessReceiptLineId], references: [id])
 
   createdAt DateTime @default(now())
 
@@ -2526,4 +2562,212 @@ model JewelleryPacketResolution {
   @@index([issueLineId])
   @@index([receiptId])
   @@map("jewellery_packet_resolutions")
+}
+
+// ===========================================================================
+// Phase 7 P2 — Manufacturer processes and Job Manufacturer (packet process
+// jobs). See PHASE_7_IMPROVEMENT_PLAN.md §8.4–8.5.
+// ===========================================================================
+
+enum DiamondProcessOutputKind {
+  ROUGH
+  POLISHED
+}
+
+enum ProcessChargeRateBasis {
+  FIXED
+  PER_CARAT
+  PER_PIECE
+}
+
+enum PacketProcessJobStatus {
+  ISSUED
+  PARTIALLY_RETURNED
+  COMPLETED
+  CANCELLED
+}
+
+enum PacketReturnDisposition {
+  RETURNED_TO_STOCK
+  USED_IN_JEWELLERY_JOB
+  DAMAGED_LOST
+}
+
+/// Configurable Manufacturer process (4P / Laser, HPHT / Grow, Polishing,
+/// Rough Polish, …). HPHT / Grow is an outsourced issue-return-cost process
+/// only — there is no in-house growing module.
+model DiamondProcess {
+  id               String                   @id @default(cuid())
+  name             String                   @unique
+  outputKind       DiamondProcessOutputKind
+  defaultRateBasis ProcessChargeRateBasis   @default(PER_CARAT)
+  isActive         Boolean                  @default(true)
+  sortOrder        Int                      @default(0)
+
+  createdByUserId String?
+  createdBy       User?   @relation("DiamondProcessCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  diamondJobs       DiamondJob[]
+  packetProcessJobs PacketProcessJob[]
+
+  @@map("diamond_processes")
+}
+
+/// Job Manufacturer: bulk polished packets issued to a Manufacturer for a
+/// process and returned size-wise. Every issued piece and carat resolves
+/// exactly once; a partial return never recognises loss.
+model PacketProcessJob {
+  id      String @id @default(cuid())
+  jobCode String @unique
+
+  manufacturerId String
+  manufacturer   Party  @relation("PacketProcessJobManufacturer", fields: [manufacturerId], references: [id])
+
+  processId           String
+  process             DiamondProcess @relation(fields: [processId], references: [id])
+  processNameSnapshot String
+
+  issueDate DateTime
+  dueDate   DateTime?
+  notes     String?
+
+  issuedPieces    Int
+  issuedCarat     Decimal @db.Decimal(10, 3)
+  issuedCostValue Decimal @db.Decimal(14, 2)
+
+  returnedPieces Int     @default(0)
+  returnedCarat  Decimal @default(0) @db.Decimal(10, 3)
+  usedPieces     Int     @default(0)
+  usedCarat      Decimal @default(0) @db.Decimal(10, 3)
+  damagedPieces  Int     @default(0)
+  damagedCarat   Decimal @default(0) @db.Decimal(10, 3)
+  lossCarat      Decimal @default(0) @db.Decimal(10, 3)
+
+  remainingWipCost Decimal @db.Decimal(14, 2)
+
+  chargeRateBasis ProcessChargeRateBasis
+  chargeRate      Decimal                @default(0) @db.Decimal(14, 4)
+  totalCharge     Decimal                @default(0) @db.Decimal(14, 2)
+
+  status PacketProcessJobStatus @default(ISSUED)
+
+  wipVoucherId String?  @unique
+  wipVoucher   Voucher? @relation("PacketProcessJobWip", fields: [wipVoucherId], references: [id])
+
+  cancelledAt        DateTime?
+  cancelledByUserId  String?
+  cancelledBy        User?     @relation("PacketProcessJobCancelledBy", fields: [cancelledByUserId], references: [id])
+  cancellationReason String?
+
+  idempotencyKey String? @unique
+
+  createdByUserId String
+  createdBy       User   @relation("PacketProcessJobCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lines          PacketProcessJobLine[]
+  receipts       PacketProcessReceipt[]
+  movements      PolishedPacketMovement[]
+  createdPackets PolishedPacket[]         @relation("PacketProcessJobCreatedPackets")
+
+  @@index([manufacturerId])
+  @@index([status])
+  @@map("packet_process_jobs")
+}
+
+/// One size-wise issued line: stones taken from one packet.
+model PacketProcessJobLine {
+  id    String           @id @default(cuid())
+  jobId String
+  job   PacketProcessJob @relation(fields: [jobId], references: [id])
+
+  packetId String
+  packet   PolishedPacket @relation(fields: [packetId], references: [id])
+
+  piecesAtIssue Int
+  caratAtIssue  Decimal @db.Decimal(10, 3)
+  costAtIssue   Decimal @db.Decimal(14, 2)
+
+  resolvedPieces Int     @default(0)
+  resolvedCarat  Decimal @default(0) @db.Decimal(10, 3)
+  lossCarat      Decimal @default(0) @db.Decimal(10, 3)
+  resolvedCost   Decimal @default(0) @db.Decimal(14, 2)
+  isClosed       Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  receiptLines PacketProcessReceiptLine[]
+
+  @@unique([jobId, packetId])
+  @@index([packetId])
+  @@map("packet_process_job_lines")
+}
+
+/// One return event against a packet process job.
+model PacketProcessReceipt {
+  id          String           @id @default(cuid())
+  receiptCode String           @unique
+  jobId       String
+  job         PacketProcessJob @relation(fields: [jobId], references: [id])
+
+  receiveDate        DateTime
+  isFinal            Boolean  @default(false)
+  lossCarat          Decimal  @default(0) @db.Decimal(10, 3)
+  isAbnormalLoss     Boolean  @default(false)
+  abnormalLossReason String?
+  processCharge      Decimal  @default(0) @db.Decimal(14, 2)
+  notes              String?
+
+  postingVoucherId String?  @unique
+  postingVoucher   Voucher? @relation("PacketProcessReceiptPosting", fields: [postingVoucherId], references: [id])
+
+  idempotencyKey String? @unique
+
+  createdByUserId String
+  createdBy       User   @relation("PacketProcessReceiptCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  lines PacketProcessReceiptLine[]
+
+  @@index([jobId])
+  @@map("packet_process_receipts")
+}
+
+model PacketProcessReceiptLine {
+  id        String               @id @default(cuid())
+  receiptId String
+  receipt   PacketProcessReceipt @relation(fields: [receiptId], references: [id])
+
+  jobLineId String
+  jobLine   PacketProcessJobLine @relation(fields: [jobLineId], references: [id])
+
+  disposition PacketReturnDisposition
+  pieces      Int
+  carat       Decimal                 @db.Decimal(10, 3)
+  /// Size as returned — may differ from the issued packet's size.
+  sizeLabel   String
+  /// Resolved stone cost plus this row's share of the process charge.
+  costValue   Decimal                 @db.Decimal(14, 2)
+  chargeShare Decimal                 @default(0) @db.Decimal(14, 2)
+
+  resultPacketId String?
+
+  jewelleryJobId String?
+  jewelleryJob   JewelleryJob? @relation(fields: [jewelleryJobId], references: [id])
+
+  damagedLostReason String?
+
+  createdAt DateTime @default(now())
+
+  jewelleryIssueLine JewelleryPacketIssueLine?
+
+  @@index([receiptId])
+  @@index([jobLineId])
+  @@map("packet_process_receipt_lines")
 }

@@ -141,7 +141,7 @@ export const otherMaterialLineSchema = z.object({
 /** Phase 7 — bulk polished stones taken from a packet, by pieces AND carat. */
 export const packetIssueLineSchema = z.object({
   packetId: z.string().trim().min(1),
-  pieces: z.coerce.number().int().min(0, "Pieces cannot be negative."),
+  pieces: z.coerce.number().int().min(1, "Each packet line needs at least one piece."),
   carat: z.coerce.number().positive("Each packet line's carat must be greater than zero."),
 });
 

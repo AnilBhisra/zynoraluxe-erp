@@ -5,6 +5,7 @@ import type {
   CertificateStatus,
   DiamondShape,
   GstTreatment,
+  ProcessChargeRateBasis,
   RateBasis,
 } from "@/generated/prisma/enums";
 
@@ -20,6 +21,7 @@ import {
 import { cancelVoucher } from "@/lib/accounting/posting";
 import { allocateProportionally, round3 } from "@/lib/diamond/allocation";
 import { nextDiamondCode } from "@/lib/diamond/numbering";
+import { computeProcessCharge } from "@/lib/diamond/processCharge";
 
 export { PostingError };
 
@@ -255,6 +257,10 @@ export async function issueRoughToKarigar(
     targetWidthMm?: DecimalInput | null;
     targetHeightMm?: DecimalInput | null;
     notes?: string | null;
+    /** Phase 7 — the Manufacturer process (4P / Laser, HPHT / Grow, …). */
+    processId?: string | null;
+    chargeRateBasis?: ProcessChargeRateBasis | null;
+    chargeRate?: DecimalInput | null;
     idempotencyKey?: string | null;
     createdByUserId: string;
   }
@@ -279,6 +285,21 @@ export async function issueRoughToKarigar(
     }
   }
 
+  // ---- Phase 7: Manufacturer process + agreed charge rate ----
+  let diamondProcess: { id: string; name: string; outputKind: "ROUGH" | "POLISHED" } | null = null;
+  if (input.processId) {
+    const found = await tx.diamondProcess.findUnique({ where: { id: input.processId } });
+    if (!found || !found.isActive) throw new PostingError("The selected process was not found or is inactive.");
+    diamondProcess = found;
+  }
+  let chargeRate: Decimal | null = null;
+  if (input.chargeRateBasis) {
+    chargeRate = new Decimal(input.chargeRate ?? 0).toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
+    if (chargeRate.isNegative()) throw new PostingError("The process charge rate cannot be negative.");
+  } else if (input.chargeRate != null && !new Decimal(input.chargeRate).isZero()) {
+    throw new PostingError("Choose how the process charge is calculated (fixed, per carat or per piece).");
+  }
+
   const issuedRoughCarat = pieces.reduce((sum, p) => sum.plus(new Decimal(p.carat)), ZERO);
   const issuedCostValue = pieces.reduce((sum, p) => sum.plus(new Decimal(p.allocatedCost)), ZERO);
 
@@ -292,7 +313,7 @@ export async function issueRoughToKarigar(
       fyStartDay: input.fyStartDay,
       currencyCode: "INR",
       exchangeRate: 1,
-      note: `Rough issued to Karigar — job ${jobCode}`,
+      note: diamondProcess ? `Rough issued for ${diamondProcess.name} — job ${jobCode}` : `Rough issued to Karigar — job ${jobCode}`,
       idempotencyKey: input.idempotencyKey,
       createdByUserId: input.createdByUserId,
     },
@@ -333,6 +354,11 @@ export async function issueRoughToKarigar(
       targetHeightMm:
         input.targetHeightMm != null ? new Decimal(input.targetHeightMm).toFixed(3) : null,
       notes: input.notes ?? null,
+      processId: diamondProcess?.id ?? null,
+      processNameSnapshot: diamondProcess?.name ?? null,
+      processOutputKindSnapshot: diamondProcess?.outputKind ?? null,
+      chargeRateBasis: input.chargeRateBasis ?? null,
+      chargeRate: chargeRate ? chargeRate.toFixed(4) : null,
       issuedPiecesCount: pieces.length,
       issuedRoughCarat: round3(issuedRoughCarat).toFixed(3),
       issuedCostValue: issuedCostValue.toFixed(2),
@@ -482,6 +508,11 @@ export async function receivePolishedDiamonds(
   if (!job) throw new PostingError("Job not found.");
   if (job.status === "CANCELLED") throw new PostingError("This job has been cancelled.");
   if (job.status === "COMPLETED") throw new PostingError("This job is already completed.");
+  if (job.processOutputKindSnapshot === "ROUGH") {
+    throw new PostingError(
+      `This job's process (${job.processNameSnapshot}) returns processed rough, not polished diamonds — use Receive processed rough.`
+    );
+  }
   if (input.outputs.length === 0) {
     throw new PostingError("A receipt must include at least one polished diamond.");
   }
@@ -496,8 +527,8 @@ export async function receivePolishedDiamonds(
   if (returnedRoughCarat.isNegative()) {
     throw new PostingError("Returned rough carat cannot be negative.");
   }
-  const labourCharge = round2(input.labourCharge ?? 0);
-  if (labourCharge.isNegative()) {
+  const enteredLabourCharge = round2(input.labourCharge ?? 0);
+  if (enteredLabourCharge.isNegative()) {
     throw new PostingError("Labour charge cannot be negative.");
   }
 
@@ -520,6 +551,26 @@ export async function receivePolishedDiamonds(
   const gapCarat = round3(pendingCaratBefore.minus(resolvedCarat));
   const isFinalReceiptForJob = gapCarat.isZero() || input.markJobComplete;
   const weightLossCarat = isFinalReceiptForJob ? gapCarat : ZERO;
+
+  // Phase 7: a job with an agreed rate computes its own charge; a manual
+  // figure that disagrees is refused rather than silently replaced.
+  let labourCharge = enteredLabourCharge;
+  if (job.chargeRateBasis) {
+    labourCharge = new Decimal(
+      computeProcessCharge({
+        basis: job.chargeRateBasis,
+        rate: new Decimal(job.chargeRate ?? 0).toFixed(4),
+        carat: totalPolishedCarat.toFixed(3),
+        pieces: input.outputs.length,
+        isFinal: isFinalReceiptForJob,
+      })
+    );
+    if (enteredLabourCharge.greaterThan(0) && !enteredLabourCharge.equals(labourCharge)) {
+      throw new PostingError(
+        `This job's charge is calculated from its agreed rate (₹${labourCharge.toFixed(2)} for this receipt) — leave the labour charge blank.`
+      );
+    }
+  }
   const cumulativeReceivedAfter = new Decimal(job.receivedPolishedCarat).plus(totalPolishedCarat);
   const yieldPercent = isFinalReceiptForJob
     ? new Decimal(job.issuedRoughCarat).greaterThan(0)
@@ -571,7 +622,9 @@ export async function receivePolishedDiamonds(
       createdByUserId: input.createdByUserId,
     },
     "DIAMOND_RECEIPT",
-    { amount: totalToAllocateAcrossOutputs }
+    // The voucher amount is the posting's full debit — returned rough
+    // included — not just the polished portion.
+    { amount: round2(totalToAllocateAcrossOutputs.plus(returnedCost)) }
   );
 
   const journalLines: JournalLineInput[] = [
@@ -750,6 +803,228 @@ export async function receivePolishedDiamonds(
   }
 
   return { receipt, outputs: createdOutputs, job: updatedJob };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7 — Manufacturer: receive processed rough (4P / Laser, HPHT / Grow,
+// Rough Polish). The stones come back as ROUGH, so each processed piece
+// becomes a new Available RoughPiece carrying its share of the resolved WIP
+// cost plus the process charge. Same pending/loss rules as a polished
+// receipt: a partial return never recognises loss.
+// ---------------------------------------------------------------------------
+
+export type ProcessedRoughPieceDraft = {
+  carat: DecimalInput;
+  colorEstimate?: string | null;
+  clarityNote?: string | null;
+  internalNote?: string | null;
+};
+
+export async function receiveProcessedRough(
+  tx: Tx,
+  input: FyInput & {
+    jobId: string;
+    receiveDate: Date;
+    pieces: ProcessedRoughPieceDraft[];
+    /** Only for a job without an agreed rate; a rate-based job computes its own. */
+    manualCharge?: DecimalInput | null;
+    markJobComplete: boolean;
+    notes?: string | null;
+    idempotencyKey?: string | null;
+    createdByUserId: string;
+  }
+) {
+  const job = await tx.diamondJob.findUnique({ where: { id: input.jobId } });
+  if (!job) throw new PostingError("Job not found.");
+  if (job.status === "CANCELLED") throw new PostingError("This job has been cancelled.");
+  if (job.status === "COMPLETED") throw new PostingError("This job is already completed.");
+  if (job.processOutputKindSnapshot !== "ROUGH") {
+    throw new PostingError("Only a job for a rough process (4P / Laser, HPHT / Grow, Rough Polish) can return processed rough.");
+  }
+  if (input.pieces.length === 0) throw new PostingError("Add at least one processed rough piece.");
+
+  const pieceCarats = input.pieces.map((p) => round3(p.carat));
+  if (pieceCarats.some((c) => !c.greaterThan(0))) {
+    throw new PostingError("Each processed rough piece's carat must be greater than zero.");
+  }
+  const processedCarat = round3(pieceCarats.reduce((sum, c) => sum.plus(c), ZERO));
+
+  const pendingCaratBefore = round3(
+    new Decimal(job.issuedRoughCarat).minus(job.receivedPolishedCarat).minus(job.returnedRoughCarat)
+  );
+  if (processedCarat.greaterThan(pendingCaratBefore)) {
+    throw new PostingError(
+      `Processed rough (${processedCarat.toFixed(3)}ct) exceeds the ${pendingCaratBefore.toFixed(3)}ct still with the Manufacturer.`
+    );
+  }
+  const gapCarat = round3(pendingCaratBefore.minus(processedCarat));
+  const isFinal = gapCarat.isZero() || input.markJobComplete;
+  const weightLossCarat = isFinal ? gapCarat : ZERO;
+
+  const remainingWipCostBefore = new Decimal(job.remainingWipCost);
+  const resolvedCost = isFinal
+    ? remainingWipCostBefore
+    : round2(remainingWipCostBefore.times(processedCarat).dividedBy(pendingCaratBefore));
+
+  const enteredCharge = round2(input.manualCharge ?? 0);
+  if (enteredCharge.isNegative()) throw new PostingError("The process charge cannot be negative.");
+  let charge = enteredCharge;
+  if (job.chargeRateBasis) {
+    charge = new Decimal(
+      computeProcessCharge({
+        basis: job.chargeRateBasis,
+        rate: new Decimal(job.chargeRate ?? 0).toFixed(4),
+        carat: processedCarat.toFixed(3),
+        pieces: input.pieces.length,
+        isFinal,
+      })
+    );
+    if (enteredCharge.greaterThan(0) && !enteredCharge.equals(charge)) {
+      throw new PostingError(
+        `This job's charge is calculated from its agreed rate (₹${charge.toFixed(2)} for this receipt) — leave the charge blank.`
+      );
+    }
+  }
+
+  // Normal process loss stays absorbed in the processed pieces' cost.
+  const totalToPieces = round2(resolvedCost.plus(charge));
+  const allocation = allocateProportionally(
+    totalToPieces,
+    pieceCarats.map((carat, i) => ({ key: String(i), weight: carat }))
+  );
+
+  const receiptCode = await nextDiamondCode(tx, "POLISHED_RECEIPT");
+  const voucher = await createVoucherHeader(
+    tx,
+    {
+      date: input.receiveDate,
+      fyStartMonth: input.fyStartMonth,
+      fyStartDay: input.fyStartDay,
+      currencyCode: "INR",
+      exchangeRate: 1,
+      note: `${job.processNameSnapshot} return ${receiptCode} for job ${job.jobCode}`,
+      idempotencyKey: input.idempotencyKey,
+      createdByUserId: input.createdByUserId,
+    },
+    "DIAMOND_RECEIPT",
+    { amount: totalToPieces }
+  );
+  const journalLines: JournalLineInput[] = [];
+  if (totalToPieces.greaterThan(0)) {
+    journalLines.push({
+      accountCode: SYSTEM_ACCOUNT_CODES.ROUGH_DIAMOND_INVENTORY,
+      debit: totalToPieces,
+      description: `Processed rough ${receiptCode}`,
+    });
+  }
+  if (resolvedCost.greaterThan(0)) {
+    journalLines.push({ accountCode: SYSTEM_ACCOUNT_CODES.DIAMOND_WIP, credit: resolvedCost, description: `Receipt ${receiptCode}` });
+  }
+  if (charge.greaterThan(0)) {
+    journalLines.push({
+      accountCode: SYSTEM_ACCOUNT_CODES.ACCOUNTS_PAYABLE,
+      partyId: job.karigarId,
+      credit: charge,
+      description: `${job.processNameSnapshot} charge payable ${receiptCode}`,
+    });
+  }
+  await insertBalancedJournalLines(tx, voucher.id, journalLines);
+
+  const returnedAfter = round3(new Decimal(job.returnedRoughCarat).plus(processedCarat));
+  const yieldPercent = isFinal
+    ? new Decimal(job.issuedRoughCarat).greaterThan(0)
+      ? round3(returnedAfter.dividedBy(job.issuedRoughCarat).times(100))
+      : ZERO
+    : round3(processedCarat.dividedBy(pendingCaratBefore).times(100));
+
+  const receipt = await tx.polishedReceipt.create({
+    data: {
+      receiptCode,
+      jobId: job.id,
+      receiveDate: input.receiveDate,
+      polishedCount: 0,
+      totalPolishedCarat: "0.000",
+      returnedRoughCarat: processedCarat.toFixed(3),
+      weightLossCarat: weightLossCarat.toFixed(3),
+      yieldPercent: yieldPercent.toFixed(3),
+      labourCharge: charge.toFixed(2),
+      shape: job.requiredShape,
+      notes: input.notes ?? null,
+      postingVoucherId: voucher.id,
+      idempotencyKey: input.idempotencyKey ?? null,
+      createdByUserId: input.createdByUserId,
+    },
+  });
+
+  const createdPieces = [];
+  for (let i = 0; i < input.pieces.length; i++) {
+    const draft = input.pieces[i];
+    const roughCode = await nextDiamondCode(tx, "ROUGH_PIECE");
+    const allocatedCost = allocation.find((a) => a.key === String(i))!.amount;
+    const piece = await tx.roughPiece.create({
+      data: {
+        roughCode,
+        lotId: null,
+        returnedFromJobId: job.id,
+        returnedFromReceiptId: receipt.id,
+        carat: pieceCarats[i].toFixed(3),
+        colorEstimate: draft.colorEstimate ?? null,
+        clarityNote: draft.clarityNote ?? null,
+        internalNote: draft.internalNote ?? `${job.processNameSnapshot} — processed on job ${job.jobCode}`,
+        allocatedCost: allocatedCost.toFixed(2),
+        costLocked: false,
+        status: "AVAILABLE",
+        createdByUserId: input.createdByUserId,
+      },
+    });
+    await tx.stockMovement.create({
+      data: {
+        type: "ROUGH_RETURN_IN",
+        roughPieceId: piece.id,
+        diamondJobId: job.id,
+        pieces: 1,
+        carat: piece.carat,
+        costValue: piece.allocatedCost,
+        sourceDocument: receiptCode,
+        createdByUserId: input.createdByUserId,
+      },
+    });
+    createdPieces.push(piece);
+  }
+
+  if (weightLossCarat.greaterThan(0)) {
+    await tx.stockMovement.create({
+      data: {
+        type: "ROUGH_CONSUMED_OUT",
+        diamondJobId: job.id,
+        pieces: 0,
+        carat: weightLossCarat.toFixed(3),
+        costValue: "0.00",
+        sourceDocument: receiptCode,
+        createdByUserId: input.createdByUserId,
+      },
+    });
+  }
+
+  const updatedJob = await tx.diamondJob.update({
+    where: { id: job.id },
+    data: {
+      returnedRoughCarat: returnedAfter.toFixed(3),
+      totalLabourCharge: round2(new Decimal(job.totalLabourCharge).plus(charge)).toFixed(2),
+      remainingWipCost: round2(remainingWipCostBefore.minus(resolvedCost)).toFixed(2),
+      status: isFinal ? "COMPLETED" : "PARTIALLY_RECEIVED",
+    },
+  });
+
+  if (isFinal) {
+    const links = await tx.diamondJobPiece.findMany({ where: { jobId: job.id }, select: { roughPieceId: true } });
+    await tx.roughPiece.updateMany({
+      where: { id: { in: links.map((l) => l.roughPieceId) }, status: "WITH_KARIGAR" },
+      data: { status: "COMPLETED" },
+    });
+  }
+
+  return { receipt, pieces: createdPieces, job: updatedJob };
 }
 
 // ---------------------------------------------------------------------------

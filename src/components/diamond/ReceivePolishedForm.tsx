@@ -42,12 +42,15 @@ export function ReceivePolishedForm({
   jobCode,
   pendingCarat,
   defaultShape,
+  chargeFromAgreedRate = false,
   onDone,
 }: {
   jobId: string;
   jobCode: string;
   pendingCarat: number;
   defaultShape: string;
+  /** Phase 7 — the job has an agreed process rate, so the server computes the charge. */
+  chargeFromAgreedRate?: boolean;
   onDone?: () => void;
 }) {
   const [state, formAction, pending] = useActionState(receivePolishedAction, undefined);
@@ -238,15 +241,21 @@ export function ReceivePolishedForm({
           value={returnedRoughCarat}
           onChange={(e) => setReturnedRoughCarat(e.target.value)}
         />
-        <Field
-          label="Cutting-polishing labour charge (₹)"
-          name="labourCharge"
-          type="number"
-          step="0.01"
-          min={0}
-          value={labourCharge}
-          onChange={(e) => setLabourCharge(e.target.value)}
-        />
+        {chargeFromAgreedRate ? (
+          <p className="self-end text-xs text-zinc-500 dark:text-zinc-400">
+            The process charge is calculated from this job&apos;s agreed rate when you save.
+          </p>
+        ) : (
+          <Field
+            label="Cutting-polishing labour charge (₹)"
+            name="labourCharge"
+            type="number"
+            step="0.01"
+            min={0}
+            value={labourCharge}
+            onChange={(e) => setLabourCharge(e.target.value)}
+          />
+        )}
       </div>
 
       {gap > 0.0005 ? (

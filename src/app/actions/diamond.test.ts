@@ -22,6 +22,11 @@ const mocks = vi.hoisted(() => ({
   polishedPurchaseFindUnique: vi.fn(),
   createPolishedPurchase: vi.fn(),
   cancelPolishedPurchase: vi.fn(),
+  createPacketProcessJob: vi.fn(),
+  receivePacketProcessReturn: vi.fn(),
+  cancelPacketProcessJob: vi.fn(),
+  packetProcessReceiptFindUnique: vi.fn(),
+  diamondProcessCreate: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/dal", () => ({
@@ -36,6 +41,8 @@ vi.mock("@/lib/db/prisma", () => ({
     diamondJob: { findUnique: mocks.diamondJobFindUnique },
     polishedReceipt: { findUnique: mocks.polishedReceiptFindUnique },
     polishedPurchase: { findUnique: mocks.polishedPurchaseFindUnique },
+    packetProcessReceipt: { findUnique: mocks.packetProcessReceiptFindUnique },
+    diamondProcess: { create: mocks.diamondProcessCreate },
   },
 }));
 
@@ -68,6 +75,16 @@ vi.mock("@/lib/diamond/polishedPurchase", async () => {
   };
 });
 
+vi.mock("@/lib/diamond/packetProcess", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/diamond/packetProcess")>("@/lib/diamond/packetProcess");
+  return {
+    ...actual,
+    createPacketProcessJob: mocks.createPacketProcessJob,
+    receivePacketProcessReturn: mocks.receivePacketProcessReturn,
+    cancelPacketProcessJob: mocks.cancelPacketProcessJob,
+  };
+});
+
 vi.mock("@/lib/storage/diamondMedia", () => ({
   isDiamondStorageConfigured: mocks.isDiamondStorageConfigured,
   uploadDiamondAsset: mocks.uploadDiamondAsset,
@@ -76,8 +93,11 @@ vi.mock("@/lib/storage/diamondMedia", () => ({
 
 import {
   cancelDiamondJobAction,
+  cancelPacketProcessJobAction,
   cancelPolishedPurchaseAction,
   createPolishedPurchaseAction,
+  receivePacketProcessReturnAction,
+  saveDiamondProcessAction,
   createRoughPurchase,
   deleteDiamondPhotoAction,
   issueRoughAction,
@@ -111,6 +131,7 @@ beforeEach(() => {
   mocks.diamondJobFindUnique.mockResolvedValue(null);
   mocks.polishedReceiptFindUnique.mockResolvedValue(null);
   mocks.polishedPurchaseFindUnique.mockResolvedValue(null);
+  mocks.packetProcessReceiptFindUnique.mockResolvedValue(null);
   mocks.isDiamondStorageConfigured.mockReturnValue(true);
 });
 
@@ -408,5 +429,57 @@ describe("Phase 7 — Polished Diamond Purchase actions", () => {
       cancelPolishedPurchaseAction(undefined, formData({ purchaseId: "pp-1", cancellationReason: "Wrong supplier" }))
     ).rejects.toThrow();
     expect(mocks.cancelPolishedPurchase).not.toHaveBeenCalled();
+  });
+});
+
+describe("Phase 7 — Manufacturer and Job Manufacturer actions", () => {
+  const returnFields = (rows: unknown[], extra: Record<string, string> = {}) =>
+    formData({ jobId: "ppj-1", receiveDate: "2026-09-17", rowsJson: JSON.stringify(rows), ...extra });
+
+  it("refuses Staff recording damaged/lost stones, before the posting engine runs", async () => {
+    mocks.requireUser.mockResolvedValue(STAFF);
+    const result = await receivePacketProcessReturnAction(
+      undefined,
+      returnFields([{ jobLineId: "l1", disposition: "DAMAGED_LOST", pieces: 1, carat: "0.1", damagedLostReason: "Broken" }])
+    );
+    expect(result?.error).toMatch(/only the owner/i);
+    expect(mocks.receivePacketProcessReturn).not.toHaveBeenCalled();
+  });
+
+  it("refuses Staff classifying abnormal loss", async () => {
+    mocks.requireUser.mockResolvedValue(STAFF);
+    const result = await receivePacketProcessReturnAction(
+      undefined,
+      returnFields([{ jobLineId: "l1", disposition: "RETURNED_TO_STOCK", pieces: 1, carat: "0.1" }], {
+        isAbnormalLoss: "true",
+        abnormalLossReason: "Over-polished",
+      })
+    );
+    expect(result?.error).toMatch(/only the owner/i);
+    expect(mocks.receivePacketProcessReturn).not.toHaveBeenCalled();
+  });
+
+  it("lets Staff record an ordinary return", async () => {
+    mocks.requireUser.mockResolvedValue(STAFF);
+    mocks.receivePacketProcessReturn.mockResolvedValue({ receipt: { receiptCode: "ZL-PJR-2026-000001" } });
+    const result = await receivePacketProcessReturnAction(
+      undefined,
+      returnFields([{ jobLineId: "l1", disposition: "RETURNED_TO_STOCK", pieces: 2, carat: "0.25", sizeLabel: "1.00MM" }])
+    );
+    expect(result).toEqual({ success: true, code: "ZL-PJR-2026-000001" });
+  });
+
+  it("cancelPacketProcessJobAction and saveDiamondProcessAction require Owner", async () => {
+    mocks.requireOwner.mockImplementation(() => {
+      throw new Error("redirect to /unauthorized");
+    });
+    await expect(
+      cancelPacketProcessJobAction(undefined, formData({ jobId: "ppj-1", cancellationReason: "Wrong packet" }))
+    ).rejects.toThrow();
+    await expect(
+      saveDiamondProcessAction(undefined, formData({ name: "4P / Laser", outputKind: "ROUGH" }))
+    ).rejects.toThrow();
+    expect(mocks.cancelPacketProcessJob).not.toHaveBeenCalled();
+    expect(mocks.diamondProcessCreate).not.toHaveBeenCalled();
   });
 });

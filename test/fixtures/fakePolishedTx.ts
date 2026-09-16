@@ -143,6 +143,7 @@ export function createFakePolishedTx() {
     },
     paymentAccountIdByMethod: base.paymentAccountIdByMethod,
     seedParty,
+    seedDiamondProcess: base.seedDiamondProcess,
   };
 }
 
