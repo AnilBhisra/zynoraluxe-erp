@@ -9,16 +9,12 @@ import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 import { useFieldId } from "@/lib/utils/useFieldId";
 
-const PARTY_TYPES = [
-  { value: "CUSTOMER", label: "Customer" },
-  { value: "SUPPLIER", label: "Supplier" },
-  { value: "KARIGAR", label: "Karigar" },
-];
+import { PARTY_TYPES, type PartyTypeValue } from "@/lib/parties/types";
 
 export type EditablePartyValues = {
   id: string;
   name: string;
-  type: "CUSTOMER" | "SUPPLIER" | "KARIGAR";
+  type: PartyTypeValue;
   phone: string;
   email: string;
   gstin: string;

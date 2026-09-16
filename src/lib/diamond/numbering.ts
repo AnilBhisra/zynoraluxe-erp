@@ -7,6 +7,9 @@ const PREFIX_BY_TYPE: Record<DiamondSequenceType, string> = {
   DIAMOND_JOB: "ZL-JOB",
   POLISHED_RECEIPT: "ZL-REC",
   POLISHED_DIAMOND: "ZL-POL",
+  // Phase 7
+  POLISHED_PURCHASE: "ZL-PP",
+  POLISHED_PACKET: "ZL-PKT",
 };
 
 /**

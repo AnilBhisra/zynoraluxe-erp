@@ -19,6 +19,14 @@ import { JobsTab, type SerializedDiamondJob } from "@/components/diamond/JobsTab
 import { JobDetailView, type SerializedJobDetail } from "@/components/diamond/JobDetailView";
 import { PolishedStockTab, type SerializedPolishedDiamond } from "@/components/diamond/PolishedStockTab";
 import type { AvailablePieceOption } from "@/components/diamond/IssueRoughForm";
+import {
+  PolishedPacketsSection,
+  type SerializedPacket,
+  type SerializedPacketGroup,
+  type SerializedPolishedPurchase,
+} from "@/components/diamond/PolishedPacketsSection";
+import { groupPacketRows, listPolishedPackets, listPolishedPurchases } from "@/lib/diamond/packetReports";
+import { shapeLabel } from "@/lib/diamond/shapes";
 import { resolveDiamondAssetUrl } from "@/lib/storage/diamondMedia";
 import { ownerOnly } from "@/lib/security/ownerOnly";
 import type { DiamondJobStatus } from "@/generated/prisma/enums";
@@ -71,14 +79,14 @@ export default async function DiamondPage({ searchParams }: { searchParams: Prom
     <div>
       <PageHeader
         title="Diamond"
-        description="Rough purchase and stock, cutting-polishing jobs, and polished stock."
+        description="Rough Diamond purchase and stock, cutting-polishing jobs, and Polished Diamond stock and purchases."
         actions={<HelpLink anchor="diamond" />}
       />
 
       <nav aria-label="Diamond sections" className="mb-6 flex flex-wrap gap-1 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1.5">
-        <TabLink tab="rough" label="Rough Stock" active={tab === "rough"} />
+        <TabLink tab="rough" label="Rough Diamond" active={tab === "rough"} />
         <TabLink tab="jobs" label="Cutting-Polishing Jobs" active={tab === "jobs"} />
-        <TabLink tab="polished" label="Polished Stock" active={tab === "polished"} />
+        <TabLink tab="polished" label="Polished Diamond" active={tab === "polished"} />
       </nav>
 
       {tab === "rough" ? <RoughStockTabContent search={params.roughSearch ?? ""} isOwner={isOwner} /> : null}
@@ -290,10 +298,64 @@ async function JobsTabContent({
 }
 
 async function PolishedStockTabContent({ search, isOwner }: { search: string; isOwner: boolean }) {
-  const [polished, summary] = await Promise.all([
+  const [polished, summary, packetRows, purchaseRows, suppliers, brokers, paymentAccounts, gstRates] = await Promise.all([
     listPolishedDiamonds({ search: search || undefined }),
     getPolishedStockSummary(),
+    listPolishedPackets({ search: search || undefined }),
+    listPolishedPurchases({ search: search || undefined }),
+    prisma.party.findMany({ where: { type: "SUPPLIER", isActive: true }, orderBy: { name: "asc" } }),
+    prisma.party.findMany({ where: { type: "BROKER", isActive: true }, orderBy: { name: "asc" } }),
+    prisma.paymentAccount.findMany({ where: { isActive: true }, orderBy: { name: "asc" } }),
+    prisma.gstRate.findMany({ where: { isActive: true }, orderBy: { ratePercent: "asc" } }),
   ]);
+
+  const packets: SerializedPacket[] = packetRows.map((p) => ({
+    id: p.id,
+    packetCode: p.packetCode,
+    provenance: p.provenance,
+    shape: p.shape,
+    customShapeName: p.customShapeName,
+    sizeLabel: p.sizeLabel,
+    quality: p.quality,
+    colour: p.colour,
+    certificateStatus: p.certificateStatus,
+    certNumber: p.certNumber,
+    purchaseCode: p.purchaseCode,
+    supplierName: p.supplierName,
+    pieces: p.pieces,
+    carat: p.carat,
+    costValue: ownerOnly(isOwner, p.costValue),
+  }));
+  const packetGroups: SerializedPacketGroup[] = groupPacketRows(packetRows).map((g) => ({
+    mergeKey: g.mergeKey,
+    label: [
+      g.sample.shape === "CUSTOM" && g.sample.customShapeName ? g.sample.customShapeName : shapeLabel(g.sample.shape),
+      g.sample.sizeLabel,
+      g.sample.quality,
+      g.sample.colour,
+      g.sample.lab,
+    ]
+      .filter(Boolean)
+      .join(" · "),
+    provenance: g.sample.provenance,
+    pieces: g.pieces,
+    carat: g.carat,
+    costValue: ownerOnly(isOwner, g.costValue),
+    packetCodes: g.packetCodes,
+  }));
+  const purchases: SerializedPolishedPurchase[] = purchaseRows.map((p) => ({
+    id: p.id,
+    purchaseCode: p.purchaseCode,
+    purchaseDate: p.purchaseDate.toISOString(),
+    supplierName: p.supplierName,
+    brokerName: p.brokerName,
+    lineCount: p.lineCount,
+    totalPieces: p.totalPieces,
+    totalCarat: p.totalCarat,
+    status: p.status,
+    landedCost: ownerOnly(isOwner, p.landedCost),
+    brokerageAmount: ownerOnly(isOwner, p.brokerageAmount),
+  }));
 
   const serialized: SerializedPolishedDiamond[] = await Promise.all(
     polished.map(async (p) => ({
@@ -321,6 +383,16 @@ async function PolishedStockTabContent({ search, isOwner }: { search: string; is
         <SummaryStat label="Available polished" value={`${summary.totalCarat.toFixed(3)}ct`} sub={`${summary.pieceCount} pieces`} />
         {isOwner ? <SummaryStat label="Available polished cost" value={`₹${summary.totalCost.toFixed(2)}`} /> : null}
       </div>
+      <PolishedPacketsSection
+        packets={packets}
+        groups={packetGroups}
+        purchases={purchases}
+        suppliers={suppliers.map((s) => ({ id: s.id, name: s.name, type: s.type, stateCode: s.stateCode }))}
+        brokers={brokers.map((b) => ({ id: b.id, name: b.name, type: b.type, stateCode: b.stateCode }))}
+        paymentAccounts={paymentAccounts.map((p) => ({ id: p.id, name: p.name, method: p.method }))}
+        gstRates={gstRates.map((g) => ({ id: g.id, label: g.label, ratePercent: g.ratePercent.toString() }))}
+        isOwner={isOwner}
+      />
       <PolishedStockTab polished={serialized} isOwner={isOwner} search={search} />
     </div>
   );

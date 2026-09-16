@@ -97,6 +97,11 @@ model User {
   finishedJewellerySalesCancelled        FinishedJewellerySale[]          @relation("FinishedJewellerySaleCancelledBy")
   finishedJewelleryReturnsCreated        FinishedJewelleryReturn[]        @relation("FinishedJewelleryReturnCreatedBy")
 
+  polishedPurchasesCreated       PolishedPurchase[]       @relation("PolishedPurchaseCreatedBy")
+  polishedPurchasesCancelled     PolishedPurchase[]       @relation("PolishedPurchaseCancelledBy")
+  polishedPacketsCreated         PolishedPacket[]         @relation("PolishedPacketCreatedBy")
+  polishedPacketMovementsCreated PolishedPacketMovement[] @relation("PolishedPacketMovementCreatedBy")
+
   @@map("users")
 }
 
@@ -135,6 +140,11 @@ enum PartyType {
   CUSTOMER
   SUPPLIER
   KARIGAR
+  // Phase 7. A Dalal/Broker and a Manufacturer are ordinary parties: their
+  // payables are the same Accounts Payable control account by partyId, so
+  // the existing Payment Given flow settles them with no new machinery.
+  BROKER
+  MANUFACTURER
 }
 
 enum OpeningBalanceType {
@@ -177,6 +187,9 @@ model Party {
   diamondJobsAsKarigar DiamondJob[]   @relation("DiamondJobKarigar")
 
   metalPurchasesAsSupplier MetalPurchase[] @relation("MetalPurchaseSupplier")
+
+  polishedPurchasesAsSupplier PolishedPurchase[] @relation("PolishedPurchaseSupplier")
+  polishedPurchasesAsBroker   PolishedPurchase[] @relation("PolishedPurchaseBroker")
   jewelleryJobsAsCustomer  JewelleryJob[]  @relation("JewelleryJobCustomer")
   jewelleryJobsAsKarigar   JewelleryJob[]  @relation("JewelleryJobKarigar")
 
@@ -257,9 +270,10 @@ model GstRate {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  invoiceLines    InvoiceLine[]
-  roughLots       RoughLot[]
-  metalPurchases  MetalPurchase[]
+  invoiceLines      InvoiceLine[]
+  roughLots         RoughLot[]
+  metalPurchases    MetalPurchase[]
+  polishedPurchases PolishedPurchase[]
   costSheets      CostSheet[]       @relation("CostSheetGstRate")
   costingSettings CostingSettings[] @relation("CostingSettingsGstRate")
 
@@ -380,6 +394,9 @@ model Voucher {
   finishedJewellerySale               FinishedJewellerySale?   @relation("FinishedJewellerySaleVoucher")
   finishedJewellerySaleCancellationOf FinishedJewellerySale?   @relation("FinishedJewellerySaleCancellationVoucher")
   finishedJewelleryReturnPost         FinishedJewelleryReturn? @relation("FinishedJewelleryReturnVoucher")
+
+  polishedPurchase             PolishedPurchase? @relation("PolishedPurchaseVoucher")
+  polishedPurchaseCancellation PolishedPurchase? @relation("PolishedPurchaseCancellationVoucher")
 
   @@index([voucherType])
   @@index([partyId])
@@ -544,6 +561,9 @@ enum DiamondSequenceType {
   DIAMOND_JOB
   POLISHED_RECEIPT
   POLISHED_DIAMOND
+  // Phase 7
+  POLISHED_PURCHASE
+  POLISHED_PACKET
 }
 
 model DiamondSequence {
@@ -1127,6 +1147,10 @@ model JewelleryJob {
   issuedMetalFineWeight Decimal @default(0) @db.Decimal(10, 3)
   issuedMetalCost       Decimal @default(0) @db.Decimal(14, 2)
   issuedDiamondCost     Decimal @default(0) @db.Decimal(14, 2)
+  // Phase 7 — polished PACKET diamonds issued to this job (bulk melee by
+  // pieces + carat), separate from issuedDiamondCost which covers discrete
+  // individually-costed Phase 3 stones.
+  issuedPacketDiamondCost Decimal @default(0) @db.Decimal(14, 2)
   otherMaterialCost     Decimal @default(0) @db.Decimal(14, 2)
 
   // Cumulative, updated atomically by each receipt.
@@ -1172,6 +1196,8 @@ model JewelleryJob {
 
   metalIssueLines     JewelleryMetalIssueLine[]
   diamondIssueLines   JewelleryDiamondIssueLine[]
+  packetIssueLines    JewelleryPacketIssueLine[]
+  packetMovements     PolishedPacketMovement[]
   otherMaterialLines  JewelleryOtherMaterialLine[]
   receipts            JewelleryReceipt[]
   finishedJewellery   FinishedJewellery[]
@@ -1328,7 +1354,8 @@ model JewelleryReceipt {
 
   createdAt DateTime @default(now())
 
-  outputs FinishedJewellery[]
+  outputs           FinishedJewellery[]
+  packetResolutions JewelleryPacketResolution[]
 
   @@index([jobId])
   @@map("jewellery_receipts")
@@ -1418,8 +1445,9 @@ model FinishedJewellery {
 
   createdAt DateTime @default(now())
 
-  diamonds       JewelleryDiamondIssueLine[]
-  costSheets     CostSheet[]
+  diamonds          JewelleryDiamondIssueLine[]
+  packetResolutions JewelleryPacketResolution[]
+  costSheets        CostSheet[]
   stockMovements FinishedJewelleryStockMovement[]
   saleLines      FinishedJewellerySaleLine[]
 
@@ -2163,4 +2191,339 @@ model CostSheetAuditEvent {
 
   @@index([costSheetId])
   @@map("cost_sheet_audit_events")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7 — Direct Polished Diamond Purchase, Dalal/Broker, packet stock
+// ---------------------------------------------------------------------------
+//
+// Two kinds of polished stock now exist side by side, sharing one "Polished
+// Diamond" view while keeping their provenance distinct:
+//
+//  - PolishedDiamond (Phase 3) — one discrete, individually-costed stone
+//    manufactured from a real RoughPiece. Untouched by this phase.
+//  - PolishedPacket (here) — a homogeneous packet/batch bought or returned
+//    as bulk (pieces + carat, size-wise), the only shape in which melee can
+//    honestly be recorded. A purchased packet NEVER invents a parent Rough
+//    ID: it simply has none.
+//
+// A packet's balance is derived by summing its immutable movements, exactly
+// like every other stock ledger in this codebase — never a stored column.
+
+enum PolishedRateBasis {
+  PER_CARAT
+  PER_PIECE
+  FIXED_TOTAL
+}
+
+enum BrokerageMethod {
+  PER_CARAT
+  PERCENT
+  FIXED
+}
+
+/// How a Dalal/Broker's brokerage is treated. Exactly one posting happens
+/// per purchase, so brokerage can never be charged twice.
+enum BrokerageTreatment {
+  /// No broker, or no brokerage on this purchase.
+  NONE
+  /// Already inside the supplier's own invoice amount — recorded for the
+  /// audit trail only; no separate payable.
+  INCLUDED_IN_SUPPLIER_COST
+  /// Part of the stones' landed cost AND owed to the broker: the inventory
+  /// debit includes it and the broker's payable is credited.
+  CAPITALISED_PAYABLE_TO_BROKER
+  /// Not part of landed cost: Dr Brokerage Expense / Cr the broker's payable.
+  EXPENSED_PAYABLE_TO_BROKER
+}
+
+enum PolishedProvenance {
+  PURCHASED
+  MANUFACTURED_FROM_ROUGH
+  RETURNED_FROM_JOB
+  ADJUSTMENT
+  /// Only ever set by a backfill that could not determine the real source —
+  /// never guessed from context.
+  UNKNOWN_LEGACY
+}
+
+enum PolishedPacketStatus {
+  ACTIVE
+  /// Fully issued/consumed — pieces and carat both zero.
+  EMPTY
+  CANCELLED
+}
+
+enum PolishedPacketMovementType {
+  PURCHASE_IN
+  PURCHASE_CANCEL_OUT
+  PROCESS_ISSUE_OUT
+  PROCESS_ISSUE_CANCEL_IN
+  PROCESS_RETURN_IN
+  JEWELLERY_ISSUE_OUT
+  JEWELLERY_ISSUE_CANCEL_IN
+  JEWELLERY_RETURN_IN
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+}
+
+model PolishedPurchase {
+  id           String   @id @default(cuid())
+  purchaseCode String   @unique
+  purchaseDate DateTime
+
+  supplierId String
+  supplier   Party  @relation("PolishedPurchaseSupplier", fields: [supplierId], references: [id])
+
+  currencyCode String  @default("INR")
+  exchangeRate Decimal @default(1) @db.Decimal(10, 4)
+  /// Authoritative supplier cost in INR, before GST and before brokerage.
+  supplierAmount Decimal @db.Decimal(14, 2)
+
+  gstTreatment   GstTreatment @default(NONE)
+  gstRateId      String?
+  gstRate        GstRate?     @relation(fields: [gstRateId], references: [id])
+  gstRatePercent Decimal?     @db.Decimal(5, 2)
+
+  // ---- Dalal / Broker (all snapshotted, so a later master edit never
+  // rewrites this purchase) ----
+  brokerPartyId      String?
+  broker             Party?             @relation("PolishedPurchaseBroker", fields: [brokerPartyId], references: [id])
+  brokerNameSnapshot String?
+  brokerageMethod    BrokerageMethod?
+  brokerageRate      Decimal?           @db.Decimal(14, 4)
+  brokerageAmount    Decimal            @default(0) @db.Decimal(14, 2)
+  brokerageTreatment BrokerageTreatment @default(NONE)
+
+  /// What actually enters Polished Diamond Inventory: supplierAmount, plus
+  /// brokerage only when it is capitalised. Every line's landedCost sums
+  /// back to exactly this.
+  landedCost Decimal @db.Decimal(14, 2)
+
+  paymentAccountId String?
+  referenceNumber  String?
+  notes            String?
+
+  voucherId String?  @unique
+  voucher   Voucher? @relation("PolishedPurchaseVoucher", fields: [voucherId], references: [id])
+
+  status                VoucherStatus @default(POSTED)
+  cancelledAt           DateTime?
+  cancelledByUserId     String?
+  cancelledBy           User?         @relation("PolishedPurchaseCancelledBy", fields: [cancelledByUserId], references: [id])
+  cancellationReason    String?
+  cancellationVoucherId String?       @unique
+  cancellationVoucher   Voucher?      @relation("PolishedPurchaseCancellationVoucher", fields: [cancellationVoucherId], references: [id])
+
+  idempotencyKey String? @unique
+
+  createdByUserId String
+  createdBy       User   @relation("PolishedPurchaseCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lines PolishedPurchaseLine[]
+
+  @@index([supplierId])
+  @@index([brokerPartyId])
+  @@index([purchaseDate])
+  @@map("polished_purchases")
+}
+
+/// One packet line on a purchase. Each line creates exactly one
+/// PolishedPacket, so the packet keeps the identity that was bought.
+model PolishedPurchaseLine {
+  id         String           @id @default(cuid())
+  purchaseId String
+  purchase   PolishedPurchase @relation(fields: [purchaseId], references: [id])
+
+  shape           DiamondShape
+  customShapeName String?
+  /// Size or size range exactly as traded, e.g. "+2-4", "1.00-1.10mm", "3.5mm".
+  sizeLabel    String
+  measurements String?
+  pieces       Int
+  carat        Decimal @db.Decimal(10, 3)
+  quality      String?
+  colour       String?
+  lab          String?
+
+  certificateStatus CertificateStatus @default(NOT_CERTIFIED)
+  certNumber        String?
+  certFileAssetId   String?
+  photoAssetId      String?
+
+  rateBasis PolishedRateBasis @default(PER_CARAT)
+  rate      Decimal           @default(0) @db.Decimal(14, 4)
+  /// This line's share of the purchase's landed cost.
+  landedCost Decimal @db.Decimal(14, 2)
+
+  notes     String?
+  sortOrder Int     @default(0)
+
+  createdAt DateTime @default(now())
+
+  packet PolishedPacket?
+
+  @@index([purchaseId])
+  @@map("polished_purchase_lines")
+}
+
+model PolishedPacket {
+  id         String             @id @default(cuid())
+  packetCode String             @unique
+  provenance PolishedProvenance
+
+  /// Grouping key for the aggregated "same stones" view. Packets are never
+  /// merged destructively — identical attributes are shown together while
+  /// each packet keeps its own identity and cost layer. See
+  /// src/lib/diamond/packets.ts.
+  mergeKey String
+
+  shape           DiamondShape
+  customShapeName String?
+  sizeLabel       String
+  measurements    String?
+  quality         String?
+  colour          String?
+  lab             String?
+
+  certificateStatus CertificateStatus @default(NOT_CERTIFIED)
+  certNumber        String?
+  certFileAssetId   String?
+  photoAssetId      String?
+
+  currencyCode String @default("INR")
+
+  purchaseLineId String?               @unique
+  purchaseLine   PolishedPurchaseLine? @relation(fields: [purchaseLineId], references: [id])
+
+  /// Set when this packet was created by a return that changed the stones'
+  /// attributes (e.g. size after polishing), so provenance stays traceable
+  /// instead of being averaged into the packet it came from.
+  parentPacketId String?
+  parentPacket   PolishedPacket?  @relation("PacketParent", fields: [parentPacketId], references: [id])
+  childPackets   PolishedPacket[] @relation("PacketParent")
+
+  status PolishedPacketStatus @default(ACTIVE)
+  notes  String?
+
+  createdByUserId String
+  createdBy       User   @relation("PolishedPacketCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  movements           PolishedPacketMovement[]
+  jewelleryIssueLines JewelleryPacketIssueLine[]
+
+  @@index([mergeKey])
+  @@index([status])
+  @@index([provenance])
+  @@map("polished_packets")
+}
+
+/// Immutable, append-only. `pieces`/`carat`/`costValue` are positive
+/// magnitudes; direction comes from `type` (…_IN adds, …_OUT removes). A
+/// packet's live balance is always the sum of these rows.
+model PolishedPacketMovement {
+  id   String                     @id @default(cuid())
+  type PolishedPacketMovementType
+
+  packetId String
+  packet   PolishedPacket @relation(fields: [packetId], references: [id])
+
+  pieces    Int
+  carat     Decimal @db.Decimal(10, 3)
+  costValue Decimal @db.Decimal(14, 2)
+
+  sourceDocument String
+
+  jewelleryJobId String?
+  jewelleryJob   JewelleryJob? @relation(fields: [jewelleryJobId], references: [id])
+
+  reversalOfMovementId String?                 @unique
+  reversalOfMovement   PolishedPacketMovement? @relation("PacketMovementReversal", fields: [reversalOfMovementId], references: [id])
+  reversedByMovement   PolishedPacketMovement? @relation("PacketMovementReversal")
+
+  createdByUserId String
+  createdBy       User   @relation("PolishedPacketMovementCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([packetId])
+  @@index([type])
+  @@index([jewelleryJobId])
+  @@map("polished_packet_movements")
+}
+
+/// Packet diamonds held by a Jewellery Job. Unlike a discrete stone (which
+/// resolves in exactly one state), a packet line resolves progressively by
+/// pieces AND carat: set + returned + damaged must equal what was issued
+/// before the job can complete.
+model JewelleryPacketIssueLine {
+  id    String       @id @default(cuid())
+  jobId String
+  job   JewelleryJob @relation(fields: [jobId], references: [id])
+
+  packetId String
+  packet   PolishedPacket @relation(fields: [packetId], references: [id])
+
+  piecesAtIssue Int
+  caratAtIssue  Decimal @db.Decimal(10, 3)
+  costAtIssue   Decimal @db.Decimal(14, 2)
+
+  setPieces Int     @default(0)
+  setCarat  Decimal @default(0) @db.Decimal(10, 3)
+  setCost   Decimal @default(0) @db.Decimal(14, 2)
+
+  returnedPieces Int     @default(0)
+  returnedCarat  Decimal @default(0) @db.Decimal(10, 3)
+  returnedCost   Decimal @default(0) @db.Decimal(14, 2)
+
+  damagedPieces Int     @default(0)
+  damagedCarat  Decimal @default(0) @db.Decimal(10, 3)
+  damagedCost   Decimal @default(0) @db.Decimal(14, 2)
+
+  createdAt DateTime @default(now())
+
+  resolutions JewelleryPacketResolution[]
+
+  @@unique([jobId, packetId])
+  @@index([jobId])
+  @@index([packetId])
+  @@map("jewellery_packet_issue_lines")
+}
+
+/// One resolution event against a packet issue line, recorded per receipt.
+model JewelleryPacketResolution {
+  id          String                   @id @default(cuid())
+  issueLineId String
+  issueLine   JewelleryPacketIssueLine @relation(fields: [issueLineId], references: [id])
+
+  receiptId String
+  receipt   JewelleryReceipt @relation(fields: [receiptId], references: [id])
+
+  disposition JewelleryDiamondResolution
+
+  pieces    Int
+  carat     Decimal @db.Decimal(10, 3)
+  costValue Decimal @db.Decimal(14, 2)
+
+  /// Set when the stones went into a specific finished piece.
+  setInFinishedJewelleryId String?
+  setInFinishedJewellery   FinishedJewellery? @relation(fields: [setInFinishedJewelleryId], references: [id])
+
+  /// The packet the returned stones went back into — the original packet
+  /// when nothing about them changed, otherwise a new child packet.
+  resultPacketId String?
+
+  reason String?
+
+  createdAt DateTime @default(now())
+
+  @@index([issueLineId])
+  @@index([receiptId])
+  @@map("jewellery_packet_resolutions")
 }

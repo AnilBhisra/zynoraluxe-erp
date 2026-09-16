@@ -8,11 +8,7 @@ import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 import { useFieldId } from "@/lib/utils/useFieldId";
 
-const PARTY_TYPES = [
-  { value: "CUSTOMER", label: "Customer" },
-  { value: "SUPPLIER", label: "Supplier" },
-  { value: "KARIGAR", label: "Karigar" },
-];
+import { PARTY_TYPES } from "@/lib/parties/types";
 
 export function PartyForm() {
   const [state, formAction, pending] = useActionState(createParty, undefined);

@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   postPurchase: vi.fn(),
   cancelVoucher: vi.fn(),
   roughLotFindUnique: vi.fn(),
+  polishedPurchaseFindUnique: vi.fn(),
   metalPurchaseFindUnique: vi.fn(),
   metalStockMovementFindFirst: vi.fn(),
   finishedJewellerySaleFindUnique: vi.fn(),
@@ -28,6 +29,7 @@ vi.mock("@/lib/db/prisma", () => ({
     voucher: { findUnique: mocks.voucherFindUnique },
     gstRate: { findMany: mocks.gstRateFindMany },
     roughLot: { findUnique: mocks.roughLotFindUnique },
+    polishedPurchase: { findUnique: mocks.polishedPurchaseFindUnique },
     metalPurchase: { findUnique: mocks.metalPurchaseFindUnique },
     metalStockMovement: { findFirst: mocks.metalStockMovementFindFirst },
     finishedJewellerySale: { findUnique: mocks.finishedJewellerySaleFindUnique },
@@ -72,6 +74,7 @@ beforeEach(() => {
     defaultCurrency: "INR",
   });
   mocks.transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => fn({}));
+  mocks.polishedPurchaseFindUnique.mockResolvedValue(null);
   mocks.voucherFindUnique.mockResolvedValue(null);
   mocks.roughLotFindUnique.mockResolvedValue(null);
   mocks.metalPurchaseFindUnique.mockResolvedValue(null);
@@ -315,6 +318,20 @@ describe("cancelVoucherAction permissions", () => {
       .mockResolvedValueOnce(null); // no later outflow
     await cancelVoucherAction(undefined, formData({ voucherId: "v1", cancellationReason: "Entered by mistake" }));
     expect(mocks.cancelVoucher).toHaveBeenCalled();
+  });
+
+  // Phase 7: a direct Polished Diamond Purchase is also a plain "PURCHASE"
+  // voucher; generic cancellation would reverse accounting but leave every
+  // packet's PURCHASE_IN movement standing.
+  it("rejects cancelling a Polished Diamond Purchase voucher through the generic action", async () => {
+    mocks.voucherFindUnique.mockResolvedValue({ voucherType: "PURCHASE" });
+    mocks.polishedPurchaseFindUnique.mockResolvedValue({ id: "pp1" });
+    const result = await cancelVoucherAction(
+      undefined,
+      formData({ voucherId: "v1", cancellationReason: "Entered by mistake" })
+    );
+    expect(result?.error).toMatch(/Polished Diamond Purchase/);
+    expect(mocks.cancelVoucher).not.toHaveBeenCalled();
   });
 
   it("allows cancelling an ordinary PURCHASE voucher that isn't linked to any Rough Lot or Metal Purchase", async () => {

@@ -19,6 +19,9 @@ const mocks = vi.hoisted(() => ({
   isDiamondStorageConfigured: vi.fn(),
   uploadDiamondAsset: vi.fn(),
   deleteDiamondAsset: vi.fn(),
+  polishedPurchaseFindUnique: vi.fn(),
+  createPolishedPurchase: vi.fn(),
+  cancelPolishedPurchase: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/dal", () => ({
@@ -32,6 +35,7 @@ vi.mock("@/lib/db/prisma", () => ({
     roughLot: { findUnique: mocks.roughLotFindUnique },
     diamondJob: { findUnique: mocks.diamondJobFindUnique },
     polishedReceipt: { findUnique: mocks.polishedReceiptFindUnique },
+    polishedPurchase: { findUnique: mocks.polishedPurchaseFindUnique },
   },
 }));
 
@@ -55,6 +59,15 @@ vi.mock("@/lib/diamond/posting", async () => {
   };
 });
 
+vi.mock("@/lib/diamond/polishedPurchase", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/diamond/polishedPurchase")>("@/lib/diamond/polishedPurchase");
+  return {
+    ...actual,
+    createPolishedPurchase: mocks.createPolishedPurchase,
+    cancelPolishedPurchase: mocks.cancelPolishedPurchase,
+  };
+});
+
 vi.mock("@/lib/storage/diamondMedia", () => ({
   isDiamondStorageConfigured: mocks.isDiamondStorageConfigured,
   uploadDiamondAsset: mocks.uploadDiamondAsset,
@@ -63,6 +76,8 @@ vi.mock("@/lib/storage/diamondMedia", () => ({
 
 import {
   cancelDiamondJobAction,
+  cancelPolishedPurchaseAction,
+  createPolishedPurchaseAction,
   createRoughPurchase,
   deleteDiamondPhotoAction,
   issueRoughAction,
@@ -95,6 +110,7 @@ beforeEach(() => {
   mocks.roughLotFindUnique.mockResolvedValue(null);
   mocks.diamondJobFindUnique.mockResolvedValue(null);
   mocks.polishedReceiptFindUnique.mockResolvedValue(null);
+  mocks.polishedPurchaseFindUnique.mockResolvedValue(null);
   mocks.isDiamondStorageConfigured.mockReturnValue(true);
 });
 
@@ -337,5 +353,60 @@ describe("Owner-only enforcement", () => {
 
     expect(result?.success).toBe(true);
     expect(mocks.requireOwner).not.toHaveBeenCalled();
+  });
+});
+
+describe("Phase 7 — Polished Diamond Purchase actions", () => {
+  const line = {
+    shape: "ROUND",
+    sizeLabel: "1.00-1.20 MM",
+    pieces: 100,
+    carat: "10.000",
+    rateBasis: "PER_CARAT",
+    rate: "5000",
+  };
+  const purchaseFields = (overrides: Record<string, string> = {}) =>
+    formData({
+      purchaseDate: "2026-09-16",
+      supplierId: "party-1",
+      supplierAmount: "50000",
+      linesJson: JSON.stringify([line]),
+      ...overrides,
+    });
+
+  it("lets Staff record a purchase and returns only the purchase code", async () => {
+    mocks.requireUser.mockResolvedValue(STAFF);
+    mocks.createPolishedPurchase.mockResolvedValue({
+      purchase: { purchaseCode: "ZL-PP-2026-000001", landedCost: "50000.00" },
+      packets: [],
+    });
+    const result = await createPolishedPurchaseAction(undefined, purchaseFields());
+    expect(result).toEqual({ success: true, code: "ZL-PP-2026-000001" });
+  });
+
+  it("requires a Dalal / Broker, method and rate whenever brokerage is recorded", async () => {
+    const result = await createPolishedPurchaseAction(
+      undefined,
+      purchaseFields({ brokerageTreatment: "EXPENSED_PAYABLE_TO_BROKER" })
+    );
+    expect(result?.error).toMatch("Dalal / Broker");
+    expect(mocks.createPolishedPurchase).not.toHaveBeenCalled();
+  });
+
+  it("returns the existing purchase instead of posting again for a repeated idempotency key", async () => {
+    mocks.polishedPurchaseFindUnique.mockResolvedValue({ purchaseCode: "ZL-PP-2026-000002" });
+    const result = await createPolishedPurchaseAction(undefined, purchaseFields({ idempotencyKey: "key-1" }));
+    expect(result).toEqual({ success: true, code: "ZL-PP-2026-000002" });
+    expect(mocks.createPolishedPurchase).not.toHaveBeenCalled();
+  });
+
+  it("cancelPolishedPurchaseAction requires Owner", async () => {
+    mocks.requireOwner.mockImplementation(() => {
+      throw new Error("redirect to /unauthorized");
+    });
+    await expect(
+      cancelPolishedPurchaseAction(undefined, formData({ purchaseId: "pp-1", cancellationReason: "Wrong supplier" }))
+    ).rejects.toThrow();
+    expect(mocks.cancelPolishedPurchase).not.toHaveBeenCalled();
   });
 });

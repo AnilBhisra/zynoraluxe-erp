@@ -316,6 +316,35 @@ describe("receiveFinishedJewelleryAction — exceptional-override authorization"
     expect(mocks.receiveFinishedJewellery).not.toHaveBeenCalled();
   });
 
+  it("rejects Staff marking packet stones damaged/lost, without touching the posting engine", async () => {
+    mocks.requireUser.mockResolvedValue(STAFF);
+    const result = await receiveFinishedJewelleryAction(
+      undefined,
+      baseFields({
+        packetResolutionsJson: JSON.stringify([
+          { packetId: "pkt-1", resolution: "DAMAGED_LOST", pieces: 2, carat: 0.2, damagedLostReason: "Chipped" },
+        ]),
+      })
+    );
+    expect(result?.error).toMatch(/only the owner/i);
+    expect(mocks.receiveFinishedJewellery).not.toHaveBeenCalled();
+  });
+
+  it("passes packet resolutions through to the posting engine", async () => {
+    mocks.receiveFinishedJewellery.mockResolvedValue({ receipt: { receiptCode: "ZL-JREC-2026-000003" } });
+    const result = await receiveFinishedJewelleryAction(
+      undefined,
+      baseFields({
+        packetResolutionsJson: JSON.stringify([{ packetId: "pkt-1", resolution: "RETURNED", pieces: 2, carat: "0.200" }]),
+      })
+    );
+    expect(result?.success).toBe(true);
+    const input = mocks.receiveFinishedJewellery.mock.calls[0][1];
+    expect(input.packetResolutions).toEqual([
+      { packetId: "pkt-1", resolution: "RETURNED", pieces: 2, carat: 0.2, setInOutputIndex: null, damagedLostReason: null },
+    ]);
+  });
+
   it("allows the Owner to classify a loss as abnormal", async () => {
     mocks.receiveFinishedJewellery.mockResolvedValue({ receipt: { receiptCode: "ZL-JREC-2026-000001" } });
     const result = await receiveFinishedJewelleryAction(

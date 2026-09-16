@@ -40,6 +40,10 @@ export const SYSTEM_ACCOUNT_CODES = {
   // of COGS (the item never really "sold" in the end) into its own
   // clearly-labelled loss line, so Gross Profit isn't misleadingly
   // depressed by a damage write-off that isn't really cost-of-GOODS-SOLD.
+  // Phase 7 — brokerage owed to a Dalal/Broker that is NOT part of the
+  // stones landed cost. When brokerage IS capitalised it goes into
+  // POLISHED_DIAMOND_INVENTORY instead, never both (no double posting).
+  BROKERAGE_EXPENSE: "5400",
   SALES_RETURNS: "4100",
   FINISHED_JEWELLERY_COGS: "5200",
   DAMAGED_JEWELLERY_LOSS: "5300",

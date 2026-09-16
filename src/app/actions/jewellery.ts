@@ -194,6 +194,7 @@ export async function issueMaterialsAction(
     issueDate: formData.get("issueDate"),
     metalLines: readJsonArray(formData, "metalLinesJson"),
     polishedDiamondIds: readJsonArray(formData, "polishedDiamondIdsJson"),
+    packetLines: readJsonArray(formData, "packetLinesJson"),
     otherMaterialLines: readJsonArray(formData, "otherMaterialLinesJson"),
     idempotencyKey: formData.get("idempotencyKey") || undefined,
   });
@@ -216,6 +217,7 @@ export async function issueMaterialsAction(
         issueDate,
         metalLines: data.metalLines,
         polishedDiamondIds: data.polishedDiamondIds,
+        packetLines: data.packetLines,
         otherMaterialLines: data.otherMaterialLines,
         idempotencyKey: data.idempotencyKey || null,
         createdByUserId: user.id,
@@ -326,6 +328,7 @@ export async function receiveFinishedJewelleryAction(
     receiveDate: formData.get("receiveDate"),
     outputs: readJsonArray(formData, "outputsJson"),
     diamondResolutions: readJsonArray(formData, "diamondResolutionsJson"),
+    packetResolutions: readJsonArray(formData, "packetResolutionsJson"),
     returnedMetalLines: readJsonArray(formData, "returnedMetalLinesJson"),
     scrapMetalLines: readJsonArray(formData, "scrapMetalLinesJson"),
     karigarAddedFineWeight: formData.get("karigarAddedFineWeight") || "0",
@@ -356,7 +359,11 @@ export async function receiveFinishedJewelleryAction(
   if (!isOwner && data.isAbnormalLoss) {
     return { error: "Only the Owner can classify a loss as abnormal." };
   }
-  if (!isOwner && data.diamondResolutions.some((r) => r.resolution === "DAMAGED_LOST")) {
+  if (
+    !isOwner &&
+    (data.diamondResolutions.some((r) => r.resolution === "DAMAGED_LOST") ||
+      data.packetResolutions.some((r) => r.resolution === "DAMAGED_LOST"))
+  ) {
     return { error: "Only the Owner can mark a diamond damaged/lost." };
   }
 
@@ -379,6 +386,11 @@ export async function receiveFinishedJewelleryAction(
         receiveDate,
         outputs: data.outputs,
         diamondResolutions: data.diamondResolutions,
+        packetResolutions: data.packetResolutions.map((r) => ({
+          ...r,
+          setInOutputIndex: r.setInOutputIndex ?? null,
+          damagedLostReason: r.damagedLostReason || null,
+        })),
         returnedMetalLines: data.returnedMetalLines,
         scrapMetalLines: data.scrapMetalLines,
         karigarAddedFineWeight: data.karigarAddedFineWeight,

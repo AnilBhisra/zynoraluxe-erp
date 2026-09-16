@@ -150,3 +150,75 @@ export const overridePolishedAllocationSchema = z.object({
   reason: z.string().trim().min(3, "Give a short reason.").max(300),
   adjustments: z.array(allocationAdjustmentSchema).min(1),
 });
+
+// ---------------------------------------------------------------------------
+// Phase 7 — direct Polished Diamond Purchase (Party / Supplier + Dalal / Broker)
+// ---------------------------------------------------------------------------
+
+export const polishedPurchaseLineSchema = z.object({
+  shape: SHAPE_ENUM,
+  customShapeName: optionalString(100),
+  sizeLabel: z.string().trim().min(1, "Enter the size (e.g. 1.00-1.20 MM or +2).").max(100),
+  measurements: optionalString(100),
+  pieces: z.coerce.number().int().min(1, "Each packet line needs at least one piece."),
+  carat: z.coerce.number().positive("Each line's carat must be greater than zero."),
+  quality: optionalString(100),
+  colour: optionalString(100),
+  lab: optionalString(100),
+  certificateStatus: z.enum(["NOT_CERTIFIED", "INTERNAL_GRADE", "CERTIFIED"]).default("NOT_CERTIFIED"),
+  certNumber: optionalString(100),
+  certFileAssetId: optionalString(300),
+  photoAssetId: optionalString(300),
+  rateBasis: z.enum(["PER_CARAT", "PER_PIECE", "FIXED_TOTAL"]),
+  rate: z.coerce.number().min(0, "Rate cannot be negative."),
+  manualLandedCost: z.coerce.number().min(0).optional(),
+  notes: optionalString(500),
+});
+export type PolishedPurchaseLineDraft = z.infer<typeof polishedPurchaseLineSchema>;
+
+export const polishedPurchaseSchema = z
+  .object({
+    purchaseDate: DATE_ONLY,
+    supplierId: z.string().trim().min(1, "Choose a Party / Supplier."),
+    currencyCode: z
+      .string()
+      .trim()
+      .toUpperCase()
+      .regex(/^[A-Z]{3}$/, "Currency must be a 3-letter code, e.g. INR.")
+      .default("INR"),
+    exchangeRate: z.coerce.number().positive("Exchange rate must be greater than zero.").default(1),
+    supplierAmount: z.coerce.number().positive("The supplier's amount must be greater than zero."),
+    gstTreatment: z.enum(["NONE", "CGST_SGST", "IGST"]).default("NONE"),
+    gstRateId: optionalString(100),
+    gstRatePercent: z.coerce.number().min(0).max(100).optional(),
+    brokerPartyId: optionalString(100),
+    brokerageMethod: z.enum(["PER_CARAT", "PERCENT", "FIXED"]).optional(),
+    brokerageRate: z.coerce.number().min(0).optional(),
+    brokerageTreatment: z
+      .enum(["NONE", "INCLUDED_IN_SUPPLIER_COST", "CAPITALISED_PAYABLE_TO_BROKER", "EXPENSED_PAYABLE_TO_BROKER"])
+      .default("NONE"),
+    paymentAccountId: optionalString(100),
+    referenceNumber: optionalString(200),
+    notes: optionalString(1000),
+    idempotencyKey: z.string().trim().max(100).optional(),
+    lines: z.array(polishedPurchaseLineSchema).min(1, "Add at least one packet line."),
+  })
+  .superRefine((value, ctx) => {
+    if (value.brokerageTreatment !== "NONE") {
+      if (!value.brokerPartyId) {
+        ctx.addIssue({ code: "custom", path: ["brokerPartyId"], message: "Choose the Dalal / Broker." });
+      }
+      if (!value.brokerageMethod) {
+        ctx.addIssue({ code: "custom", path: ["brokerageMethod"], message: "Choose how the brokerage is calculated." });
+      }
+      if (value.brokerageRate === undefined) {
+        ctx.addIssue({ code: "custom", path: ["brokerageRate"], message: "Enter the brokerage rate or amount." });
+      }
+    }
+  });
+export type PolishedPurchaseFormInput = z.infer<typeof polishedPurchaseSchema>;
+
+export const cancelPolishedPurchaseSchema = z.object({
+  purchaseId: z.string().trim().min(1),
+  cancellationReason: z.string().trim().min(3, "Give a short reason for cancelling.").max(300),
+});

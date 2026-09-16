@@ -4,8 +4,17 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { markJewelleryJobInProgressAction, setJewelleryJobNeedsCorrectionAction } from "@/app/actions/jewellery";
-import { IssueMaterialsForm, type AvailablePolishedDiamondOption } from "@/components/jewellery/IssueMaterialsForm";
-import { ReceiveFinishedForm, type IssuedMetalOption, type MetalPurityOption } from "@/components/jewellery/ReceiveFinishedForm";
+import {
+  IssueMaterialsForm,
+  type AvailablePacketOption,
+  type AvailablePolishedDiamondOption,
+} from "@/components/jewellery/IssueMaterialsForm";
+import {
+  ReceiveFinishedForm,
+  type IssuedMetalOption,
+  type MetalPurityOption,
+  type PendingPacketOption,
+} from "@/components/jewellery/ReceiveFinishedForm";
 import { CancelJobForm } from "@/components/jewellery/CancelJobForm";
 import { OverrideAllocationForm } from "@/components/jewellery/OverrideAllocationForm";
 import { Button } from "@/components/ui/Button";
@@ -147,11 +156,15 @@ export function JobDetailView({
   isOwner,
   purities,
   availableDiamonds,
+  availablePackets = [],
+  pendingPackets = [],
 }: {
   job: SerializedJobDetail;
   isOwner: boolean;
   purities: MetalPurityOption[];
   availableDiamonds: AvailablePolishedDiamondOption[];
+  availablePackets?: AvailablePacketOption[];
+  pendingPackets?: PendingPacketOption[];
 }) {
   const router = useRouter();
   const [showIssueForm, setShowIssueForm] = useState(false);
@@ -320,6 +333,7 @@ export function JobDetailView({
                 jobCode={job.jobCode}
                 purities={purities}
                 availableDiamonds={availableDiamonds}
+                availablePackets={availablePackets}
                 isOwner={isOwner}
                 onDone={handleSaved}
               />
@@ -344,6 +358,7 @@ export function JobDetailView({
                 issuedMetal={issuedMetalByPurity(job.metalLines)}
                 alloyPendingGrossWeight={job.alloyPendingGrossWeight}
                 unresolvedDiamonds={unresolvedDiamonds}
+                pendingPackets={pendingPackets}
                 isOwner={isOwner}
                 onDone={handleSaved}
               />

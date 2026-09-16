@@ -138,11 +138,19 @@ export const otherMaterialLineSchema = z.object({
   note: optionalString(300),
 });
 
+/** Phase 7 — bulk polished stones taken from a packet, by pieces AND carat. */
+export const packetIssueLineSchema = z.object({
+  packetId: z.string().trim().min(1),
+  pieces: z.coerce.number().int().min(0, "Pieces cannot be negative."),
+  carat: z.coerce.number().positive("Each packet line's carat must be greater than zero."),
+});
+
 export const issueMaterialsSchema = z.object({
   jobId: z.string().trim().min(1),
   issueDate: DATE_ONLY,
   metalLines: z.array(metalIssueLineSchema).default([]),
   polishedDiamondIds: z.array(z.string().trim().min(1)).default([]),
+  packetLines: z.array(packetIssueLineSchema).default([]),
   otherMaterialLines: z.array(otherMaterialLineSchema).default([]),
   idempotencyKey: z.string().trim().max(100).optional(),
 });
@@ -172,6 +180,15 @@ export const diamondResolutionSchema = z.object({
   damagedLostReason: optionalString(300),
 });
 
+export const packetResolutionSchema = z.object({
+  packetId: z.string().trim().min(1),
+  resolution: z.enum(["SET", "RETURNED", "DAMAGED_LOST"]),
+  pieces: z.coerce.number().int().min(0, "Pieces cannot be negative."),
+  carat: z.coerce.number().min(0, "Carat cannot be negative."),
+  setInOutputIndex: z.coerce.number().int().min(0).optional(),
+  damagedLostReason: optionalString(300),
+});
+
 export const metalReturnScrapLineSchema = z.object({
   purityId: z.string().trim().min(1, "Choose a purity for each return/scrap line."),
   grossWeight: z.coerce.number().positive("Each return/scrap line's weight must be greater than zero."),
@@ -182,6 +199,7 @@ export const receiveFinishedJewellerySchema = z.object({
   receiveDate: DATE_ONLY,
   outputs: z.array(finishedOutputSchema).default([]),
   diamondResolutions: z.array(diamondResolutionSchema).default([]),
+  packetResolutions: z.array(packetResolutionSchema).default([]),
   returnedMetalLines: z.array(metalReturnScrapLineSchema).default([]),
   scrapMetalLines: z.array(metalReturnScrapLineSchema).default([]),
   karigarAddedFineWeight: z.coerce.number().min(0).default(0),

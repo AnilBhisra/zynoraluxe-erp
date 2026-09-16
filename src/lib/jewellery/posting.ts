@@ -20,7 +20,15 @@ import {
 } from "@/lib/accounting/posting";
 import { cancelVoucher } from "@/lib/accounting/posting";
 import { allocateProportionally, round3 } from "@/lib/diamond/allocation";
-import { computeOutputMetal, formatThousandths, METAL_POOL_EFFECT, type MetalStockMovementKind } from "@/lib/jewellery/metalMath";
+import { checkPacketQuantity } from "@/lib/diamond/packets";
+import { getPacketBalanceInTx } from "@/lib/diamond/polishedPurchase";
+import {
+  computeOutputMetal,
+  formatThousandths,
+  METAL_POOL_EFFECT,
+  toThousandths,
+  type MetalStockMovementKind,
+} from "@/lib/jewellery/metalMath";
 import { nextJewelleryCode } from "@/lib/jewellery/numbering";
 
 export { PostingError };
@@ -437,6 +445,13 @@ export type MetalIssueLineInput = {
   grossWeight: DecimalInput;
 };
 
+/** Phase 7 - bulk polished stones issued from a packet, by pieces AND carat. */
+export type PacketIssueLineInput = {
+  packetId: string;
+  pieces: number;
+  carat: DecimalInput;
+};
+
 export type OtherMaterialLineInput = {
   description: string;
   quantity: DecimalInput;
@@ -453,6 +468,7 @@ export async function issueMaterialsToJewelleryJob(
     issueDate: Date;
     metalLines: MetalIssueLineInput[];
     polishedDiamondIds: string[];
+    packetLines?: PacketIssueLineInput[];
     otherMaterialLines: OtherMaterialLineInput[];
     idempotencyKey?: string | null;
     createdByUserId: string;
@@ -463,12 +479,14 @@ export async function issueMaterialsToJewelleryJob(
   if (job.status !== "DRAFT") {
     throw new PostingError("Materials have already been issued for this job.");
   }
+  const packetLines = input.packetLines ?? [];
   if (
     input.metalLines.length === 0 &&
     input.polishedDiamondIds.length === 0 &&
+    packetLines.length === 0 &&
     input.otherMaterialLines.length === 0
   ) {
-    throw new PostingError("Issue at least one metal line, diamond, or other material.");
+    throw new PostingError("Issue at least one metal line, diamond, packet, or other material.");
   }
 
   const uniqueDiamondIds = [...new Set(input.polishedDiamondIds)];
@@ -565,6 +583,50 @@ export async function issueMaterialsToJewelleryJob(
   }
   const issuedDiamondCost = round2(diamonds.reduce((sum, d) => sum.plus(new Decimal(d.allocatedCost)), ZERO));
 
+  // ---- Validate packet lines against every packet live balance ----
+  const resolvedPacketLines: {
+    packetId: string;
+    packetCode: string;
+    pieces: number;
+    carat: Decimal;
+    costValue: Decimal;
+    emptiesPacket: boolean;
+  }[] = [];
+  const seenPacketIds = new Set<string>();
+  let issuedPacketDiamondCost = ZERO;
+  for (const pl of packetLines) {
+    if (seenPacketIds.has(pl.packetId)) {
+      throw new PostingError("The same polished packet was selected more than once.");
+    }
+    seenPacketIds.add(pl.packetId);
+    const packet = await tx.polishedPacket.findUnique({ where: { id: pl.packetId } });
+    if (!packet || packet.status !== "ACTIVE") {
+      throw new PostingError("One or more selected polished packets were not found or are no longer active.");
+    }
+    const carat = round3(pl.carat);
+    const balance = await getPacketBalanceInTx(tx, pl.packetId);
+    const check = checkPacketQuantity(
+      { pieces: pl.pieces, caratThousandths: toThousandths(carat.toFixed(3)) },
+      { pieces: balance.pieces, caratThousandths: toThousandths(balance.carat.toFixed(3)) }
+    );
+    if (!check.ok) throw new PostingError(`Packet ${packet.packetCode}: ${check.reason}`);
+    // A packet is one homogeneous cost layer, so an issue takes its carat
+    // share of the remaining cost - and taking the last carat takes the
+    // exact remainder, so a fully-issued packet always drains to zero.
+    const emptiesPacket = carat.equals(balance.carat);
+    const costValue = emptiesPacket ? balance.costValue : round2(balance.costValue.times(carat).dividedBy(balance.carat));
+    resolvedPacketLines.push({
+      packetId: pl.packetId,
+      packetCode: packet.packetCode,
+      pieces: pl.pieces,
+      carat,
+      costValue,
+      emptiesPacket,
+    });
+    issuedPacketDiamondCost = issuedPacketDiamondCost.plus(costValue);
+  }
+  issuedPacketDiamondCost = round2(issuedPacketDiamondCost);
+
   // ---- Other material lines (never stock-tracked) ----
   let otherMaterialCost = ZERO;
   for (const line of input.otherMaterialLines) {
@@ -574,7 +636,10 @@ export async function issueMaterialsToJewelleryJob(
   }
   otherMaterialCost = round2(otherMaterialCost);
 
-  const totalIssuedCost = round2(issuedMetalCost.plus(issuedDiamondCost));
+  // 1220 Polished Diamond Inventory carries both single certified stones and
+  // bulk packets, so one credit covers both.
+  const totalPolishedCredit = round2(issuedDiamondCost.plus(issuedPacketDiamondCost));
+  const totalIssuedCost = round2(issuedMetalCost.plus(totalPolishedCredit));
   if (!totalIssuedCost.greaterThan(0) && input.otherMaterialLines.length === 0) {
     throw new PostingError("At least some stock-tracked material (metal or a diamond) must be issued.");
   }
@@ -613,10 +678,10 @@ export async function issueMaterialsToJewelleryJob(
         description: `Issue ${jobCode}`,
       });
     }
-    if (issuedDiamondCost.greaterThan(0)) {
+    if (totalPolishedCredit.greaterThan(0)) {
       journalLines.push({
         accountCode: SYSTEM_ACCOUNT_CODES.POLISHED_DIAMOND_INVENTORY,
-        credit: issuedDiamondCost,
+        credit: totalPolishedCredit,
         description: `Issue ${jobCode}`,
       });
     }
@@ -677,6 +742,34 @@ export async function issueMaterialsToJewelleryJob(
     });
   }
 
+  // ---- Create packet issue lines + immutable packet ledger movements ----
+  for (const line of resolvedPacketLines) {
+    await tx.jewelleryPacketIssueLine.create({
+      data: {
+        jobId: job.id,
+        packetId: line.packetId,
+        piecesAtIssue: line.pieces,
+        caratAtIssue: line.carat.toFixed(3),
+        costAtIssue: line.costValue.toFixed(2),
+      },
+    });
+    await tx.polishedPacketMovement.create({
+      data: {
+        type: "JEWELLERY_ISSUE_OUT",
+        packetId: line.packetId,
+        pieces: line.pieces,
+        carat: line.carat.toFixed(3),
+        costValue: line.costValue.toFixed(2),
+        sourceDocument: jobCode,
+        jewelleryJobId: job.id,
+        createdByUserId: input.createdByUserId,
+      },
+    });
+    if (line.emptiesPacket) {
+      await tx.polishedPacket.update({ where: { id: line.packetId }, data: { status: "EMPTY" } });
+    }
+  }
+
   // ---- Other material lines (documentation only, no movement) ----
   for (const line of input.otherMaterialLines) {
     await tx.jewelleryOtherMaterialLine.create({
@@ -708,6 +801,7 @@ export async function issueMaterialsToJewelleryJob(
       issuedMetalFineWeight: issuedMetalFineWeight.toFixed(3),
       issuedMetalCost: issuedMetalCost.toFixed(2),
       issuedDiamondCost: issuedDiamondCost.toFixed(2),
+      issuedPacketDiamondCost: issuedPacketDiamondCost.toFixed(2),
       otherMaterialCost: otherMaterialCost.toFixed(2),
       remainingWipCost: fineBearingMetalCost.toFixed(2),
       issuedAlloyGrossWeight: issuedAlloyGrossWeight.toFixed(3),
@@ -810,6 +904,32 @@ export async function cancelJewelleryJob(
     });
   }
 
+  const packetIssueLines = await tx.jewelleryPacketIssueLine.findMany({ where: { jobId: job.id } });
+  for (const line of packetIssueLines) {
+    await tx.polishedPacketMovement.create({
+      data: {
+        type: "JEWELLERY_ISSUE_CANCEL_IN",
+        packetId: line.packetId,
+        pieces: line.piecesAtIssue,
+        carat: line.caratAtIssue,
+        costValue: line.costAtIssue,
+        sourceDocument: job.jobCode,
+        jewelleryJobId: job.id,
+        createdByUserId: input.cancelledByUserId,
+      },
+    });
+    // The stones are back in the packet, so a packet emptied by this issue
+    // becomes active again. A packet emptied by something else stays EMPTY
+    // only if it is still at zero, which a zero-carat reversal cannot change.
+    const packet = await tx.polishedPacket.findUnique({ where: { id: line.packetId } });
+    if (packet && packet.status === "EMPTY") {
+      const balance = await getPacketBalanceInTx(tx, line.packetId);
+      if (balance.carat.greaterThan(0) || balance.pieces > 0) {
+        await tx.polishedPacket.update({ where: { id: line.packetId }, data: { status: "ACTIVE" } });
+      }
+    }
+  }
+
   return tx.jewelleryJob.update({
     where: { id: job.id },
     data: {
@@ -868,6 +988,22 @@ export type DiamondResolutionInput = {
 export type MetalReturnScrapLineInput = { purityId: string; grossWeight: DecimalInput };
 
 /**
+ * Phase 7 — how bulk packet stones issued to a job are accounted for at
+ * receipt time. Pieces and carat are explicit because a packet is a bulk
+ * quantity, not one identified stone. Anything left unresolved simply stays
+ * pending with the Karigar — it is NEVER auto-written-off as loss.
+ */
+export type PacketResolutionInput = {
+  packetId: string;
+  resolution: "SET" | "RETURNED" | "DAMAGED_LOST";
+  pieces: number;
+  carat: DecimalInput;
+  /** Index into this receipt's `outputs` — required when SET. */
+  setInOutputIndex?: number | null;
+  damagedLostReason?: string | null;
+};
+
+/**
  * Phase 7 — where the Alloy Added in this receipt's finished outputs came
  * from. The three gross weights must together equal EXACTLY the alloy
  * computed from the outputs (see computeOutputMetal); a receipt whose
@@ -891,6 +1027,7 @@ export async function receiveFinishedJewellery(
     receiveDate: Date;
     outputs: FinishedOutputInput[];
     diamondResolutions: DiamondResolutionInput[];
+    packetResolutions?: PacketResolutionInput[];
     returnedMetalLines: MetalReturnScrapLineInput[];
     scrapMetalLines: MetalReturnScrapLineInput[];
     karigarAddedFineWeight: DecimalInput;
@@ -919,6 +1056,8 @@ export async function receiveFinishedJewellery(
   if (input.isAbnormalLoss && (!input.abnormalLossReason || input.abnormalLossReason.trim().length < 3)) {
     throw new PostingError("Give a short reason for classifying this loss as abnormal.");
   }
+
+  const packetResolutions = input.packetResolutions ?? [];
 
   // ---- Issued metal, split into fine-bearing purities (gold/silver/
   // platinum — reconciled by fine weight) and the job's Company
@@ -1010,7 +1149,8 @@ export async function receiveFinishedJewellery(
     returnedGross.isZero() &&
     scrapGross.isZero() &&
     alloyReturnedGross.isZero() &&
-    input.diamondResolutions.length === 0
+    input.diamondResolutions.length === 0 &&
+    packetResolutions.length === 0
   ) {
     throw new PostingError("Record at least one finished output, return, scrap amount, or diamond resolution.");
   }
@@ -1162,6 +1302,91 @@ export async function receiveFinishedJewellery(
       .filter((l) => input.diamondResolutions.find((r) => r.polishedDiamondId === l.polishedDiamondId)?.resolution === "DAMAGED_LOST")
       .reduce((sum, l) => sum.plus(new Decimal(l.costAtIssue)), ZERO)
   );
+
+
+  // ---- Resolve + validate packet resolutions ----
+  // Each resolution drains part of its job issue line. Cost follows carat,
+  // and the resolution that drains a line takes the exact remainder, so a
+  // fully-resolved line always reaches zero cost with no rounding residue.
+  type ResolvedPacketResolution = {
+    issueLineId: string;
+    packetId: string;
+    resolution: "SET" | "RETURNED" | "DAMAGED_LOST";
+    pieces: number;
+    carat: Decimal;
+    costValue: Decimal;
+    setInOutputIndex: number | null;
+    damagedLostReason: string | null;
+  };
+  const resolvedPacketResolutions: ResolvedPacketResolution[] = [];
+  let setPacketCost = ZERO;
+  let returnedPacketCost = ZERO;
+  let damagedPacketCost = ZERO;
+  if (packetResolutions.length > 0) {
+    const packetIssueLines = await tx.jewelleryPacketIssueLine.findMany({
+      where: { jobId: job.id, packetId: { in: [...new Set(packetResolutions.map((r) => r.packetId))] } },
+    });
+    const lineByPacketId = new Map(packetIssueLines.map((l) => [l.packetId, l]));
+    // Running remainder per line, so several resolutions in ONE receipt
+    // (part set, part returned) each take their share of what is still left.
+    const remaining = new Map<string, { pieces: number; carat: Decimal; cost: Decimal }>();
+    for (const line of packetIssueLines) {
+      remaining.set(line.packetId, {
+        pieces: line.piecesAtIssue - line.setPieces - line.returnedPieces - line.damagedPieces,
+        carat: round3(
+          new Decimal(line.caratAtIssue).minus(line.setCarat).minus(line.returnedCarat).minus(line.damagedCarat)
+        ),
+        cost: round2(new Decimal(line.costAtIssue).minus(line.setCost).minus(line.returnedCost).minus(line.damagedCost)),
+      });
+    }
+    for (const r of packetResolutions) {
+      const line = lineByPacketId.get(r.packetId);
+      if (!line) throw new PostingError("One or more packets in the resolution list were not issued to this job.");
+      const left = remaining.get(r.packetId)!;
+      const carat = round3(r.carat);
+      const check = checkPacketQuantity(
+        { pieces: r.pieces, caratThousandths: toThousandths(carat.toFixed(3)) },
+        { pieces: left.pieces, caratThousandths: toThousandths(left.carat.toFixed(3)) }
+      );
+      if (!check.ok) throw new PostingError(`Packet resolution: ${check.reason}`);
+      if (r.resolution === "DAMAGED_LOST" && (!r.damagedLostReason || r.damagedLostReason.trim().length < 3)) {
+        throw new PostingError("Give a short reason for marking packet stones damaged/lost.");
+      }
+      let setInOutputIndex: number | null = null;
+      if (r.resolution === "SET") {
+        if (!hasOutputs) {
+          throw new PostingError("Packet stones can only be resolved as SET in a receipt that records a finished output.");
+        }
+        setInOutputIndex = r.setInOutputIndex ?? (resolvedOutputs.length === 1 ? 0 : null);
+        if (setInOutputIndex === null || setInOutputIndex < 0 || setInOutputIndex >= resolvedOutputs.length) {
+          throw new PostingError("Say which finished output the packet stones were set into.");
+        }
+      }
+      const drainsLine = r.pieces === left.pieces && carat.equals(left.carat);
+      const costValue = drainsLine ? left.cost : round2(left.cost.times(carat).dividedBy(left.carat));
+      resolvedPacketResolutions.push({
+        issueLineId: line.id,
+        packetId: r.packetId,
+        resolution: r.resolution,
+        pieces: r.pieces,
+        carat,
+        costValue,
+        setInOutputIndex,
+        damagedLostReason: r.resolution === "DAMAGED_LOST" ? r.damagedLostReason!.trim() : null,
+      });
+      remaining.set(r.packetId, {
+        pieces: left.pieces - r.pieces,
+        carat: round3(left.carat.minus(carat)),
+        cost: round2(left.cost.minus(costValue)),
+      });
+      if (r.resolution === "SET") setPacketCost = setPacketCost.plus(costValue);
+      else if (r.resolution === "RETURNED") returnedPacketCost = returnedPacketCost.plus(costValue);
+      else damagedPacketCost = damagedPacketCost.plus(costValue);
+    }
+  }
+  setPacketCost = round2(setPacketCost);
+  returnedPacketCost = round2(returnedPacketCost);
+  damagedPacketCost = round2(damagedPacketCost);
 
   // ---- Alloy Added: the source split must total the computed alloy exactly ----
   const companyAlloyGross = round3(input.alloy?.companyGrossWeight ?? 0);
@@ -1391,7 +1616,9 @@ export async function receiveFinishedJewellery(
       description: `Karigar-added material ${receiptCode}`,
     });
   }
-  const finishedInventoryDebit = round2(finishedPortionCost.plus(alloyCostToOutputs).plus(chargesToFinished).plus(setDiamondCost));
+  const finishedInventoryDebit = round2(
+    finishedPortionCost.plus(alloyCostToOutputs).plus(chargesToFinished).plus(setDiamondCost).plus(setPacketCost)
+  );
   if (finishedInventoryDebit.greaterThan(0)) {
     journalLines.push({
       accountCode: SYSTEM_ACCOUNT_CODES.FINISHED_JEWELLERY_INVENTORY,
@@ -1420,14 +1647,17 @@ export async function receiveFinishedJewellery(
       description: `Scrap metal ${receiptCode}`,
     });
   }
-  if (returnedDiamondCost.greaterThan(0)) {
+  const returnedPolishedDebit = round2(returnedDiamondCost.plus(returnedPacketCost));
+  if (returnedPolishedDebit.greaterThan(0)) {
     journalLines.push({
       accountCode: SYSTEM_ACCOUNT_CODES.POLISHED_DIAMOND_INVENTORY,
-      debit: returnedDiamondCost,
+      debit: returnedPolishedDebit,
       description: `Returned diamond(s) ${receiptCode}`,
     });
   }
-  const abnormalExpense = round2(lossCost.plus(alloyAbnormalLossCost).plus(damagedLostDiamondCost));
+  const abnormalExpense = round2(
+    lossCost.plus(alloyAbnormalLossCost).plus(damagedLostDiamondCost).plus(damagedPacketCost)
+  );
   if (abnormalExpense.greaterThan(0)) {
     journalLines.push({
       accountCode: SYSTEM_ACCOUNT_CODES.BUSINESS_EXPENSES,
@@ -1443,7 +1673,14 @@ export async function receiveFinishedJewellery(
     });
   }
   const wipCredit = round2(
-    resolvedCost.plus(alloyResolvedCost).plus(setDiamondCost).plus(returnedDiamondCost).plus(damagedLostDiamondCost)
+    resolvedCost
+      .plus(alloyResolvedCost)
+      .plus(setDiamondCost)
+      .plus(returnedDiamondCost)
+      .plus(damagedLostDiamondCost)
+      .plus(setPacketCost)
+      .plus(returnedPacketCost)
+      .plus(damagedPacketCost)
   );
   if (wipCredit.greaterThan(0)) {
     journalLines.push({
@@ -1536,11 +1773,18 @@ export async function receiveFinishedJewellery(
     const otherCost = otherMaterialReallocation.get(`new:${i}`) ?? ZERO;
     const labourAllocated = chargesAllocation.find((a) => a.key === String(i))?.amount ?? ZERO;
     const outputDiamondIssueLines = issueLines.filter((l) => resolved.input.diamondIds.includes(l.polishedDiamondId));
+    const outputPacketResolutions = resolvedPacketResolutions.filter(
+      (r) => r.resolution === "SET" && r.setInOutputIndex === i
+    );
     const diamondCostForOutput = round2(
-      outputDiamondIssueLines.reduce((sum, l) => sum.plus(new Decimal(l.costAtIssue)), ZERO)
+      outputDiamondIssueLines
+        .reduce((sum, l) => sum.plus(new Decimal(l.costAtIssue)), ZERO)
+        .plus(outputPacketResolutions.reduce((sum, r) => sum.plus(r.costValue), ZERO))
     );
     const totalCaratForOutput = round3(
-      outputDiamondIssueLines.reduce((sum, l) => sum.plus(new Decimal(l.caratAtIssue)), ZERO)
+      outputDiamondIssueLines
+        .reduce((sum, l) => sum.plus(new Decimal(l.caratAtIssue)), ZERO)
+        .plus(outputPacketResolutions.reduce((sum, r) => sum.plus(r.carat), ZERO))
     );
     const totalCost = round2(metalCost.plus(diamondCostForOutput).plus(otherCost).plus(labourAllocated));
 
@@ -1697,6 +1941,57 @@ export async function receiveFinishedJewellery(
     }
   }
 
+  // ---- Resolve packet issue lines: record each resolution, advance the
+  // issue line's own counters, and put RETURNED stones back into their
+  // packet through the immutable packet ledger. SET and DAMAGED_LOST post
+  // no packet movement — those stones already left the packet at issue
+  // time (JEWELLERY_ISSUE_OUT); a second out-movement would double-deduct. ----
+  for (const r of resolvedPacketResolutions) {
+    let resultPacketId: string | null = null;
+    if (r.resolution === "RETURNED") {
+      await tx.polishedPacketMovement.create({
+        data: {
+          type: "JEWELLERY_RETURN_IN",
+          packetId: r.packetId,
+          pieces: r.pieces,
+          carat: r.carat.toFixed(3),
+          costValue: r.costValue.toFixed(2),
+          sourceDocument: receiptCode,
+          jewelleryJobId: job.id,
+          createdByUserId: input.createdByUserId,
+        },
+      });
+      // Nothing about these stones changed, so they go back into the packet
+      // they came from — which becomes issuable again if it had emptied.
+      resultPacketId = r.packetId;
+      const packet = await tx.polishedPacket.findUnique({ where: { id: r.packetId } });
+      if (packet && packet.status === "EMPTY") {
+        await tx.polishedPacket.update({ where: { id: r.packetId }, data: { status: "ACTIVE" } });
+      }
+    }
+    await tx.jewelleryPacketResolution.create({
+      data: {
+        issueLineId: r.issueLineId,
+        receiptId: receipt.id,
+        disposition: r.resolution,
+        pieces: r.pieces,
+        carat: r.carat.toFixed(3),
+        costValue: r.costValue.toFixed(2),
+        setInFinishedJewelleryId:
+          r.resolution === "SET" && r.setInOutputIndex !== null ? createdOutputs[r.setInOutputIndex].id : null,
+        resultPacketId,
+        reason: r.damagedLostReason,
+      },
+    });
+    const counters =
+      r.resolution === "SET"
+        ? { setPieces: { increment: r.pieces }, setCarat: { increment: r.carat.toFixed(3) }, setCost: { increment: r.costValue.toFixed(2) } }
+        : r.resolution === "RETURNED"
+          ? { returnedPieces: { increment: r.pieces }, returnedCarat: { increment: r.carat.toFixed(3) }, returnedCost: { increment: r.costValue.toFixed(2) } }
+          : { damagedPieces: { increment: r.pieces }, damagedCarat: { increment: r.carat.toFixed(3) }, damagedCost: { increment: r.costValue.toFixed(2) } };
+    await tx.jewelleryPacketIssueLine.update({ where: { id: r.issueLineId }, data: counters });
+  }
+
   // ---- Metal stock movements (return/scrap) — one movement PER LINE,
   // each posted to its own explicit purity identity with its own
   // proportional cost share. Never one lump sum against a guessed
@@ -1833,7 +2128,16 @@ export async function receiveFinishedJewellery(
   const anyUnresolvedDiamonds = await tx.jewelleryDiamondIssueLine.count({
     where: { jobId: job.id, resolvedAs: null },
   });
-  const jobComplete = isFinalMetal && anyUnresolvedDiamonds === 0;
+  // A packet line is resolved only when every issued piece AND carat has
+  // been set, returned or written off. Anything still pending keeps the job
+  // open — pending stones are never auto-classified as loss.
+  const allPacketLines = await tx.jewelleryPacketIssueLine.findMany({ where: { jobId: job.id } });
+  const anyUnresolvedPackets = allPacketLines.some(
+    (l) =>
+      l.piecesAtIssue - l.setPieces - l.returnedPieces - l.damagedPieces > 0 ||
+      new Decimal(l.caratAtIssue).minus(l.setCarat).minus(l.returnedCarat).minus(l.damagedCarat).greaterThan(0)
+  );
+  const jobComplete = isFinalMetal && anyUnresolvedDiamonds === 0 && !anyUnresolvedPackets;
 
   const updatedJob = await tx.jewelleryJob.update({
     where: { id: job.id },

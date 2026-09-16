@@ -2,10 +2,12 @@
 
 import { useId, useMemo, useState } from "react";
 
+import type { PartyTypeValue } from "@/lib/parties/types";
+
 export type PartyOption = {
   id: string;
   name: string;
-  type: "CUSTOMER" | "SUPPLIER" | "KARIGAR";
+  type: PartyTypeValue;
   stateCode: string | null;
 };
 

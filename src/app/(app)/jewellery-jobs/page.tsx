@@ -23,7 +23,10 @@ import { MetalStockTab, type SerializedMetalStockBucket, type SerializedMetalPur
 import { FinishedStockTab, type SerializedFinishedStockRow } from "@/components/jewellery/FinishedStockTab";
 import { FinishedSalesManager, type SerializedFinishedSale } from "@/components/jewellery/FinishedSalesManager";
 import type { PurityOption } from "@/components/jewellery/CreateJobForm";
-import type { AvailablePolishedDiamondOption } from "@/components/jewellery/IssueMaterialsForm";
+import type { AvailablePacketOption, AvailablePolishedDiamondOption } from "@/components/jewellery/IssueMaterialsForm";
+import type { PendingPacketOption } from "@/components/jewellery/ReceiveFinishedForm";
+import { listJobPacketLines, listPolishedPackets } from "@/lib/diamond/packetReports";
+import { shapeLabel } from "@/lib/diamond/shapes";
 import type { MetalPurityOption } from "@/components/jewellery/ReceiveFinishedForm";
 import type { FinishedJewelleryStockStatus, JewelleryJobStatus } from "@/generated/prisma/enums";
 
@@ -144,7 +147,30 @@ async function JobsTabContent({
     if (!detail) {
       return <p className="text-sm text-zinc-500 dark:text-zinc-400">Job not found.</p>;
     }
-    const availableDiamondsRaw = await listPolishedDiamonds({ status: "AVAILABLE" });
+    const [availableDiamondsRaw, packetRows, jobPacketLines] = await Promise.all([
+      listPolishedDiamonds({ status: "AVAILABLE" }),
+      listPolishedPackets(),
+      listJobPacketLines(detail.id),
+    ]);
+    // Packet quantities only — no packet cost ever reaches these props.
+    const availablePackets: AvailablePacketOption[] = packetRows
+      .filter((p) => p.pieces > 0 || p.carat !== "0.000")
+      .map((p) => ({
+        id: p.id,
+        packetCode: p.packetCode,
+        label: [shapeLabel(p.shape), p.sizeLabel, p.quality, p.colour].filter(Boolean).join(" · "),
+        pieces: p.pieces,
+        carat: p.carat,
+      }));
+    const pendingPackets: PendingPacketOption[] = jobPacketLines
+      .filter((l) => l.pendingPieces > 0 || l.pendingCarat !== "0.000")
+      .map((l) => ({
+        packetId: l.packetId,
+        packetCode: l.packetCode,
+        label: `${shapeLabel(l.shape)} · ${l.sizeLabel}`,
+        pendingPieces: l.pendingPieces,
+        pendingCarat: l.pendingCarat,
+      }));
     const availableDiamonds: AvailablePolishedDiamondOption[] = availableDiamondsRaw.map((d) => ({
       id: d.id,
       polishedCode: d.polishedCode,
@@ -269,7 +295,16 @@ async function JobsTabContent({
       })),
     };
 
-    return <JobDetailView job={serialized} isOwner={isOwner} purities={toMetalPurityOptions(purities)} availableDiamonds={availableDiamonds} />;
+    return (
+      <JobDetailView
+        job={serialized}
+        isOwner={isOwner}
+        purities={toMetalPurityOptions(purities)}
+        availableDiamonds={availableDiamonds}
+        availablePackets={availablePackets}
+        pendingPackets={pendingPackets}
+      />
+    );
   }
 
   const statusList: JewelleryJobStatus[] | undefined =

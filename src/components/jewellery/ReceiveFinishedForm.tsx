@@ -13,6 +13,18 @@ import { computeOutputMetal, fineWeightThousandths, formatThousandths, toThousan
 export type MetalPurityOption = { id: string; metalType: string; displayName: string; finenessPercent: string };
 export type UnresolvedDiamondOption = { polishedDiamondId: string; polishedCode: string; shape: string; carat: string };
 /** One purity actually issued to this job, with the fineness snapshot taken at issue time. */
+/** Phase 7 — packet stones issued to this job that are still with the Karigar. */
+export type PendingPacketOption = { packetId: string; packetCode: string; label: string; pendingPieces: number; pendingCarat: string };
+type PacketQty = { pieces: string; carat: string };
+type PacketResolutionDraft = { set: PacketQty; setOutputIndex: string; returned: PacketQty; damaged: PacketQty; reason: string };
+function emptyPacketDraft(): PacketResolutionDraft {
+  return { set: { pieces: "", carat: "" }, setOutputIndex: "0", returned: { pieces: "", carat: "" }, damaged: { pieces: "", carat: "" }, reason: "" };
+}
+/** Exact integer thousandths of a carat entry, so pending checks never drift. */
+function ct1000(value: string): number {
+  return Math.round((Number(value) || 0) * 1000);
+}
+
 export type IssuedMetalOption = {
   purityId: string;
   metalType: string;
@@ -84,6 +96,7 @@ export function ReceiveFinishedForm({
   issuedMetal,
   alloyPendingGrossWeight,
   unresolvedDiamonds,
+  pendingPackets = [],
   isOwner,
   onDone,
 }: {
@@ -97,6 +110,7 @@ export function ReceiveFinishedForm({
   issuedMetal: IssuedMetalOption[];
   alloyPendingGrossWeight: string;
   unresolvedDiamonds: UnresolvedDiamondOption[];
+  pendingPackets?: PendingPacketOption[];
   isOwner: boolean;
   onDone?: () => void;
 }) {
@@ -111,6 +125,7 @@ export function ReceiveFinishedForm({
   const [returnedAlloy, setReturnedAlloy] = useState("");
   const [diamondResolutions, setDiamondResolutions] = useState<Record<string, "RETURNED" | "DAMAGED_LOST">>({});
   const [damagedLostReasons, setDamagedLostReasons] = useState<Record<string, string>>({});
+  const [packetDrafts, setPacketDrafts] = useState<Record<string, PacketResolutionDraft>>({});
   const [karigarAddedFineWeight, setKarigarAddedFineWeight] = useState("0");
   const [karigarAddedCost, setKarigarAddedCost] = useState("0");
   const [alloyTouched, setAlloyTouched] = useState(false);
@@ -253,7 +268,50 @@ export function ReceiveFinishedForm({
   const willCompleteMetal = gap === ZERO || markJobComplete;
   const previewLoss = willCompleteMetal && gap > ZERO ? gap : ZERO;
   const allDiamondsResolvedThisReceipt = remainingDiamonds.every((d) => diamondResolutions[d.polishedDiamondId]);
-  const willCompleteJob = willCompleteMetal && allDiamondsResolvedThisReceipt;
+  // ---- Packet stones: every entry is explicit; anything not entered stays
+  // pending with the Karigar (never assumed lost). ----
+  const packetResolutionsForSubmit = pendingPackets.flatMap((p) => {
+    const d = packetDrafts[p.packetId];
+    if (!d) return [];
+    const rows: { packetId: string; resolution: "SET" | "RETURNED" | "DAMAGED_LOST"; pieces: string; carat: string; setInOutputIndex?: string; damagedLostReason?: string }[] = [];
+    if (Number(d.set.pieces) > 0 || Number(d.set.carat) > 0) {
+      // Blank output drafts are dropped before submit, so translate the
+      // chosen draft into its position among the outputs actually sent.
+      const draftIndex = Math.min(Number(d.setOutputIndex) || 0, outputs.length - 1);
+      const submittedIndex = outputs.slice(0, draftIndex).filter((o) => Number(o.netMetalWeight) > 0).length;
+      rows.push({ packetId: p.packetId, resolution: "SET", pieces: d.set.pieces || "0", carat: d.set.carat || "0", setInOutputIndex: String(submittedIndex) });
+    }
+    if (Number(d.returned.pieces) > 0 || Number(d.returned.carat) > 0) {
+      rows.push({ packetId: p.packetId, resolution: "RETURNED", pieces: d.returned.pieces || "0", carat: d.returned.carat || "0" });
+    }
+    if (isOwner && (Number(d.damaged.pieces) > 0 || Number(d.damaged.carat) > 0)) {
+      rows.push({ packetId: p.packetId, resolution: "DAMAGED_LOST", pieces: d.damaged.pieces || "0", carat: d.damaged.carat || "0", damagedLostReason: d.reason });
+    }
+    return rows;
+  });
+  const packetStatus = pendingPackets.map((p) => {
+    const mine = packetResolutionsForSubmit.filter((r) => r.packetId === p.packetId);
+    const pieces = mine.reduce((sum, r) => sum + (Number(r.pieces) || 0), 0);
+    const carat = mine.reduce((sum, r) => sum + ct1000(r.carat), 0);
+    const pendingCarat = ct1000(p.pendingCarat);
+    let problem: string | null = null;
+    if (pieces > p.pendingPieces || carat > pendingCarat) problem = `${p.packetCode}: more than the ${p.pendingPieces} pcs / ${p.pendingCarat}ct still pending.`;
+    else if (mine.length > 0 && (pieces === p.pendingPieces) !== (carat === pendingCarat)) problem = `${p.packetCode}: pieces and carat must be fully resolved together.`;
+    else if (
+      mine.some((r) => r.resolution === "SET") &&
+      !(Number(outputs[Math.min(Number(packetDrafts[p.packetId]?.setOutputIndex) || 0, outputs.length - 1)]?.netMetalWeight) > 0)
+    )
+      problem = `${p.packetCode}: set stones must go into a finished output that has a net weight.`;
+    else if (mine.some((r) => r.resolution === "DAMAGED_LOST" && (r.damagedLostReason ?? "").trim().length < 3)) problem = `Give a reason for marking stones from ${p.packetCode} damaged/lost.`;
+    return { packet: p, fullyResolved: pieces === p.pendingPieces && carat === pendingCarat, problem };
+  });
+  const packetProblem = packetStatus.find((s) => s.problem)?.problem ?? null;
+  const allPacketsResolvedThisReceipt = packetStatus.every((s) => s.fullyResolved);
+  function updatePacketDraft(packetId: string, patch: Partial<PacketResolutionDraft>) {
+    setPacketDrafts((prev) => ({ ...prev, [packetId]: { ...(prev[packetId] ?? emptyPacketDraft()), ...patch } }));
+  }
+
+  const willCompleteJob = willCompleteMetal && allDiamondsResolvedThisReceipt && allPacketsResolvedThisReceipt;
 
   // ---- Alloy Added source split ----
   const alloyPending = toThousandths(alloyPendingGrossWeight);
@@ -306,6 +364,11 @@ export function ReceiveFinishedForm({
       event.preventDefault();
       return;
     }
+    if (packetProblem) {
+      window.alert(packetProblem);
+      event.preventDefault();
+      return;
+    }
     for (const d of remainingDiamonds) {
       const resolution = diamondResolutions[d.polishedDiamondId];
       if (resolution === "DAMAGED_LOST" && (damagedLostReasons[d.polishedDiamondId] ?? "").trim().length < 3) {
@@ -322,7 +385,7 @@ export function ReceiveFinishedForm({
     const summary = willCompleteJob
       ? `This will COMPLETE job ${jobCode}. Process Loss: ${g(previewLoss)}g fine.`
       : willCompleteMetal
-        ? `Metal is fully resolved but some diamonds remain unresolved — job ${jobCode} will stay Partially Received.`
+        ? `Metal is fully resolved but some diamonds or packet stones remain with the Karigar — job ${jobCode} will stay Partially Received.`
         : `Partial receipt for job ${jobCode}. ${g(gap > ZERO ? gap : ZERO)}g fine metal remains with the Karigar.`;
     const alloyLine = expectedAlloy > ZERO ? `\nAlloy Added: ${g(expectedAlloy)}g.` : "";
     if (!window.confirm(`${summary}${alloyLine}\n\nSave this receipt?`)) {
@@ -375,6 +438,7 @@ export function ReceiveFinishedForm({
       <input type="hidden" name="idempotencyKey" value={idempotencyKey} />
       <input type="hidden" name="outputsJson" value={JSON.stringify(outputsForSubmit)} />
       <input type="hidden" name="diamondResolutionsJson" value={JSON.stringify(diamondResolutionsForSubmit)} />
+      <input type="hidden" name="packetResolutionsJson" value={JSON.stringify(packetResolutionsForSubmit)} />
       <input type="hidden" name="returnedMetalLinesJson" value={JSON.stringify(returnedLinesForSubmit)} />
       <input type="hidden" name="scrapMetalLinesJson" value={JSON.stringify(scrapLinesForSubmit)} />
       <input type="hidden" name="markJobComplete" value={markJobComplete ? "true" : "false"} />
@@ -684,6 +748,124 @@ export function ReceiveFinishedForm({
               ) : null}
             </div>
           ))}
+        </div>
+      ) : null}
+
+      {pendingPackets.length > 0 ? (
+        <div className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/30">
+          <div>
+            <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Polished Diamond packet stones with the Karigar</h3>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              Enter what was set, returned or damaged. Anything not entered stays pending with the Karigar — it is never counted as loss.
+            </p>
+          </div>
+          {pendingPackets.map((p) => {
+            const d = packetDrafts[p.packetId] ?? emptyPacketDraft();
+            const status = packetStatus.find((s) => s.packet.packetId === p.packetId);
+            return (
+              <div key={p.packetId} className="flex flex-col gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
+                <p className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+                  {p.packetCode} · {p.label} · pending {p.pendingPieces} pcs / {p.pendingCarat}ct
+                  {status?.fullyResolved ? <span className="ml-2 text-xs text-emerald-700 dark:text-emerald-400">fully resolved</span> : null}
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-zinc-600 dark:text-zinc-400">Set</span>
+                  <input
+                    aria-label={`Set pieces — ${p.packetCode}`}
+                    type="number"
+                    min="0"
+                    step="1"
+                    placeholder="Pieces"
+                    value={d.set.pieces}
+                    onChange={(e) => updatePacketDraft(p.packetId, { set: { ...d.set, pieces: e.target.value } })}
+                    className="h-8 w-20 rounded-lg border border-zinc-300 bg-white px-2 text-xs dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
+                  />
+                  <input
+                    aria-label={`Set carat — ${p.packetCode}`}
+                    type="number"
+                    min="0"
+                    step="0.001"
+                    placeholder="Carat"
+                    value={d.set.carat}
+                    onChange={(e) => updatePacketDraft(p.packetId, { set: { ...d.set, carat: e.target.value } })}
+                    className="h-8 w-24 rounded-lg border border-zinc-300 bg-white px-2 text-xs dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
+                  />
+                  {outputs.length > 1 ? (
+                    <select
+                      aria-label={`Output for set stones — ${p.packetCode}`}
+                      value={d.setOutputIndex}
+                      onChange={(e) => updatePacketDraft(p.packetId, { setOutputIndex: e.target.value })}
+                      className="h-8 rounded-lg border border-zinc-300 bg-white px-2 text-xs dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
+                    >
+                      {outputs.map((_, i) => (
+                        <option key={i} value={String(i)}>
+                          Output {i + 1}
+                        </option>
+                      ))}
+                    </select>
+                  ) : null}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-zinc-600 dark:text-zinc-400">Returned</span>
+                  <input
+                    aria-label={`Returned pieces — ${p.packetCode}`}
+                    type="number"
+                    min="0"
+                    step="1"
+                    placeholder="Pieces"
+                    value={d.returned.pieces}
+                    onChange={(e) => updatePacketDraft(p.packetId, { returned: { ...d.returned, pieces: e.target.value } })}
+                    className="h-8 w-20 rounded-lg border border-zinc-300 bg-white px-2 text-xs dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
+                  />
+                  <input
+                    aria-label={`Returned carat — ${p.packetCode}`}
+                    type="number"
+                    min="0"
+                    step="0.001"
+                    placeholder="Carat"
+                    value={d.returned.carat}
+                    onChange={(e) => updatePacketDraft(p.packetId, { returned: { ...d.returned, carat: e.target.value } })}
+                    className="h-8 w-24 rounded-lg border border-zinc-300 bg-white px-2 text-xs dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
+                  />
+                </div>
+                {isOwner ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-zinc-600 dark:text-zinc-400">Damaged/Lost (Owner)</span>
+                  <input
+                    aria-label={`Damaged/Lost (Owner) pieces — ${p.packetCode}`}
+                    type="number"
+                    min="0"
+                    step="1"
+                    placeholder="Pieces"
+                    value={d.damaged.pieces}
+                    onChange={(e) => updatePacketDraft(p.packetId, { damaged: { ...d.damaged, pieces: e.target.value } })}
+                    className="h-8 w-20 rounded-lg border border-zinc-300 bg-white px-2 text-xs dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
+                  />
+                  <input
+                    aria-label={`Damaged/Lost (Owner) carat — ${p.packetCode}`}
+                    type="number"
+                    min="0"
+                    step="0.001"
+                    placeholder="Carat"
+                    value={d.damaged.carat}
+                    onChange={(e) => updatePacketDraft(p.packetId, { damaged: { ...d.damaged, carat: e.target.value } })}
+                    className="h-8 w-24 rounded-lg border border-zinc-300 bg-white px-2 text-xs dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
+                  />
+                    {Number(d.damaged.pieces) > 0 || Number(d.damaged.carat) > 0 ? (
+                      <input
+                        type="text"
+                        placeholder="Reason (required)"
+                        value={d.reason}
+                        onChange={(e) => updatePacketDraft(p.packetId, { reason: e.target.value })}
+                        className="h-8 flex-1 min-w-[10rem] rounded-lg border border-zinc-300 bg-white px-2 text-xs dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
+                      />
+                    ) : null}
+                  </div>
+                ) : null}
+                {status?.problem ? <p className="text-xs font-medium text-red-600 dark:text-red-400">{status.problem}</p> : null}
+              </div>
+            );
+          })}
         </div>
       ) : null}
 

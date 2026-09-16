@@ -1,4 +1,4 @@
-import { createFakeDiamondTx } from "./fakeDiamondTx";
+import { createFakePolishedTx } from "./fakePolishedTx";
 
 /**
  * Extends the Phase 3 fake diamond transaction client (which itself
@@ -9,13 +9,16 @@ import { createFakeDiamondTx } from "./fakeDiamondTx";
  * database. Deliberately builds on the diamond fixture rather than
  * duplicating polishedDiamond/stockMovement support, since Jewellery
  * genuinely reuses those real Phase 3 tables — mirrors the same layering
- * fakeDiamondTx.ts uses over fakeAccountingTx.ts.
+ * fakeDiamondTx.ts uses over fakeAccountingTx.ts. Phase 7: layered over
+ * fakePolishedTx instead, because a Jewellery job can now also consume bulk
+ * polished PACKETS — the same real packet tables the Polished Purchase
+ * engine writes.
  */
 
 type Row = Record<string, unknown>;
 
 export function createFakeJewelleryTx() {
-  const base = createFakeDiamondTx();
+  const base = createFakePolishedTx();
 
   const jewellerySequences = new Map<string, Row>(); // keyed by `${type}::${year}`
   const metalPurities = new Map<string, Row>();
@@ -28,6 +31,8 @@ export function createFakeJewelleryTx() {
   const jewelleryReceipts = new Map<string, Row>();
   const finishedJewelleryRows = new Map<string, Row>();
   const finishedJewelleryStockMovements = new Map<string, Row>();
+  const jewelleryPacketIssueLines = new Map<string, Row>();
+  const jewelleryPacketResolutions = new Map<string, Row>();
 
   let counter = 0;
   const nextId = (prefix: string) => `${prefix}-${++counter}`;
@@ -40,6 +45,58 @@ export function createFakeJewelleryTx() {
       }
       return row[key] === value;
     });
+  }
+
+  /** Applies a Prisma-style update payload, honouring { increment: n } on numeric/decimal columns. */
+  function applyData(row: Row, data: Row) {
+    for (const [key, value] of Object.entries(data)) {
+      if (value && typeof value === "object" && "increment" in (value as Row)) {
+        const inc = (value as Row).increment;
+        const current = row[key];
+        row[key] =
+          typeof current === "number" && typeof inc === "number"
+            ? current + inc
+            : (Number(current ?? 0) + Number(inc)).toFixed(String(inc).includes(".") ? String(inc).split(".")[1].length : 0);
+      } else {
+        row[key] = value;
+      }
+    }
+    return row;
+  }
+
+  /** Test helper — seed an ACTIVE PolishedPacket with its PURCHASE_IN movement. */
+  function seedPolishedPacket(input: {
+    packetCode: string;
+    pieces: number;
+    carat: string;
+    costValue: string;
+    shape?: string;
+    sizeLabel?: string;
+    provenance?: string;
+  }) {
+    const row = {
+      id: nextId("pkt"),
+      packetCode: input.packetCode,
+      status: "ACTIVE",
+      shape: input.shape ?? "ROUND",
+      sizeLabel: input.sizeLabel ?? "1.0-1.2MM",
+      certificateStatus: "NOT_CERTIFIED",
+      provenance: input.provenance ?? "PURCHASED",
+      currencyCode: "INR",
+    };
+    base.state.polishedPackets.set(row.id, row);
+    const movementId = nextId("pktmov");
+    base.state.polishedPacketMovements.set(movementId, {
+      id: movementId,
+      type: "PURCHASE_IN",
+      packetId: row.id,
+      pieces: input.pieces,
+      carat: input.carat,
+      costValue: input.costValue,
+      sourceDocument: input.packetCode,
+      createdAt: new Date(),
+    });
+    return row;
   }
 
   /** Test helper — seed a MetalPurity row directly (bypassing any action-layer validation). */
@@ -282,6 +339,47 @@ export function createFakeJewelleryTx() {
         return { count: rows.length };
       },
     },
+    jewelleryPacketIssueLine: {
+      create: async ({ data }: { data: Row }) => {
+        const row = {
+          id: nextId("jpil"),
+          setPieces: 0,
+          setCarat: "0",
+          setCost: "0",
+          returnedPieces: 0,
+          returnedCarat: "0",
+          returnedCost: "0",
+          damagedPieces: 0,
+          damagedCarat: "0",
+          damagedCost: "0",
+          ...data,
+        };
+        jewelleryPacketIssueLines.set(row.id as string, row);
+        return row;
+      },
+      findMany: async ({ where }: { where?: Row } = {}) => {
+        const rows = [...jewelleryPacketIssueLines.values()];
+        if (!where) return rows;
+        return rows.filter((r) => matchesWhere(r, where));
+      },
+      update: async ({ where, data }: { where: { id: string }; data: Row }) => {
+        const row = jewelleryPacketIssueLines.get(where.id);
+        if (!row) throw new Error("jewellery packet issue line not found");
+        return applyData(row, data);
+      },
+    },
+    jewelleryPacketResolution: {
+      create: async ({ data }: { data: Row }) => {
+        const row = { id: nextId("jpres"), ...data };
+        jewelleryPacketResolutions.set(row.id as string, row);
+        return row;
+      },
+      findMany: async ({ where }: { where?: Row } = {}) => {
+        const rows = [...jewelleryPacketResolutions.values()];
+        if (!where) return rows;
+        return rows.filter((r) => matchesWhere(r, where));
+      },
+    },
     finishedJewelleryStockMovement: {
       create: async ({ data }: { data: Row }) => {
         const row = { id: nextId("fjmov"), createdAt: new Date(), ...data };
@@ -326,10 +424,14 @@ export function createFakeJewelleryTx() {
       jewelleryReceipts,
       finishedJewelleryRows,
       finishedJewelleryStockMovements,
+      jewelleryPacketIssueLines,
+      jewelleryPacketResolutions,
     },
     paymentAccountIdByMethod: base.paymentAccountIdByMethod,
+    seedParty: base.seedParty,
     seedMetalPurity,
     seedPolishedDiamond,
+    seedPolishedPacket,
   };
 }
 

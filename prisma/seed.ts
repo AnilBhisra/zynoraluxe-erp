@@ -64,6 +64,8 @@ const SYSTEM_ACCOUNTS: AccountSeed[] = [
   },
   // Phase 6
   { code: SYSTEM_ACCOUNT_CODES.SALES_RETURNS, name: "Sales Returns", type: "INCOME" },
+  // Phase 7
+  { code: SYSTEM_ACCOUNT_CODES.BROKERAGE_EXPENSE, name: "Brokerage & Commission", type: "EXPENSE" },
   {
     code: SYSTEM_ACCOUNT_CODES.FINISHED_JEWELLERY_COGS,
     name: "Finished Jewellery COGS",

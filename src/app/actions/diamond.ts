@@ -8,6 +8,7 @@ import { requireOwner, requireUser } from "@/lib/auth/dal";
 import { getCompanyFySettings } from "@/lib/accounting/company";
 import { parseDateOnly } from "@/lib/accounting/financialYear";
 import * as diamondPosting from "@/lib/diamond/posting";
+import * as polishedPurchasePosting from "@/lib/diamond/polishedPurchase";
 import {
   deleteDiamondAsset,
   isDiamondStorageConfigured,
@@ -16,10 +17,12 @@ import {
 } from "@/lib/storage/diamondMedia";
 import {
   cancelJobSchema,
+  cancelPolishedPurchaseSchema,
   issueRoughSchema,
   markJobInProgressSchema,
   overridePolishedAllocationSchema,
   overrideRoughAllocationSchema,
+  polishedPurchaseSchema,
   receivePolishedSchema,
   recutPolishedSchema,
   roughPurchaseSchema,
@@ -518,6 +521,144 @@ export async function overridePolishedAllocationAction(
     if (error instanceof diamondPosting.PostingError) return { error: error.message };
     console.error("overridePolishedAllocationAction failed:", error);
     return { error: "Could not save this cost override. Please try again." };
+  }
+
+  revalidateDiamond();
+  return { success: true };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7 — direct Polished Diamond Purchase
+// ---------------------------------------------------------------------------
+
+export async function createPolishedPurchaseAction(
+  _prevState: DiamondFormState,
+  formData: FormData
+): Promise<DiamondFormState> {
+  const user = await requireUser();
+
+  const parsed = polishedPurchaseSchema.safeParse({
+    purchaseDate: formData.get("purchaseDate"),
+    supplierId: formData.get("supplierId"),
+    currencyCode: formData.get("currencyCode") || "INR",
+    exchangeRate: formData.get("exchangeRate") || "1",
+    supplierAmount: formData.get("supplierAmount"),
+    gstTreatment: formData.get("gstTreatment") || "NONE",
+    gstRateId: formData.get("gstRateId") || "",
+    gstRatePercent: formData.get("gstRatePercent") || undefined,
+    brokerPartyId: formData.get("brokerPartyId") || "",
+    brokerageMethod: formData.get("brokerageMethod") || undefined,
+    brokerageRate: formData.get("brokerageRate") || undefined,
+    brokerageTreatment: formData.get("brokerageTreatment") || "NONE",
+    paymentAccountId: formData.get("paymentAccountId") || "",
+    referenceNumber: formData.get("referenceNumber") || "",
+    notes: formData.get("notes") || "",
+    idempotencyKey: formData.get("idempotencyKey") || undefined,
+    lines: readJsonArray(formData, "linesJson"),
+  });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
+  }
+  const data = parsed.data;
+
+  const purchaseDate = safeParseDateOnly(data.purchaseDate);
+  if (!purchaseDate) return { error: "Enter a valid purchase date." };
+
+  const fy = await getCompanyFySettings();
+
+  if (data.idempotencyKey) {
+    const existing = await prisma.polishedPurchase.findUnique({ where: { idempotencyKey: data.idempotencyKey } });
+    if (existing) return { success: true, code: existing.purchaseCode };
+  }
+
+  try {
+    const purchase = await prisma.$transaction(
+      (tx) =>
+        polishedPurchasePosting.createPolishedPurchase(tx, {
+          fyStartMonth: fy.fyStartMonth,
+          fyStartDay: fy.fyStartDay,
+          purchaseDate,
+          supplierId: data.supplierId,
+          currencyCode: data.currencyCode,
+          exchangeRate: data.exchangeRate,
+          supplierAmount: data.supplierAmount,
+          gstTreatment: data.gstTreatment,
+          gstRateId: data.gstRateId || null,
+          gstRatePercent: data.gstRatePercent ?? null,
+          brokerPartyId: data.brokerPartyId || null,
+          brokerageMethod: data.brokerageMethod ?? null,
+          brokerageRate: data.brokerageRate ?? null,
+          brokerageTreatment: data.brokerageTreatment,
+          paymentAccountId: data.paymentAccountId || null,
+          referenceNumber: data.referenceNumber || null,
+          notes: data.notes || null,
+          idempotencyKey: data.idempotencyKey || null,
+          createdByUserId: user.id,
+          lines: data.lines.map((line) => ({
+            shape: line.shape,
+            customShapeName: line.customShapeName || null,
+            sizeLabel: line.sizeLabel,
+            measurements: line.measurements || null,
+            pieces: line.pieces,
+            carat: line.carat,
+            quality: line.quality || null,
+            colour: line.colour || null,
+            lab: line.lab || null,
+            certificateStatus: line.certificateStatus,
+            certNumber: line.certNumber || null,
+            certFileAssetId: line.certFileAssetId || null,
+            photoAssetId: line.photoAssetId || null,
+            rateBasis: line.rateBasis,
+            rate: line.rate,
+            manualLandedCost: line.manualLandedCost ?? null,
+            notes: line.notes || null,
+          })),
+        }),
+      { timeout: 20000 }
+    );
+    revalidateDiamond();
+    return { success: true, code: purchase.purchase.purchaseCode };
+  } catch (error) {
+    if (isIdempotencyConflict(error) && data.idempotencyKey) {
+      const existing = await prisma.polishedPurchase.findUnique({ where: { idempotencyKey: data.idempotencyKey } });
+      if (existing) return { success: true, code: existing.purchaseCode };
+    }
+    if (error instanceof polishedPurchasePosting.PostingError) return { error: error.message };
+    console.error("createPolishedPurchaseAction failed:", error);
+    return { error: "Could not save this polished purchase. Please try again." };
+  }
+}
+
+export async function cancelPolishedPurchaseAction(
+  _prevState: DiamondFormState,
+  formData: FormData
+): Promise<DiamondFormState> {
+  const user = await requireOwner();
+
+  const parsed = cancelPolishedPurchaseSchema.safeParse({
+    purchaseId: formData.get("purchaseId"),
+    cancellationReason: formData.get("cancellationReason"),
+  });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
+  }
+
+  const fy = await getCompanyFySettings();
+
+  try {
+    await prisma.$transaction((tx) =>
+      polishedPurchasePosting.cancelPolishedPurchase(tx, {
+        fyStartMonth: fy.fyStartMonth,
+        fyStartDay: fy.fyStartDay,
+        purchaseId: parsed.data.purchaseId,
+        cancelledByUserId: user.id,
+        cancellationReason: parsed.data.cancellationReason,
+      })
+    );
+  } catch (error) {
+    if (error instanceof polishedPurchasePosting.PostingError) return { error: error.message };
+    console.error("cancelPolishedPurchaseAction failed:", error);
+    return { error: "Could not cancel this polished purchase. Please try again." };
   }
 
   revalidateDiamond();

@@ -19,6 +19,15 @@ export type AvailablePolishedDiamondOption = {
   certificateStatus: string;
 };
 
+/** Phase 7 — a bulk polished packet with stock left to issue. */
+export type AvailablePacketOption = {
+  id: string;
+  packetCode: string;
+  label: string;
+  pieces: number;
+  carat: string;
+};
+
 type MetalLineDraft = { metalType: string; purityId: string; grossWeight: string };
 type OtherMaterialDraft = { description: string; quantity: string; unit: "PCS" | "CT" | "GRAM" | "OTHER"; weight: string; cost: string; note: string };
 
@@ -34,6 +43,7 @@ export function IssueMaterialsForm({
   jobCode,
   purities,
   availableDiamonds,
+  availablePackets = [],
   isOwner,
   onDone,
 }: {
@@ -41,6 +51,7 @@ export function IssueMaterialsForm({
   jobCode: string;
   purities: PurityOption[];
   availableDiamonds: AvailablePolishedDiamondOption[];
+  availablePackets?: AvailablePacketOption[];
   isOwner: boolean;
   onDone?: () => void;
 }) {
@@ -48,6 +59,7 @@ export function IssueMaterialsForm({
   const [metalLines, setMetalLines] = useState<MetalLineDraft[]>([emptyMetalLine()]);
   const [selectedDiamondIds, setSelectedDiamondIds] = useState<string[]>([]);
   const [diamondSearch, setDiamondSearch] = useState("");
+  const [packetDrafts, setPacketDrafts] = useState<Record<string, { pieces: string; carat: string }>>({});
   const [showOtherMaterial, setShowOtherMaterial] = useState(false);
   const [otherMaterialLines, setOtherMaterialLines] = useState<OtherMaterialDraft[]>([]);
   const [idempotencyKey] = useState(() => crypto.randomUUID());
@@ -86,6 +98,26 @@ export function IssueMaterialsForm({
     setSelectedDiamondIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
 
+  const packetLinesForSubmit = availablePackets
+    .map((p) => ({ packet: p, draft: packetDrafts[p.id] }))
+    .filter(({ draft }) => draft && (Number(draft.pieces) > 0 || Number(draft.carat) > 0))
+    .map(({ packet, draft }) => ({ packetId: packet.id, pieces: draft.pieces || "0", carat: draft.carat || "0" }));
+  const packetProblems = availablePackets
+    .map((p) => {
+      const draft = packetDrafts[p.id];
+      if (!draft || (!Number(draft.pieces) && !Number(draft.carat))) return null;
+      const pieces = Number(draft.pieces) || 0;
+      const carat = Number(draft.carat) || 0;
+      if (pieces > p.pieces || carat > Number(p.carat)) return `${p.packetCode}: only ${p.pieces} pcs / ${p.carat}ct available.`;
+      if (!(carat > 0)) return `${p.packetCode}: enter the carat being issued.`;
+      if ((pieces === p.pieces) !== (carat.toFixed(3) === Number(p.carat).toFixed(3))) {
+        return `${p.packetCode}: taking every piece must also take every carat (and the reverse).`;
+      }
+      return null;
+    })
+    .filter((m): m is string => m !== null);
+  const packetCarat = packetLinesForSubmit.reduce((sum, l) => sum + (Number(l.carat) || 0), 0);
+
   const totalGrossWeight = metalLines.reduce((sum, l) => sum + (Number(l.grossWeight) || 0), 0);
   const selectedDiamondsCarat = availableDiamonds
     .filter((d) => selectedDiamondIds.includes(d.id))
@@ -93,14 +125,24 @@ export function IssueMaterialsForm({
 
   function confirmBeforeSubmit(event: React.FormEvent<HTMLFormElement>) {
     const validMetalLines = metalLines.filter((l) => l.purityId && Number(l.grossWeight) > 0);
-    if (validMetalLines.length === 0 && selectedDiamondIds.length === 0 && otherMaterialLines.length === 0) {
-      window.alert("Issue at least one metal line, diamond, or other material.");
+    if (packetProblems.length > 0) {
+      window.alert(packetProblems[0]);
+      event.preventDefault();
+      return;
+    }
+    if (
+      validMetalLines.length === 0 &&
+      selectedDiamondIds.length === 0 &&
+      packetLinesForSubmit.length === 0 &&
+      otherMaterialLines.length === 0
+    ) {
+      window.alert("Issue at least one metal line, diamond, packet, or other material.");
       event.preventDefault();
       return;
     }
     if (
       !window.confirm(
-        `Issue materials to job ${jobCode}? Metal: ${totalGrossWeight.toFixed(3)}g, Diamonds: ${selectedDiamondIds.length} (${selectedDiamondsCarat.toFixed(3)}ct).`
+        `Issue materials to job ${jobCode}? Metal: ${totalGrossWeight.toFixed(3)}g, Diamonds: ${selectedDiamondIds.length} (${selectedDiamondsCarat.toFixed(3)}ct), Packets: ${packetLinesForSubmit.length} (${packetCarat.toFixed(3)}ct).`
       )
     ) {
       event.preventDefault();
@@ -133,6 +175,7 @@ export function IssueMaterialsForm({
       <input type="hidden" name="idempotencyKey" value={idempotencyKey} />
       <input type="hidden" name="metalLinesJson" value={JSON.stringify(metalLinesForSubmit)} />
       <input type="hidden" name="polishedDiamondIdsJson" value={JSON.stringify(selectedDiamondIds)} />
+      <input type="hidden" name="packetLinesJson" value={JSON.stringify(packetLinesForSubmit)} />
       <input type="hidden" name="otherMaterialLinesJson" value={JSON.stringify(otherMaterialForSubmit)} />
 
       {state?.error ? <Alert tone="error">{state.error}</Alert> : null}
@@ -235,6 +278,63 @@ export function IssueMaterialsForm({
           </div>
         )}
       </div>
+
+      {availablePackets.length > 0 ? (
+        <div className="flex flex-col gap-2">
+          <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+            Polished Diamond packets ({packetLinesForSubmit.length} selected, {packetCarat.toFixed(3)}ct)
+          </h3>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">Enter the pieces and carat taken from each packet.</p>
+          <div className="max-h-64 overflow-auto rounded-lg border border-[var(--border)]">
+            <table className="w-full min-w-[32rem] text-sm">
+              <tbody className="divide-y divide-[var(--border)]">
+                {availablePackets.map((p) => {
+                  const draft = packetDrafts[p.id] ?? { pieces: "", carat: "" };
+                  const setDraft = (patch: Partial<{ pieces: string; carat: string }>) =>
+                    setPacketDrafts((prev) => ({ ...prev, [p.id]: { ...draft, ...patch } }));
+                  return (
+                    <tr key={p.id}>
+                      <td className="px-3 py-2">
+                        <p className="font-medium text-zinc-800 dark:text-zinc-200">{p.packetCode}</p>
+                        <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                          {p.label} · {p.pieces} pcs · {p.carat}ct available
+                        </p>
+                      </td>
+                      <td className="px-2 py-2">
+                        <input
+                          aria-label={`Pieces from ${p.packetCode}`}
+                          type="number"
+                          min="0"
+                          step="1"
+                          placeholder="Pieces"
+                          value={draft.pieces}
+                          onChange={(e) => setDraft({ pieces: e.target.value })}
+                          className="h-9 w-24 rounded-lg border border-zinc-300 bg-white px-2 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
+                        />
+                      </td>
+                      <td className="px-2 py-2">
+                        <input
+                          aria-label={`Carat from ${p.packetCode}`}
+                          type="number"
+                          min="0"
+                          step="0.001"
+                          placeholder="Carat"
+                          value={draft.carat}
+                          onChange={(e) => setDraft({ carat: e.target.value })}
+                          className="h-9 w-28 rounded-lg border border-zinc-300 bg-white px-2 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {packetProblems.length > 0 ? (
+            <p className="text-xs font-medium text-amber-700 dark:text-amber-400">{packetProblems[0]}</p>
+          ) : null}
+        </div>
+      ) : null}
 
       <div>
         <button

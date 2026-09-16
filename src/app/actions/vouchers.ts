@@ -494,6 +494,19 @@ export async function cancelVoucherAction(
     }
   }
   if (target?.voucherType === "PURCHASE") {
+    // Phase 7: a direct Polished Diamond Purchase also posts as a plain
+    // "PURCHASE" voucher, and its cancellation must also reverse every
+    // packet's PURCHASE_IN movement (and refuse once any stone has left a
+    // packet) — only cancelPolishedPurchaseAction does that atomically.
+    const polishedPurchase = await prisma.polishedPurchase.findUnique({
+      where: { voucherId: parsed.data.voucherId },
+      select: { id: true },
+    });
+    if (polishedPurchase) {
+      return {
+        error: "This is a Polished Diamond Purchase — cancel it from the Diamond page's Polished Diamond tab instead, so packet stock stays in sync.",
+      };
+    }
     const roughLot = await prisma.roughLot.findUnique({
       where: { voucherId: parsed.data.voucherId },
       include: { pieces: { select: { costLocked: true } } },

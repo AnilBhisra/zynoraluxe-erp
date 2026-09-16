@@ -7,7 +7,7 @@ const STATE_CODE_PATTERN = /^[0-9]{2}$/;
 
 export const partySchema = z.object({
   name: z.string().trim().min(2, "Name must be at least 2 characters.").max(200),
-  type: z.enum(["CUSTOMER", "SUPPLIER", "KARIGAR"]),
+  type: z.enum(["CUSTOMER", "SUPPLIER", "KARIGAR", "BROKER", "MANUFACTURER"]),
   phone: z
     .string()
     .trim()
