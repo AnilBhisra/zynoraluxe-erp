@@ -20,7 +20,7 @@ export function OverrideRoughAllocationForm({
 }) {
   const [state, formAction, pending] = useActionState(overrideRoughAllocationAction, undefined);
   const [costs, setCosts] = useState<Record<string, string>>(
-    Object.fromEntries(lot.pieces.map((p) => [p.id, p.allocatedCost]))
+    Object.fromEntries(lot.pieces.map((p) => [p.id, p.allocatedCost ?? ""]))
   );
   const [reason, setReason] = useState("");
 

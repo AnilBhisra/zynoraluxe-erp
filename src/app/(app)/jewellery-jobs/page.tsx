@@ -16,6 +16,7 @@ import {
 } from "@/lib/jewellery/reports";
 import { listPolishedDiamonds } from "@/lib/diamond/reports";
 import { resolveJewelleryAssetUrl } from "@/lib/storage/jewelleryMedia";
+import { ownerOnly } from "@/lib/security/ownerOnly";
 import { JobsTab, type SerializedJewelleryJob } from "@/components/jewellery/JobsTab";
 import { JobDetailView, type SerializedJobDetail } from "@/components/jewellery/JobDetailView";
 import { MetalStockTab, type SerializedMetalStockBucket, type SerializedMetalPurchase } from "@/components/jewellery/MetalStockTab";
@@ -29,6 +30,11 @@ import type { FinishedJewelleryStockStatus, JewelleryJobStatus } from "@/generat
 export const metadata: Metadata = {
   title: "Jewellery Jobs · ZYNORALUXE",
 };
+
+// Every cost / carrying-value / Karigar-payable figure below goes through
+// ownerOnly() on the server: a Staff request's RSC payload must not carry
+// those values at all, not merely have them hidden by the client
+// components (PHASE_7_CURRENT_STATE_AUDIT.md §4.16).
 
 type SearchParams = {
   tab?: string;
@@ -144,7 +150,7 @@ async function JobsTabContent({
       polishedCode: d.polishedCode,
       shape: d.shape,
       carat: d.carat.toFixed(3),
-      allocatedCost: d.allocatedCost.toFixed(2),
+      allocatedCost: ownerOnly(isOwner, d.allocatedCost.toFixed(2)),
       certificateStatus: d.certificateStatus,
     }));
 
@@ -168,18 +174,24 @@ async function JobsTabContent({
       targetPurityDisplayName: detail.targetPurityDisplayName,
       targetFinishedWeight: detail.targetFinishedWeight ? detail.targetFinishedWeight.toFixed(3) : null,
       issuedMetalFineWeight: detail.issuedMetalFineWeight.toFixed(3),
-      issuedMetalCost: detail.issuedMetalCost.toFixed(2),
-      issuedDiamondCost: detail.issuedDiamondCost.toFixed(2),
-      otherMaterialCost: detail.otherMaterialCost.toFixed(2),
-      remainingWipCost: detail.remainingWipCost.toFixed(2),
-      totalLabourCharge: detail.totalLabourCharge.toFixed(2),
+      issuedMetalCost: ownerOnly(isOwner, detail.issuedMetalCost.toFixed(2)),
+      issuedDiamondCost: ownerOnly(isOwner, detail.issuedDiamondCost.toFixed(2)),
+      otherMaterialCost: ownerOnly(isOwner, detail.otherMaterialCost.toFixed(2)),
+      remainingWipCost: ownerOnly(isOwner, detail.remainingWipCost.toFixed(2)),
+      totalLabourCharge: ownerOnly(isOwner, detail.totalLabourCharge.toFixed(2)),
       receivedFineWeight: detail.receivedFineWeight.toFixed(3),
       returnedMetalFineWeight: detail.returnedMetalFineWeight.toFixed(3),
       scrapFineWeight: detail.scrapFineWeight.toFixed(3),
       karigarAddedFineWeight: detail.karigarAddedFineWeight.toFixed(3),
-      karigarAddedCost: detail.karigarAddedCost.toFixed(2),
+      karigarAddedCost: ownerOnly(isOwner, detail.karigarAddedCost.toFixed(2)),
+      issuedAlloyGrossWeight: detail.issuedAlloyGrossWeight.toFixed(3),
+      issuedAlloyCost: ownerOnly(isOwner, detail.issuedAlloyCost.toFixed(2)),
+      consumedAlloyGrossWeight: detail.consumedAlloyGrossWeight.toFixed(3),
+      returnedAlloyGrossWeight: detail.returnedAlloyGrossWeight.toFixed(3),
+      remainingAlloyWipCost: ownerOnly(isOwner, detail.remainingAlloyWipCost.toFixed(2)),
+      alloyPendingGrossWeight: detail.alloyPendingGrossWeight.toFixed(3),
       pendingFineWeight: detail.pendingFineWeight.toFixed(3),
-      totalIssuedCost: detail.totalIssuedCost.toFixed(2),
+      totalIssuedCost: ownerOnly(isOwner, detail.totalIssuedCost.toFixed(2)),
       cancellationReason: detail.cancellationReason,
       isCompleted: detail.isCompleted,
       finalMetalLossFineWeight: detail.finalMetalLossFineWeight ? detail.finalMetalLossFineWeight.toFixed(3) : null,
@@ -188,9 +200,11 @@ async function JobsTabContent({
         metalType: l.metalType,
         purityId: l.purityId,
         purityDisplayName: l.purityDisplayName,
+        finenessPercentSnapshot: l.finenessPercentSnapshot.toFixed(3),
+        isAlloy: l.isAlloy,
         grossWeight: l.grossWeight.toFixed(3),
         fineWeight: l.fineWeight.toFixed(3),
-        costValue: l.costValue.toFixed(2),
+        costValue: ownerOnly(isOwner, l.costValue.toFixed(2)),
       })),
       diamondLines: detail.diamondLines.map((l) => ({
         id: l.id,
@@ -198,7 +212,7 @@ async function JobsTabContent({
         polishedCode: l.polishedCode,
         shape: l.shape,
         carat: l.carat.toFixed(3),
-        costAtIssue: l.costAtIssue.toFixed(2),
+        costAtIssue: ownerOnly(isOwner, l.costAtIssue.toFixed(2)),
         resolvedAs: l.resolvedAs,
       })),
       otherMaterialLines: detail.otherMaterialLines.map((l) => ({
@@ -207,7 +221,7 @@ async function JobsTabContent({
         quantity: l.quantity.toFixed(3),
         unit: l.unit,
         weight: l.weight ? l.weight.toFixed(3) : null,
-        cost: l.cost.toFixed(2),
+        cost: ownerOnly(isOwner, l.cost.toFixed(2)),
         note: l.note,
       })),
       receipts: detail.receipts.map((r) => ({
@@ -218,11 +232,14 @@ async function JobsTabContent({
         scrapFineWeight: r.scrapFineWeight.toFixed(3),
         processLossFineWeight: r.processLossFineWeight.toFixed(3),
         isAbnormalLoss: r.isAbnormalLoss,
-        labourCharge: r.labourCharge.toFixed(2),
-        makingCharge: r.makingCharge.toFixed(2),
-        settingCharge: r.settingCharge.toFixed(2),
-        platingCharge: r.platingCharge.toFixed(2),
-        otherExpense: r.otherExpense.toFixed(2),
+        alloyAddedWeight: r.companyAlloyGrossWeight.plus(r.karigarAlloyGrossWeight).plus(r.includedAlloyGrossWeight).toFixed(3),
+        returnedAlloyGrossWeight: r.returnedAlloyGrossWeight.toFixed(3),
+        totalCharges: ownerOnly(
+          isOwner,
+          r.labourCharge.plus(r.makingCharge).plus(r.settingCharge).plus(r.platingCharge).plus(r.otherExpense).toFixed(2)
+        ),
+        karigarAlloyCost: ownerOnly(isOwner, r.karigarAlloyCost.toFixed(2)),
+        unabsorbedCost: ownerOnly(isOwner, r.unabsorbedCost.toFixed(2)),
       })),
       finishedOutputs: await Promise.all(
         detail.finishedOutputs.map(async (f) => ({
@@ -233,7 +250,11 @@ async function JobsTabContent({
           quantity: f.quantity,
           netMetalWeight: f.netMetalWeight.toFixed(3),
           fineMetalWeight: f.fineMetalWeight.toFixed(3),
-          totalCost: f.totalCost.toFixed(2),
+          purityDisplayName: f.purityDisplayName,
+          sourcePurityDisplayName: f.sourcePurityDisplayName,
+          alloyAddedWeight: f.alloyAddedWeight.toFixed(3),
+          alloyCost: ownerOnly(isOwner, f.alloyCost.toFixed(2)),
+          totalCost: ownerOnly(isOwner, f.totalCost.toFixed(2)),
           qcStatus: f.qcStatus,
           photoUrl: await resolveJewelleryAssetUrl(f.photoAssetId),
         }))
@@ -242,7 +263,7 @@ async function JobsTabContent({
         id: m.id,
         type: m.type,
         detail: m.detail,
-        costValue: m.costValue.toFixed(2),
+        costValue: ownerOnly(isOwner, m.costValue.toFixed(2)),
         sourceDocument: m.sourceDocument,
         createdAt: m.createdAt.toISOString(),
       })),
@@ -281,7 +302,7 @@ async function JobsTabContent({
     status: j.status,
     issuedMetalFineWeight: j.issuedMetalFineWeight.toFixed(3),
     pendingFineWeight: j.pendingFineWeight.toFixed(3),
-    totalIssuedCost: j.totalIssuedCost.toFixed(2),
+    totalIssuedCost: ownerOnly(isOwner, j.totalIssuedCost.toFixed(2)),
   }));
 
   return (
@@ -334,7 +355,10 @@ async function MetalTabContent({ search, isOwner }: { search: string; isOwner: b
     purityDisplayName: b.purityDisplayName,
     grossWeight: b.grossWeight.toFixed(3),
     fineWeight: b.fineWeight.toFixed(3),
-    costValue: b.costValue.toFixed(2),
+    costValue: ownerOnly(isOwner, b.costValue.toFixed(2)),
+    scrapGrossWeight: b.scrapGrossWeight.toFixed(3),
+    scrapFineWeight: b.scrapFineWeight.toFixed(3),
+    scrapCostValue: ownerOnly(isOwner, b.scrapCostValue.toFixed(2)),
   }));
 
   const serializedPurchases: SerializedMetalPurchase[] = purchases.map((p) => ({
@@ -346,7 +370,7 @@ async function MetalTabContent({ search, isOwner }: { search: string; isOwner: b
     purityDisplayName: p.purityDisplayName,
     grossWeight: p.grossWeight.toFixed(3),
     fineWeight: p.fineWeight.toFixed(3),
-    totalPurchaseCost: p.totalPurchaseCost.toFixed(2),
+    totalPurchaseCost: ownerOnly(isOwner, p.totalPurchaseCost.toFixed(2)),
   }));
 
   return (

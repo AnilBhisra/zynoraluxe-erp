@@ -91,6 +91,15 @@ const STARTER_METAL_PURITIES: { metalType: "GOLD" | "SILVER" | "PLATINUM"; displ
   { metalType: "PLATINUM", displayName: "950 Platinum", finenessPercent: "95.000" },
 ];
 
+// Phase 7 additions. Created ONLY when missing and never updated, so an
+// Owner edit (e.g. a corrected fineness) is never silently reverted by a
+// re-run — unlike STARTER_METAL_PURITIES above, which upserts.
+const PHASE7_METAL_PURITIES: { metalType: "GOLD" | "ALLOY"; displayName: string; finenessPercent: string }[] = [
+  { metalType: "GOLD", displayName: "9K", finenessPercent: "37.500" },
+  // Company-owned alloy stock: real weight and cost, zero precious metal.
+  { metalType: "ALLOY", displayName: "Copper/Alloy", finenessPercent: "0.000" },
+];
+
 // Starter GST rate choices, editable/extendable by the Owner. These are
 // common examples seen in the Indian jewellery trade, NOT a legal
 // determination of what rate applies to any given transaction — see
@@ -164,6 +173,24 @@ async function seedMetalPurityMaster(prisma: PrismaClient, ownerId: string) {
     });
   }
   console.log(`Metal/Purity master ready: ${STARTER_METAL_PURITIES.length} starter purities.`);
+
+  let phase7Created = 0;
+  for (const purity of PHASE7_METAL_PURITIES) {
+    const existing = await prisma.metalPurity.findUnique({
+      where: { metalType_displayName: { metalType: purity.metalType, displayName: purity.displayName } },
+    });
+    if (existing) continue;
+    await prisma.metalPurity.create({
+      data: {
+        metalType: purity.metalType,
+        displayName: purity.displayName,
+        finenessPercent: purity.finenessPercent,
+        createdByUserId: ownerId,
+      },
+    });
+    phase7Created += 1;
+  }
+  console.log(`Phase 7 purities ready: ${phase7Created} created, ${PHASE7_METAL_PURITIES.length - phase7Created} already present.`);
 }
 
 async function main() {

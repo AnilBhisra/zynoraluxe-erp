@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { Decimal, round2, ZERO } from "@/lib/accounting/money";
 import { round3 } from "@/lib/diamond/allocation";
 import { getAuthoritativeInventoryCost } from "@/lib/jewellery/finishedSalesPosting";
+import { sumMetalPool } from "@/lib/jewellery/posting";
 import type {
   FinishedJewelleryStockStatus,
   JewelleryJobStatus,
@@ -25,10 +26,11 @@ export async function listMetalPurities(includeInactive = false) {
 
 // ---------------------------------------------------------------------------
 // Metal Stock (fungible — derived from immutable movements, never a
-// manually-editable balance)
+// manually-editable balance). Two pools per metal+purity: usable stock
+// (issuable, valued in 1300) and recoverable scrap (valued in 1310) — see
+// METAL_POOL_EFFECT in src/lib/jewellery/metalMath.ts for why CONSUMED_OUT
+// changes neither.
 // ---------------------------------------------------------------------------
-
-const OUT_TYPES = new Set(["ISSUE_OUT", "CONSUMED_OUT", "ADJUSTMENT_OUT"]);
 
 export type MetalStockBucket = {
   metalType: MetalType;
@@ -38,6 +40,9 @@ export type MetalStockBucket = {
   grossWeight: Decimal;
   fineWeight: Decimal;
   costValue: Decimal;
+  scrapGrossWeight: Decimal;
+  scrapFineWeight: Decimal;
+  scrapCostValue: Decimal;
 };
 
 export async function getMetalStockSummary(): Promise<MetalStockBucket[]> {
@@ -46,32 +51,32 @@ export async function getMetalStockSummary(): Promise<MetalStockBucket[]> {
     select: { type: true, metalType: true, purityId: true, grossWeight: true, fineWeight: true, costValue: true },
   });
 
-  const buckets = new Map<string, { grossWeight: Decimal; fineWeight: Decimal; costValue: Decimal }>();
+  const movementsByPurity = new Map<string, typeof movements>();
   for (const m of movements) {
-    const key = m.purityId;
-    const sign = OUT_TYPES.has(m.type) ? -1 : 1;
-    const existing = buckets.get(key) ?? { grossWeight: ZERO, fineWeight: ZERO, costValue: ZERO };
-    buckets.set(key, {
-      grossWeight: existing.grossWeight.plus(new Decimal(m.grossWeight).times(sign)),
-      fineWeight: existing.fineWeight.plus(new Decimal(m.fineWeight).times(sign)),
-      costValue: existing.costValue.plus(new Decimal(m.costValue).times(sign)),
-    });
+    const list = movementsByPurity.get(m.purityId) ?? [];
+    list.push(m);
+    movementsByPurity.set(m.purityId, list);
   }
 
   return purities
     .map((p) => {
-      const bucket = buckets.get(p.id) ?? { grossWeight: ZERO, fineWeight: ZERO, costValue: ZERO };
+      const purityMovements = movementsByPurity.get(p.id) ?? [];
+      const usable = sumMetalPool(purityMovements, "usable");
+      const scrap = sumMetalPool(purityMovements, "scrap");
       return {
         metalType: p.metalType,
         purityId: p.id,
         purityDisplayName: p.displayName,
         finenessPercent: new Decimal(p.finenessPercent),
-        grossWeight: round3(bucket.grossWeight),
-        fineWeight: round3(bucket.fineWeight),
-        costValue: round2(bucket.costValue),
+        grossWeight: usable.grossWeight,
+        fineWeight: usable.fineWeight,
+        costValue: usable.costValue,
+        scrapGrossWeight: scrap.grossWeight,
+        scrapFineWeight: scrap.fineWeight,
+        scrapCostValue: scrap.costValue,
       };
     })
-    .filter((b) => !b.grossWeight.isZero() || !b.fineWeight.isZero());
+    .filter((b) => !b.grossWeight.isZero() || !b.costValue.isZero() || !b.scrapGrossWeight.isZero());
 }
 
 export async function getMetalStockTotals(): Promise<{ totalGrossWeight: Decimal; totalFineWeight: Decimal; totalCost: Decimal }> {
@@ -216,6 +221,13 @@ export type JewelleryJobDetail = JewelleryJobRow & {
   scrapFineWeight: Decimal;
   karigarAddedFineWeight: Decimal;
   karigarAddedCost: Decimal;
+  // Phase 7 — Company Copper/Alloy pool (gross weight).
+  issuedAlloyGrossWeight: Decimal;
+  issuedAlloyCost: Decimal;
+  consumedAlloyGrossWeight: Decimal;
+  returnedAlloyGrossWeight: Decimal;
+  remainingAlloyWipCost: Decimal;
+  alloyPendingGrossWeight: Decimal;
   cancelledAt: Date | null;
   cancellationReason: string | null;
   isCompleted: boolean;
@@ -225,6 +237,8 @@ export type JewelleryJobDetail = JewelleryJobRow & {
     metalType: MetalType;
     purityId: string;
     purityDisplayName: string;
+    finenessPercentSnapshot: Decimal;
+    isAlloy: boolean;
     grossWeight: Decimal;
     fineWeight: Decimal;
     costValue: Decimal;
@@ -260,6 +274,13 @@ export type JewelleryJobDetail = JewelleryJobRow & {
     settingCharge: Decimal;
     platingCharge: Decimal;
     otherExpense: Decimal;
+    companyAlloyGrossWeight: Decimal;
+    karigarAlloyGrossWeight: Decimal;
+    karigarAlloyCost: Decimal;
+    includedAlloyGrossWeight: Decimal;
+    returnedAlloyGrossWeight: Decimal;
+    alloyLossGrossWeight: Decimal;
+    unabsorbedCost: Decimal;
   }[];
   finishedOutputs: {
     id: string;
@@ -269,6 +290,11 @@ export type JewelleryJobDetail = JewelleryJobRow & {
     quantity: number;
     netMetalWeight: Decimal;
     fineMetalWeight: Decimal;
+    purityDisplayName: string;
+    finenessPercentSnapshot: Decimal;
+    sourcePurityDisplayName: string | null;
+    alloyAddedWeight: Decimal;
+    alloyCost: Decimal;
     totalCost: Decimal;
     qcStatus: QcStatus;
     photoAssetId: string | null;
@@ -315,7 +341,7 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
         diamondIssueLines: { include: { polishedDiamond: true } },
         otherMaterialLines: true,
         receipts: { orderBy: { receiveDate: "asc" } },
-        finishedJewellery: true,
+        finishedJewellery: { include: { purity: true } },
       },
     }),
     prisma.metalStockMovement.findMany({
@@ -380,6 +406,14 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
     scrapFineWeight: round3(job.scrapFineWeight),
     karigarAddedFineWeight: round3(job.karigarAddedFineWeight),
     karigarAddedCost: round2(job.karigarAddedCost),
+    issuedAlloyGrossWeight: round3(job.issuedAlloyGrossWeight),
+    issuedAlloyCost: round2(job.issuedAlloyCost),
+    consumedAlloyGrossWeight: round3(job.consumedAlloyGrossWeight),
+    returnedAlloyGrossWeight: round3(job.returnedAlloyGrossWeight),
+    remainingAlloyWipCost: round2(job.remainingAlloyWipCost),
+    alloyPendingGrossWeight: round3(
+      new Decimal(job.issuedAlloyGrossWeight).minus(job.consumedAlloyGrossWeight).minus(job.returnedAlloyGrossWeight)
+    ),
     pendingFineWeight: pendingFineWeightOf(job),
     totalIssuedCost: round2(new Decimal(job.issuedMetalCost).plus(job.issuedDiamondCost).plus(job.otherMaterialCost)),
     cancelledAt: job.cancelledAt,
@@ -395,6 +429,8 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
       metalType: l.metalType,
       purityId: l.purityId,
       purityDisplayName: l.purity.displayName,
+      finenessPercentSnapshot: new Decimal(l.finenessPercentSnapshot),
+      isAlloy: l.metalType === "ALLOY",
       grossWeight: round3(l.grossWeight),
       fineWeight: round3(l.fineWeight),
       costValue: round2(l.costValue),
@@ -430,6 +466,13 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
       settingCharge: round2(r.settingCharge),
       platingCharge: round2(r.platingCharge),
       otherExpense: round2(r.otherExpense),
+      companyAlloyGrossWeight: round3(r.companyAlloyGrossWeight),
+      karigarAlloyGrossWeight: round3(r.karigarAlloyGrossWeight),
+      karigarAlloyCost: round2(r.karigarAlloyCost),
+      includedAlloyGrossWeight: round3(r.includedAlloyGrossWeight),
+      returnedAlloyGrossWeight: round3(r.returnedAlloyGrossWeight),
+      alloyLossGrossWeight: round3(r.alloyLossGrossWeight),
+      unabsorbedCost: round2(r.unabsorbedCost),
     })),
     finishedOutputs: job.finishedJewellery.map((f) => ({
       id: f.id,
@@ -439,6 +482,11 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
       quantity: f.quantity,
       netMetalWeight: round3(f.netMetalWeight),
       fineMetalWeight: round3(f.fineMetalWeight),
+      purityDisplayName: f.purity.displayName,
+      finenessPercentSnapshot: new Decimal(f.finenessPercentSnapshot),
+      sourcePurityDisplayName: f.sourcePurityDisplayNameSnapshot,
+      alloyAddedWeight: round3(f.alloyAddedWeight),
+      alloyCost: round2(f.alloyCost),
       totalCost: round2(f.totalCost),
       qcStatus: f.qcStatus,
       photoAssetId: f.photoAssetId,

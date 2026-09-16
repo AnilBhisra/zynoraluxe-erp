@@ -16,7 +16,8 @@ export type AvailablePieceOption = {
   roughCode: string;
   lotCode: string | null;
   carat: string;
-  allocatedCost: string;
+  /** Owner-only — null for Staff (redacted on the server). */
+  allocatedCost: string | null;
 };
 
 export function IssueRoughForm({

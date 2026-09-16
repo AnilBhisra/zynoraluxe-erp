@@ -20,6 +20,7 @@ import {
 } from "@/lib/accounting/posting";
 import { cancelVoucher } from "@/lib/accounting/posting";
 import { allocateProportionally, round3 } from "@/lib/diamond/allocation";
+import { computeOutputMetal, formatThousandths, METAL_POOL_EFFECT, type MetalStockMovementKind } from "@/lib/jewellery/metalMath";
 import { nextJewelleryCode } from "@/lib/jewellery/numbering";
 
 export { PostingError };
@@ -31,26 +32,47 @@ type FyInput = { fyStartMonth: number; fyStartDay: number };
 // Metal stock balance (weighted-average cost per fungible metal+purity bucket)
 // ---------------------------------------------------------------------------
 
-export async function getMetalStockBalanceInTx(
-  tx: Tx,
-  metalType: MetalType,
-  purityId: string
-): Promise<{ grossWeight: Decimal; fineWeight: Decimal; costValue: Decimal }> {
-  const movements = await tx.metalStockMovement.findMany({
-    where: { metalType, purityId },
-    select: { type: true, grossWeight: true, fineWeight: true, costValue: true },
-  });
-  const OUT_TYPES = new Set(["ISSUE_OUT", "CONSUMED_OUT", "ADJUSTMENT_OUT"]);
+type MetalPoolTotals = { grossWeight: Decimal; fineWeight: Decimal; costValue: Decimal };
+
+/**
+ * Sums immutable movements into ONE of the two pools kept per metal+purity,
+ * using METAL_POOL_EFFECT (src/lib/jewellery/metalMath.ts). The usable pool
+ * is what can be issued and what 1300 Metal Inventory values; the scrap pool
+ * is valued in 1310 Scrap Metal Inventory. CONSUMED_OUT touches neither.
+ */
+export function sumMetalPool(
+  movements: { type: string; grossWeight: DecimalInput; fineWeight: DecimalInput; costValue: DecimalInput }[],
+  pool: "usable" | "scrap"
+): MetalPoolTotals {
   let grossWeight = ZERO;
   let fineWeight = ZERO;
   let costValue = ZERO;
   for (const m of movements) {
-    const sign = OUT_TYPES.has(m.type) ? -1 : 1;
+    const sign = METAL_POOL_EFFECT[m.type as MetalStockMovementKind]?.[pool] ?? 0;
+    if (sign === 0) continue;
     grossWeight = grossWeight.plus(new Decimal(m.grossWeight).times(sign));
     fineWeight = fineWeight.plus(new Decimal(m.fineWeight).times(sign));
     costValue = costValue.plus(new Decimal(m.costValue).times(sign));
   }
   return { grossWeight: round3(grossWeight), fineWeight: round3(fineWeight), costValue: round2(costValue) };
+}
+
+/** Usable (issuable) stock of one metal+purity. */
+export async function getMetalStockBalanceInTx(tx: Tx, metalType: MetalType, purityId: string): Promise<MetalPoolTotals> {
+  const movements = await tx.metalStockMovement.findMany({
+    where: { metalType, purityId },
+    select: { type: true, grossWeight: true, fineWeight: true, costValue: true },
+  });
+  return sumMetalPool(movements, "usable");
+}
+
+/** Recoverable scrap of one metal+purity — never issuable (see sumMetalPool). */
+export async function getScrapMetalBalanceInTx(tx: Tx, metalType: MetalType, purityId: string): Promise<MetalPoolTotals> {
+  const movements = await tx.metalStockMovement.findMany({
+    where: { metalType, purityId },
+    select: { type: true, grossWeight: true, fineWeight: true, costValue: true },
+  });
+  return sumMetalPool(movements, "scrap");
 }
 
 /** How much fine weight of ONE purity is still outstanding *with the
@@ -455,8 +477,16 @@ export async function issueMaterialsToJewelleryJob(
   }
 
   // ---- Validate + resolve metal lines against real stock ----
+  // Phase 7: Company Copper/Alloy (MetalType ALLOY, 0% fineness) is issued
+  // through the same metal lines, but tracked in its own GROSS-weight cost
+  // pool — it never enters the fine-weight WIP pool that receipts drain by
+  // fine weight.
   let issuedMetalFineWeight = ZERO;
   let issuedMetalCost = ZERO;
+  let fineBearingMetalCost = ZERO;
+  let issuedAlloyGrossWeight = ZERO;
+  let issuedAlloyCost = ZERO;
+  let alloyPurityId: string | null = null;
   const resolvedMetalLines: {
     metalType: MetalType;
     purityId: string;
@@ -474,6 +504,13 @@ export async function issueMaterialsToJewelleryJob(
     const purity = await tx.metalPurity.findUnique({ where: { id: line.purityId } });
     if (!purity || !purity.isActive || purity.metalType !== line.metalType) {
       throw new PostingError("One of the selected metal purities was not found or is inactive.");
+    }
+    const isAlloy = purity.metalType === "ALLOY";
+    if (isAlloy) {
+      if (alloyPurityId && alloyPurityId !== line.purityId) {
+        throw new PostingError("Issue Company Copper/Alloy from one alloy purity per job.");
+      }
+      alloyPurityId = line.purityId;
     }
     const balance = await getMetalStockBalanceInTx(tx, line.metalType, line.purityId);
     if (grossWeight.greaterThan(balance.grossWeight)) {
@@ -496,11 +533,20 @@ export async function issueMaterialsToJewelleryJob(
       fineWeight,
       costValue,
     });
-    issuedMetalFineWeight = issuedMetalFineWeight.plus(fineWeight);
     issuedMetalCost = issuedMetalCost.plus(costValue);
+    if (isAlloy) {
+      issuedAlloyGrossWeight = issuedAlloyGrossWeight.plus(grossWeight);
+      issuedAlloyCost = issuedAlloyCost.plus(costValue);
+    } else {
+      issuedMetalFineWeight = issuedMetalFineWeight.plus(fineWeight);
+      fineBearingMetalCost = fineBearingMetalCost.plus(costValue);
+    }
   }
   issuedMetalFineWeight = round3(issuedMetalFineWeight);
   issuedMetalCost = round2(issuedMetalCost);
+  fineBearingMetalCost = round2(fineBearingMetalCost);
+  issuedAlloyGrossWeight = round3(issuedAlloyGrossWeight);
+  issuedAlloyCost = round2(issuedAlloyCost);
 
   // ---- Validate diamonds: must be Available, never double-issued ----
   const diamonds =
@@ -647,13 +693,14 @@ export async function issueMaterialsToJewelleryJob(
     });
   }
 
-  // remainingWipCost tracks METAL WIP only. Diamonds are discrete and
-  // already individually costed (costAtIssue per issue line), so they
-  // resolve directly by that exact figure when SET/RETURNED/DAMAGED_LOST
-  // — never via a shared-pool ratio the way fungible metal must. Both
-  // still debit the SAME Jewellery WIP account at issue time (correct at
-  // the ledger level); this field only tracks the metal-side pool this
-  // application-level code needs to ratio-drain across partial receipts.
+  // remainingWipCost tracks FINE-BEARING METAL WIP only. Diamonds are
+  // discrete and already individually costed (costAtIssue per issue line),
+  // so they resolve directly by that exact figure when SET/RETURNED/
+  // DAMAGED_LOST — never via a shared-pool ratio the way fungible metal
+  // must. Company Copper/Alloy has its own gross-weight pool
+  // (remainingAlloyWipCost). All of it still debits the SAME Jewellery WIP
+  // account at issue time (correct at the ledger level); these fields only
+  // track the application-level pools receipts drain.
   return tx.jewelleryJob.update({
     where: { id: job.id },
     data: {
@@ -662,9 +709,15 @@ export async function issueMaterialsToJewelleryJob(
       issuedMetalCost: issuedMetalCost.toFixed(2),
       issuedDiamondCost: issuedDiamondCost.toFixed(2),
       otherMaterialCost: otherMaterialCost.toFixed(2),
-      remainingWipCost: issuedMetalCost.toFixed(2),
+      remainingWipCost: fineBearingMetalCost.toFixed(2),
+      issuedAlloyGrossWeight: issuedAlloyGrossWeight.toFixed(3),
+      issuedAlloyCost: issuedAlloyCost.toFixed(2),
+      remainingAlloyWipCost: issuedAlloyCost.toFixed(2),
       wipVoucherId: voucherId,
-      idempotencyKey: input.idempotencyKey ?? job.idempotencyKey,
+      // Keep the job's own create-time idempotency key when it has one —
+      // overwriting it would let a late duplicate "create job" submission
+      // slip past its duplicate check (PHASE_7_CURRENT_STATE_AUDIT.md §4.18).
+      idempotencyKey: job.idempotencyKey ?? input.idempotencyKey ?? null,
     },
   });
 }
@@ -814,6 +867,23 @@ export type DiamondResolutionInput = {
 
 export type MetalReturnScrapLineInput = { purityId: string; grossWeight: DecimalInput };
 
+/**
+ * Phase 7 — where the Alloy Added in this receipt's finished outputs came
+ * from. The three gross weights must together equal EXACTLY the alloy
+ * computed from the outputs (see computeOutputMetal); a receipt whose
+ * outputs add no alloy passes nothing.
+ */
+export type AlloyAddedInput = {
+  /** Consumed from the Company Copper/Alloy issued to this job. */
+  companyGrossWeight?: DecimalInput | null;
+  /** Supplied by the Karigar. */
+  karigarGrossWeight?: DecimalInput | null;
+  /** Karigar's charge for that alloy — posted once, to his payable. */
+  karigarCost?: DecimalInput | null;
+  /** Present in the piece, no separate cost recorded. */
+  includedGrossWeight?: DecimalInput | null;
+};
+
 export async function receiveFinishedJewellery(
   tx: Tx,
   input: FyInput & {
@@ -825,6 +895,7 @@ export async function receiveFinishedJewellery(
     scrapMetalLines: MetalReturnScrapLineInput[];
     karigarAddedFineWeight: DecimalInput;
     karigarAddedCost: DecimalInput;
+    alloy?: AlloyAddedInput | null;
     labourCharge: DecimalInput;
     makingCharge: DecimalInput;
     settingCharge: DecimalInput;
@@ -849,17 +920,22 @@ export async function receiveFinishedJewellery(
     throw new PostingError("Give a short reason for classifying this loss as abnormal.");
   }
 
-  // ---- Resolve return/scrap lines — EACH line must explicitly name a
-  // purity that was actually issued to THIS job; never a silent default
-  // to "the first issued purity." Fine weight always uses that purity's
-  // fineness SNAPSHOT from the job's own issue line (the fineness at
-  // the moment this exact metal was issued), never a fresh lookup
-  // against the (possibly since-edited) purity master. ----
+  // ---- Issued metal, split into fine-bearing purities (gold/silver/
+  // platinum — reconciled by fine weight) and the job's Company
+  // Copper/Alloy purity (0% fineness — reconciled by gross weight). Fine
+  // weight always uses the fineness SNAPSHOT from the job's own issue line
+  // (the fineness at the moment this exact metal was issued), never a
+  // fresh lookup against the (possibly since-edited) purity master. ----
   const metalIssueLines = await tx.jewelleryMetalIssueLine.findMany({ where: { jobId: job.id } });
   const finenessSnapshotByPurityId = new Map<string, Decimal>();
   const metalTypeByPurityId = new Map<string, MetalType>();
   const issuedFineWeightByPurityId = new Map<string, Decimal>();
+  let alloyPurityId: string | null = null;
   for (const line of metalIssueLines) {
+    if (line.metalType === "ALLOY") {
+      alloyPurityId = line.purityId;
+      continue;
+    }
     finenessSnapshotByPurityId.set(line.purityId, new Decimal(line.finenessPercentSnapshot));
     metalTypeByPurityId.set(line.purityId, line.metalType);
     issuedFineWeightByPurityId.set(
@@ -867,7 +943,11 @@ export async function receiveFinishedJewellery(
       (issuedFineWeightByPurityId.get(line.purityId) ?? ZERO).plus(new Decimal(line.fineWeight))
     );
   }
+  const isAlloyLine = (line: MetalReturnScrapLineInput) => alloyPurityId !== null && line.purityId === alloyPurityId;
 
+  // ---- Resolve return/scrap lines — EACH line must explicitly name a
+  // purity that was actually issued to THIS job; never a silent default
+  // to "the first issued purity." ----
   type ResolvedMetalReturnScrapLine = { purityId: string; metalType: MetalType; grossWeight: Decimal; fineWeight: Decimal };
   function resolveReturnScrapLines(rawLines: MetalReturnScrapLineInput[], label: string): ResolvedMetalReturnScrapLine[] {
     return rawLines.map((raw) => {
@@ -885,8 +965,21 @@ export async function receiveFinishedJewellery(
     });
   }
 
-  const resolvedReturnLines = resolveReturnScrapLines(input.returnedMetalLines, "returned-metal");
+  if (input.scrapMetalLines.some(isAlloyLine)) {
+    throw new PostingError("Copper/Alloy cannot be returned as scrap — return unused alloy as returned alloy, or leave the difference as process loss.");
+  }
+  const resolvedReturnLines = resolveReturnScrapLines(
+    input.returnedMetalLines.filter((line) => !isAlloyLine(line)),
+    "returned-metal"
+  );
   const resolvedScrapLines = resolveReturnScrapLines(input.scrapMetalLines, "scrap");
+  const alloyReturnLines = input.returnedMetalLines.filter(isAlloyLine).map((raw) => {
+    const grossWeight = round3(raw.grossWeight);
+    if (!grossWeight.greaterThan(0)) {
+      throw new PostingError("Each returned-metal line's weight must be greater than zero.");
+    }
+    return { purityId: raw.purityId, grossWeight };
+  });
 
   // Per-purity availability — an aggregate "total pending" check alone
   // can't catch e.g. "returning 15g of 22K when this job only ever
@@ -910,52 +1003,114 @@ export async function receiveFinishedJewellery(
   const scrapGross = round3(resolvedScrapLines.reduce((sum, l) => sum.plus(l.grossWeight), ZERO));
   const returnedFineWeight = round3(resolvedReturnLines.reduce((sum, l) => sum.plus(l.fineWeight), ZERO));
   const scrapFineWeight = round3(resolvedScrapLines.reduce((sum, l) => sum.plus(l.fineWeight), ZERO));
+  const alloyReturnedGross = round3(alloyReturnLines.reduce((sum, l) => sum.plus(l.grossWeight), ZERO));
 
-  // ---- Resolve outputs' fine weight (current purity fineness snapshot) ----
-  if (input.outputs.length === 0 && returnedGross.isZero() && scrapGross.isZero() && input.diamondResolutions.length === 0) {
+  if (
+    input.outputs.length === 0 &&
+    returnedGross.isZero() &&
+    scrapGross.isZero() &&
+    alloyReturnedGross.isZero() &&
+    input.diamondResolutions.length === 0
+  ) {
     throw new PostingError("Record at least one finished output, return, scrap amount, or diamond resolution.");
   }
+
+  // ---- Resolve outputs: fine weight, source purity, Alloy Added ----
   const resolvedOutputs: {
     input: FinishedOutputInput;
     finenessPercentSnapshot: Decimal;
     netMetalWeight: Decimal;
     fineWeight: Decimal;
-    diamondCost: Decimal;
+    alloyAddedWeight: Decimal;
+    sourcePurityId: string;
+    sourceFinenessPercentSnapshot: Decimal;
   }[] = [];
   let thisFinishedFineWeight = ZERO;
+  let expectedAlloyAdded = ZERO;
   const allOutputDiamondIds = new Set<string>();
   for (const output of input.outputs) {
     if (output.quantity < 1) throw new PostingError("Each output's quantity must be at least 1.");
     const netMetalWeight = round3(output.netMetalWeight);
     if (!netMetalWeight.greaterThan(0)) throw new PostingError("Each output's net metal weight must be greater than zero.");
-    // An output's metal must come from a purity this job actually issued —
-    // never any purity in the system at large. This matters beyond input
-    // hygiene: the finished portion of the CONSUMED_OUT stock movement
-    // below is posted against exactly this purityId, so accepting an
-    // un-issued purity here would silently drain a real, unrelated
-    // purity's Metal Stock balance for metal that was never actually
-    // issued from it. Also reuse the job's OWN fineness snapshot (not a
-    // fresh purity-master lookup) so a later edit to the Metal/Purity
-    // master can never change this output's already-posted fine weight.
-    const finenessPercentSnapshot = finenessSnapshotByPurityId.get(output.purityId);
-    const issuedMetalType = metalTypeByPurityId.get(output.purityId);
-    if (!finenessPercentSnapshot || !issuedMetalType) {
-      throw new PostingError("Each output's metal purity must be one of the purities issued to this job.");
+    if (output.metalType === "ALLOY") {
+      throw new PostingError("A finished output cannot be recorded as Copper/Alloy — choose the gold, silver or platinum purity of the finished piece.");
     }
-    if (issuedMetalType !== output.metalType) {
-      throw new PostingError("One of the outputs' metal type does not match its selected purity.");
+
+    let finenessPercentSnapshot: Decimal;
+    let sourcePurityId: string;
+    const issuedSnapshot = finenessSnapshotByPurityId.get(output.purityId);
+    if (issuedSnapshot) {
+      // Same purity as issued — Phase 4 behaviour, unchanged: the job's own
+      // issue-time fineness snapshot, and the consumed metal is this purity.
+      if (metalTypeByPurityId.get(output.purityId) !== output.metalType) {
+        throw new PostingError("One of the outputs' metal type does not match its selected purity.");
+      }
+      finenessPercentSnapshot = issuedSnapshot;
+      sourcePurityId = output.purityId;
+    } else {
+      // Phase 7 cross-purity output (e.g. 24K issued, 18K received). The
+      // final purity is an ATTRIBUTE of the finished piece, never a claim
+      // that 18K stock was issued: the consumed source is still the one
+      // issued purity, and no movement is ever posted against the output
+      // purity's pool. Only allowed when the job issued exactly one
+      // fine-bearing purity of this metal — with two (e.g. 22K + 18K) there
+      // is no unambiguous source to trace the fine metal back to, so the
+      // Phase 4 "must be an issued purity" rule still applies.
+      const sameMetalSources = [...metalTypeByPurityId.entries()].filter(([, metalType]) => metalType === output.metalType);
+      if (sameMetalSources.length !== 1) {
+        throw new PostingError("Each output's metal purity must be one of the purities issued to this job.");
+      }
+      sourcePurityId = sameMetalSources[0][0];
+      const sourceFineness = finenessSnapshotByPurityId.get(sourcePurityId)!;
+      const outputPurity = await tx.metalPurity.findUnique({ where: { id: output.purityId } });
+      if (!outputPurity || !outputPurity.isActive || outputPurity.metalType !== output.metalType) {
+        throw new PostingError("The selected final purity was not found, is inactive, or does not match the output's metal.");
+      }
+      finenessPercentSnapshot = new Decimal(outputPurity.finenessPercent);
+      if (!finenessPercentSnapshot.greaterThan(0)) {
+        throw new PostingError("The selected final purity has no fineness.");
+      }
+      if (finenessPercentSnapshot.greaterThan(sourceFineness)) {
+        throw new PostingError(
+          `Final purity ${outputPurity.displayName} (${finenessPercentSnapshot.toFixed(3)}%) is finer than the issued metal (${sourceFineness.toFixed(3)}%) — a finished piece cannot hold more fine metal per gram than was issued.`
+        );
+      }
     }
-    const fineWeight = round3(netMetalWeight.times(finenessPercentSnapshot).dividedBy(100));
+
+    const sourceFinenessPercentSnapshot = finenessSnapshotByPurityId.get(sourcePurityId)!;
+    const metal = computeOutputMetal({
+      netWeight: netMetalWeight.toFixed(3),
+      outputFinenessPercent: finenessPercentSnapshot.toFixed(3),
+      sourceFinenessPercent: sourceFinenessPercentSnapshot.toFixed(3),
+      samePurity: sourcePurityId === output.purityId,
+    });
+    const fineWeight = new Decimal(formatThousandths(metal.fine));
+    const alloyAddedWeight = new Decimal(formatThousandths(metal.alloyAdded));
+    if (alloyAddedWeight.isNegative()) {
+      throw new PostingError("A finished output holds more fine metal than its net weight allows at the issued purity.");
+    }
+
     for (const id of output.diamondIds) {
       if (allOutputDiamondIds.has(id)) {
         throw new PostingError("The same diamond cannot be set into two outputs (or the same output twice).");
       }
       allOutputDiamondIds.add(id);
     }
-    resolvedOutputs.push({ input: output, finenessPercentSnapshot, netMetalWeight, fineWeight, diamondCost: ZERO });
+    resolvedOutputs.push({
+      input: output,
+      finenessPercentSnapshot,
+      netMetalWeight,
+      fineWeight,
+      alloyAddedWeight,
+      sourcePurityId,
+      sourceFinenessPercentSnapshot,
+    });
     thisFinishedFineWeight = thisFinishedFineWeight.plus(fineWeight);
+    expectedAlloyAdded = expectedAlloyAdded.plus(alloyAddedWeight);
   }
   thisFinishedFineWeight = round3(thisFinishedFineWeight);
+  expectedAlloyAdded = round3(expectedAlloyAdded);
+  const hasOutputs = resolvedOutputs.length > 0;
 
   // ---- Resolve + validate diamond resolutions ----
   const uniqueResolutionIds = new Set(input.diamondResolutions.map((r) => r.polishedDiamondId));
@@ -1008,6 +1163,35 @@ export async function receiveFinishedJewellery(
       .reduce((sum, l) => sum.plus(new Decimal(l.costAtIssue)), ZERO)
   );
 
+  // ---- Alloy Added: the source split must total the computed alloy exactly ----
+  const companyAlloyGross = round3(input.alloy?.companyGrossWeight ?? 0);
+  const karigarAlloyGross = round3(input.alloy?.karigarGrossWeight ?? 0);
+  const karigarAlloyCost = round2(input.alloy?.karigarCost ?? 0);
+  const includedAlloyGross = round3(input.alloy?.includedGrossWeight ?? 0);
+  if ([companyAlloyGross, karigarAlloyGross, karigarAlloyCost, includedAlloyGross].some((v) => v.isNegative())) {
+    throw new PostingError("Alloy weights and alloy charge cannot be negative.");
+  }
+  const enteredAlloy = round3(companyAlloyGross.plus(karigarAlloyGross).plus(includedAlloyGross));
+  if (!enteredAlloy.equals(expectedAlloyAdded)) {
+    throw new PostingError(
+      `The finished outputs contain ${expectedAlloyAdded.toFixed(3)}g of Alloy Added. Split it across Company stock, Karigar-added and Included so the parts total exactly ${expectedAlloyAdded.toFixed(3)}g (currently ${enteredAlloy.toFixed(3)}g).`
+    );
+  }
+  if (karigarAlloyCost.greaterThan(0) && karigarAlloyGross.isZero()) {
+    throw new PostingError("A Karigar alloy charge needs a Karigar-added alloy weight.");
+  }
+  const alloyPendingBefore = round3(
+    new Decimal(job.issuedAlloyGrossWeight).minus(job.consumedAlloyGrossWeight).minus(job.returnedAlloyGrossWeight)
+  );
+  if ((companyAlloyGross.greaterThan(0) || alloyReturnedGross.greaterThan(0)) && !alloyPurityId) {
+    throw new PostingError("No Company Copper/Alloy was issued to this job — record the alloy as Karigar-added or Included instead.");
+  }
+  if (companyAlloyGross.plus(alloyReturnedGross).greaterThan(alloyPendingBefore)) {
+    throw new PostingError(
+      `Company alloy used (${companyAlloyGross.toFixed(3)}g) plus returned alloy (${alloyReturnedGross.toFixed(3)}g) exceeds the ${alloyPendingBefore.toFixed(3)}g of Company Copper/Alloy still with the Karigar.`
+    );
+  }
+
   // ---- Metal reconciliation (gap-based, same pattern as Phase 3) ----
   const karigarAddedFineWeight = round3(input.karigarAddedFineWeight ?? 0);
   const karigarAddedCost = round2(input.karigarAddedCost ?? 0);
@@ -1035,6 +1219,9 @@ export async function receiveFinishedJewellery(
   const isFinalMetal = gap.isZero() || input.markJobComplete;
   const processLossFineWeight = isFinalMetal ? gap : ZERO;
 
+  // Fine-bearing cost pool: drains by fine weight — the resolved share is
+  // (pool × fine resolved ÷ fine pending), and the final receipt takes
+  // the whole remaining pool so it reaches exactly zero.
   const remainingWipCostBefore = new Decimal(job.remainingWipCost);
   const totalCostPool = remainingWipCostBefore.plus(karigarAddedCost);
   const resolvedCost = isFinalMetal
@@ -1043,19 +1230,83 @@ export async function receiveFinishedJewellery(
       ? totalCostPool.times(resolvedThisReceipt).dividedBy(pendingAvailable).toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
       : ZERO;
 
-  const returnedCost = returnedFineWeight.greaterThan(0) && resolvedThisReceipt.greaterThan(0)
-    ? resolvedCost.times(returnedFineWeight).dividedBy(resolvedThisReceipt).toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
-    : ZERO;
-  const scrapCost = scrapFineWeight.greaterThan(0) && resolvedThisReceipt.greaterThan(0)
-    ? resolvedCost.times(scrapFineWeight).dividedBy(resolvedThisReceipt).toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
-    : ZERO;
   const lossCost = input.isAbnormalLoss && processLossFineWeight.greaterThan(0) && pendingAvailable.greaterThan(0)
     ? resolvedCost.times(processLossFineWeight).dividedBy(pendingAvailable).toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
     : ZERO;
-  // Normal (non-abnormal) process loss is never carved out — its cost
-  // silently stays inside finishedPortionCost, absorbed into the
-  // surviving finished jewellery, per the master plan.
-  const finishedPortionCost = round2(resolvedCost.minus(returnedCost).minus(scrapCost).minus(lossCost));
+  let returnedCost: Decimal;
+  let scrapCost: Decimal;
+  let finishedPortionCost: Decimal;
+  // Cost resolved by this receipt that no finished output can carry — see
+  // JewelleryReceipt.unabsorbedCost. Posted to Business Expenses.
+  let unabsorbedCost = ZERO;
+  if (hasOutputs) {
+    returnedCost = returnedFineWeight.greaterThan(0) && resolvedThisReceipt.greaterThan(0)
+      ? resolvedCost.times(returnedFineWeight).dividedBy(resolvedThisReceipt).toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
+      : ZERO;
+    scrapCost = scrapFineWeight.greaterThan(0) && resolvedThisReceipt.greaterThan(0)
+      ? resolvedCost.times(scrapFineWeight).dividedBy(resolvedThisReceipt).toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
+      : ZERO;
+    // Normal (non-abnormal) process loss is never carved out — its cost
+    // silently stays inside finishedPortionCost, absorbed into the
+    // surviving finished jewellery, per the master plan.
+    finishedPortionCost = round2(resolvedCost.minus(returnedCost).minus(scrapCost).minus(lossCost));
+  } else {
+    // No finished output in this receipt, so nothing may be debited to
+    // Finished Jewellery Inventory. The whole resolved cost (net of any
+    // abnormal loss) is split EXACTLY across returned metal and scrap —
+    // normal loss stays absorbed in that surviving stock — with the
+    // rounding remainder landing on one of them. If nothing survives at
+    // all, it is an unabsorbable loss and is expensed.
+    const distributable = round2(resolvedCost.minus(lossCost));
+    const stockTargets = [
+      ...(returnedFineWeight.greaterThan(0) ? [{ key: "returned", weight: returnedFineWeight }] : []),
+      ...(scrapFineWeight.greaterThan(0) ? [{ key: "scrap", weight: scrapFineWeight }] : []),
+    ];
+    if (stockTargets.length > 0) {
+      const split = allocateProportionally(distributable, stockTargets);
+      returnedCost = split.find((s) => s.key === "returned")?.amount ?? ZERO;
+      scrapCost = split.find((s) => s.key === "scrap")?.amount ?? ZERO;
+    } else {
+      returnedCost = ZERO;
+      scrapCost = ZERO;
+      unabsorbedCost = distributable;
+    }
+    finishedPortionCost = ZERO;
+  }
+
+  // ---- Company Copper/Alloy pool (gross weight). Non-final: resolves the
+  // share used or returned. Final: resolves everything still pending —
+  // alloy neither used nor returned is alloy loss, absorbed into the
+  // finished pieces unless the Owner classifies the loss as abnormal. ----
+  const remainingAlloyCostBefore = new Decimal(job.remainingAlloyWipCost);
+  let alloyLossGross = ZERO;
+  let alloyResolvedCost = ZERO;
+  let alloyReturnedCost = ZERO;
+  let alloyAbnormalLossCost = ZERO;
+  let alloyToFinishedCost = ZERO;
+  if (alloyPendingBefore.greaterThan(0)) {
+    const alloyResolvedGross = round3(companyAlloyGross.plus(alloyReturnedGross));
+    if (isFinalMetal) {
+      alloyLossGross = round3(alloyPendingBefore.minus(alloyResolvedGross));
+      alloyResolvedCost = remainingAlloyCostBefore;
+      alloyReturnedCost = alloyReturnedGross.greaterThan(0)
+        ? round2(remainingAlloyCostBefore.times(alloyReturnedGross).dividedBy(alloyPendingBefore))
+        : ZERO;
+      alloyAbnormalLossCost = input.isAbnormalLoss && alloyLossGross.greaterThan(0)
+        ? round2(remainingAlloyCostBefore.times(alloyLossGross).dividedBy(alloyPendingBefore))
+        : ZERO;
+    } else if (alloyResolvedGross.greaterThan(0)) {
+      alloyResolvedCost = round2(remainingAlloyCostBefore.times(alloyResolvedGross).dividedBy(alloyPendingBefore));
+      alloyReturnedCost = alloyReturnedGross.greaterThan(0)
+        ? round2(alloyResolvedCost.times(alloyReturnedGross).dividedBy(alloyResolvedGross))
+        : ZERO;
+    }
+    alloyToFinishedCost = round2(alloyResolvedCost.minus(alloyReturnedCost).minus(alloyAbnormalLossCost));
+    if (!hasOutputs && alloyToFinishedCost.greaterThan(0)) {
+      unabsorbedCost = round2(unabsorbedCost.plus(alloyToFinishedCost));
+      alloyToFinishedCost = ZERO;
+    }
+  }
 
   // ---- Split the aggregate returned/scrap cost across each individual
   // line proportionally by its own fine weight, so every return/scrap
@@ -1068,6 +1319,10 @@ export async function receiveFinishedJewellery(
   const scrapCostAllocation =
     resolvedScrapLines.length > 0 && scrapCost.greaterThan(0)
       ? allocateProportionally(scrapCost, resolvedScrapLines.map((l, i) => ({ key: String(i), weight: l.fineWeight })))
+      : [];
+  const alloyReturnCostAllocation =
+    alloyReturnLines.length > 0 && alloyReturnedCost.greaterThan(0)
+      ? allocateProportionally(alloyReturnedCost, alloyReturnLines.map((l, i) => ({ key: String(i), weight: l.grossWeight })))
       : [];
 
   // ---- Other-material cost: PROVISIONAL, recalculated proportionally
@@ -1082,9 +1337,9 @@ export async function receiveFinishedJewellery(
   // documented rule, not a silent drop. Never posted through accounting
   // (no real source account backs it) — display/costing figure only. ----
   const jobOtherMaterialCost = new Decimal(job.otherMaterialCost);
-  const priorOutputs = resolvedOutputs.length > 0 ? await tx.finishedJewellery.findMany({ where: { jobId: job.id } }) : [];
+  const priorOutputs = hasOutputs ? await tx.finishedJewellery.findMany({ where: { jobId: job.id } }) : [];
   let otherMaterialReallocation = new Map<string, Decimal>();
-  if (resolvedOutputs.length > 0 && jobOtherMaterialCost.greaterThan(0)) {
+  if (hasOutputs && jobOtherMaterialCost.greaterThan(0)) {
     const allocationTargets = [
       ...priorOutputs.map((o) => ({ key: `prior:${o.id}`, weight: o.fineMetalWeight })),
       ...resolvedOutputs.map((o, i) => ({ key: `new:${i}`, weight: o.fineWeight })),
@@ -1095,14 +1350,6 @@ export async function receiveFinishedJewellery(
     );
     otherMaterialReallocation = new Map(allocations.map((a) => [a.key, a.amount]));
   }
-  // Only the share landing on THIS receipt's new outputs counts toward
-  // this receipt's own informational voucher total — prior outputs'
-  // updated shares are a retroactive display correction, not new value
-  // entering the system this receipt.
-  const otherMaterialCostThisReceipt = resolvedOutputs.reduce(
-    (sum, _, i) => sum.plus(otherMaterialReallocation.get(`new:${i}`) ?? ZERO),
-    ZERO
-  );
 
   const totalCharges = round2(
     new Decimal(input.labourCharge ?? 0)
@@ -1112,38 +1359,30 @@ export async function receiveFinishedJewellery(
       .plus(input.otherExpense ?? 0)
   );
   if (totalCharges.isNegative()) throw new PostingError("Job charges cannot be negative.");
+  // Charges become part of a finished piece's cost only when this receipt
+  // produces a piece to carry them; otherwise they are expensed.
+  const chargesToFinished = hasOutputs ? totalCharges : ZERO;
+  if (!hasOutputs) unabsorbedCost = round2(unabsorbedCost.plus(totalCharges));
 
   const receiptCode = await nextJewelleryCode(tx, "JEWELLERY_RECEIPT");
 
-  // ---- Allocate metal + charges across outputs, proportional by each
-  // output's fine metal weight (other-material uses otherMaterialReallocation,
+  // ---- Allocate costs across outputs: metal + charges proportional by
+  // each output's fine metal weight; alloy cost proportional by each
+  // output's own Alloy Added (other-material uses otherMaterialReallocation,
   // computed above across this job's whole output history) ----
-  const poolForOutputs = round2(finishedPortionCost.plus(otherMaterialCostThisReceipt).plus(totalCharges));
-  const metalAllocation =
-    resolvedOutputs.length > 0
-      ? allocateProportionally(finishedPortionCost, resolvedOutputs.map((o, i) => ({ key: String(i), weight: o.fineWeight })))
-      : [];
-  const chargesAllocation =
-    resolvedOutputs.length > 0 && totalCharges.greaterThan(0)
-      ? allocateProportionally(totalCharges, resolvedOutputs.map((o, i) => ({ key: String(i), weight: o.fineWeight })))
-      : [];
+  const byFineWeight = resolvedOutputs.map((o, i) => ({ key: String(i), weight: o.fineWeight }));
+  const metalAllocation = hasOutputs ? allocateProportionally(finishedPortionCost, byFineWeight) : [];
+  const chargesAllocation = hasOutputs && chargesToFinished.greaterThan(0) ? allocateProportionally(chargesToFinished, byFineWeight) : [];
+  const alloyCostToOutputs = round2(alloyToFinishedCost.plus(karigarAlloyCost));
+  const alloyWeights = expectedAlloyAdded.greaterThan(0)
+    ? resolvedOutputs.map((o, i) => ({ key: String(i), weight: o.alloyAddedWeight }))
+    : resolvedOutputs.some((o) => o.fineWeight.greaterThan(0))
+      ? byFineWeight
+      : resolvedOutputs.map((o, i) => ({ key: String(i), weight: o.netMetalWeight }));
+  const alloyAllocation = hasOutputs && alloyCostToOutputs.greaterThan(0) ? allocateProportionally(alloyCostToOutputs, alloyWeights) : [];
 
-  const voucher = await createVoucherHeader(
-    tx,
-    {
-      date: input.receiveDate,
-      fyStartMonth: input.fyStartMonth,
-      fyStartDay: input.fyStartDay,
-      currencyCode: "INR",
-      exchangeRate: 1,
-      note: `Jewellery receipt ${receiptCode} for job ${job.jobCode}`,
-      idempotencyKey: input.idempotencyKey,
-      createdByUserId: input.createdByUserId,
-    },
-    "JEWELLERY_RECEIPT",
-    { amount: round2(poolForOutputs.plus(returnedCost).plus(scrapCost).plus(lossCost)) }
-  );
-
+  // ---- Journal lines — built first so the voucher amount is the posting's
+  // real total debit ----
   const journalLines: JournalLineInput[] = [];
   if (karigarAddedCost.greaterThan(0)) {
     journalLines.push({
@@ -1152,7 +1391,7 @@ export async function receiveFinishedJewellery(
       description: `Karigar-added material ${receiptCode}`,
     });
   }
-  const finishedInventoryDebit = round2(finishedPortionCost.plus(totalCharges).plus(setDiamondCost));
+  const finishedInventoryDebit = round2(finishedPortionCost.plus(alloyCostToOutputs).plus(chargesToFinished).plus(setDiamondCost));
   if (finishedInventoryDebit.greaterThan(0)) {
     journalLines.push({
       accountCode: SYSTEM_ACCOUNT_CODES.FINISHED_JEWELLERY_INVENTORY,
@@ -1165,6 +1404,13 @@ export async function receiveFinishedJewellery(
       accountCode: SYSTEM_ACCOUNT_CODES.METAL_INVENTORY,
       debit: returnedCost,
       description: `Returned metal ${receiptCode}`,
+    });
+  }
+  if (alloyReturnedCost.greaterThan(0)) {
+    journalLines.push({
+      accountCode: SYSTEM_ACCOUNT_CODES.METAL_INVENTORY,
+      debit: alloyReturnedCost,
+      description: `Returned Copper/Alloy ${receiptCode}`,
     });
   }
   if (scrapCost.greaterThan(0)) {
@@ -1181,14 +1427,24 @@ export async function receiveFinishedJewellery(
       description: `Returned diamond(s) ${receiptCode}`,
     });
   }
-  if (lossCost.greaterThan(0) || damagedLostDiamondCost.greaterThan(0)) {
+  const abnormalExpense = round2(lossCost.plus(alloyAbnormalLossCost).plus(damagedLostDiamondCost));
+  if (abnormalExpense.greaterThan(0)) {
     journalLines.push({
       accountCode: SYSTEM_ACCOUNT_CODES.BUSINESS_EXPENSES,
-      debit: round2(lossCost.plus(damagedLostDiamondCost)),
+      debit: abnormalExpense,
       description: `Abnormal loss / damaged-lost diamond(s) ${receiptCode}`,
     });
   }
-  const wipCredit = round2(resolvedCost.plus(setDiamondCost).plus(returnedDiamondCost).plus(damagedLostDiamondCost));
+  if (unabsorbedCost.greaterThan(0)) {
+    journalLines.push({
+      accountCode: SYSTEM_ACCOUNT_CODES.BUSINESS_EXPENSES,
+      debit: unabsorbedCost,
+      description: `Loss/charges with no finished output to carry them ${receiptCode}`,
+    });
+  }
+  const wipCredit = round2(
+    resolvedCost.plus(alloyResolvedCost).plus(setDiamondCost).plus(returnedDiamondCost).plus(damagedLostDiamondCost)
+  );
   if (wipCredit.greaterThan(0)) {
     journalLines.push({
       accountCode: SYSTEM_ACCOUNT_CODES.JEWELLERY_WIP,
@@ -1196,7 +1452,7 @@ export async function receiveFinishedJewellery(
       description: `Receipt ${receiptCode}`,
     });
   }
-  const karigarPayableCredit = round2(totalCharges.plus(karigarAddedCost));
+  const karigarPayableCredit = round2(totalCharges.plus(karigarAddedCost).plus(karigarAlloyCost));
   if (karigarPayableCredit.greaterThan(0)) {
     journalLines.push({
       accountCode: SYSTEM_ACCOUNT_CODES.ACCOUNTS_PAYABLE,
@@ -1205,6 +1461,23 @@ export async function receiveFinishedJewellery(
       description: `Karigar payable ${receiptCode}`,
     });
   }
+  const totalDebit = round2(journalLines.reduce((sum, line) => sum.plus(new Decimal(line.debit ?? 0)), ZERO));
+
+  const voucher = await createVoucherHeader(
+    tx,
+    {
+      date: input.receiveDate,
+      fyStartMonth: input.fyStartMonth,
+      fyStartDay: input.fyStartDay,
+      currencyCode: "INR",
+      exchangeRate: 1,
+      note: `Jewellery receipt ${receiptCode} for job ${job.jobCode}`,
+      idempotencyKey: input.idempotencyKey,
+      createdByUserId: input.createdByUserId,
+    },
+    "JEWELLERY_RECEIPT",
+    { amount: totalDebit }
+  );
 
   await insertBalancedJournalLines(tx, voucher.id, journalLines);
 
@@ -1222,6 +1495,14 @@ export async function receiveFinishedJewellery(
       abnormalLossReason: input.isAbnormalLoss ? input.abnormalLossReason ?? null : null,
       karigarAddedFineWeight: karigarAddedFineWeight.toFixed(3),
       karigarAddedCost: karigarAddedCost.toFixed(2),
+      companyAlloyGrossWeight: companyAlloyGross.toFixed(3),
+      companyAlloyCost: alloyToFinishedCost.toFixed(2),
+      karigarAlloyGrossWeight: karigarAlloyGross.toFixed(3),
+      karigarAlloyCost: karigarAlloyCost.toFixed(2),
+      includedAlloyGrossWeight: includedAlloyGross.toFixed(3),
+      returnedAlloyGrossWeight: alloyReturnedGross.toFixed(3),
+      alloyLossGrossWeight: alloyLossGross.toFixed(3),
+      unabsorbedCost: unabsorbedCost.toFixed(2),
       labourCharge: round2(input.labourCharge ?? 0).toFixed(2),
       makingCharge: round2(input.makingCharge ?? 0).toFixed(2),
       settingCharge: round2(input.settingCharge ?? 0).toFixed(2),
@@ -1235,11 +1516,23 @@ export async function receiveFinishedJewellery(
   });
 
   // ---- Create finished outputs ----
+  const purityDisplayNameCache = new Map<string, string>();
+  async function purityDisplayName(purityId: string): Promise<string> {
+    const cached = purityDisplayNameCache.get(purityId);
+    if (cached !== undefined) return cached;
+    const row = await tx.metalPurity.findUnique({ where: { id: purityId } });
+    const name = row?.displayName ?? "";
+    purityDisplayNameCache.set(purityId, name);
+    return name;
+  }
+
   const createdOutputs = [];
   for (let i = 0; i < resolvedOutputs.length; i++) {
     const resolved = resolvedOutputs[i];
     const finishedCode = await nextJewelleryCode(tx, "FINISHED_JEWELLERY");
-    const metalCost = metalAllocation.find((a) => a.key === String(i))?.amount ?? ZERO;
+    const goldMetalCost = metalAllocation.find((a) => a.key === String(i))?.amount ?? ZERO;
+    const alloyCost = alloyAllocation.find((a) => a.key === String(i))?.amount ?? ZERO;
+    const metalCost = round2(goldMetalCost.plus(alloyCost));
     const otherCost = otherMaterialReallocation.get(`new:${i}`) ?? ZERO;
     const labourAllocated = chargesAllocation.find((a) => a.key === String(i))?.amount ?? ZERO;
     const outputDiamondIssueLines = issueLines.filter((l) => resolved.input.diamondIds.includes(l.polishedDiamondId));
@@ -1265,6 +1558,10 @@ export async function receiveFinishedJewellery(
         purityId: resolved.input.purityId,
         finenessPercentSnapshot: resolved.finenessPercentSnapshot.toFixed(3),
         fineMetalWeight: resolved.fineWeight.toFixed(3),
+        alloyAddedWeight: resolved.alloyAddedWeight.toFixed(3),
+        alloyCost: alloyCost.toFixed(2),
+        sourcePurityDisplayNameSnapshot: await purityDisplayName(resolved.sourcePurityId),
+        sourceFinenessPercentSnapshot: resolved.sourceFinenessPercentSnapshot.toFixed(3),
         metalCost: metalCost.toFixed(2),
         diamondCost: diamondCostForOutput.toFixed(2),
         otherMaterialCost: otherCost.toFixed(2),
@@ -1288,7 +1585,8 @@ export async function receiveFinishedJewellery(
     // same (still-open) job may retroactively rewrite this output's
     // otherMaterialCost/totalCost (see the "priorOutputs" reallocation
     // above): that reallocation only ever changes otherMaterialCost, which
-    // this figure never included in the first place.
+    // this figure never included in the first place. Phase 7: metalCost
+    // already includes this output's real alloy cost.
     const inventoryCost = round2(metalCost.plus(diamondCostForOutput).plus(labourAllocated));
     await tx.finishedJewelleryStockMovement.create({
       data: {
@@ -1299,7 +1597,7 @@ export async function receiveFinishedJewellery(
         finishedCodeSnapshot: output.finishedCode,
         jewelleryTypeSnapshot: output.jewelleryType,
         metalTypeSnapshot: output.metalType,
-        purityDisplayNameSnapshot: (await tx.metalPurity.findUnique({ where: { id: output.purityId } }))!.displayName,
+        purityDisplayNameSnapshot: await purityDisplayName(output.purityId),
         netMetalWeightSnapshot: output.netMetalWeight,
         fineMetalWeightSnapshot: output.fineMetalWeight,
         totalCaratSnapshot: totalCaratForOutput.toFixed(3),
@@ -1402,7 +1700,8 @@ export async function receiveFinishedJewellery(
   // ---- Metal stock movements (return/scrap) — one movement PER LINE,
   // each posted to its own explicit purity identity with its own
   // proportional cost share. Never one lump sum against a guessed
-  // "default" purity. ----
+  // "default" purity. Scrap lands in that purity's SCRAP pool, never back
+  // in issuable stock (see METAL_POOL_EFFECT). ----
   for (let i = 0; i < resolvedReturnLines.length; i++) {
     const line = resolvedReturnLines[i];
     const costShare = returnedCostAllocation.find((a) => a.key === String(i))?.amount ?? ZERO;
@@ -1437,14 +1736,32 @@ export async function receiveFinishedJewellery(
       },
     });
   }
+  for (let i = 0; i < alloyReturnLines.length; i++) {
+    const line = alloyReturnLines[i];
+    const costShare = alloyReturnCostAllocation.find((a) => a.key === String(i))?.amount ?? ZERO;
+    await tx.metalStockMovement.create({
+      data: {
+        type: "RETURN_IN",
+        metalType: "ALLOY",
+        purityId: line.purityId,
+        grossWeight: line.grossWeight.toFixed(3),
+        fineWeight: "0.000",
+        costValue: costShare.toFixed(2),
+        sourceDocument: receiptCode,
+        jewelleryJobId: job.id,
+        createdByUserId: input.createdByUserId,
+      },
+    });
+  }
 
-  // ---- Informational consumed-out movements for the metal that
-  // permanently left the pool this receipt (mirrors Phase 3's
-  // ROUGH_CONSUMED_OUT) — the "finished" portion is attributed to each
-  // OUTPUT's own real purity (never a guessed default); any recognized
-  // process-loss portion, which has no inherent physical purity of its
-  // own, is split proportionally across the job's actually-issued
-  // purities by their issued fine-weight share. ----
+  // ---- Informational consumed-out movements (job ledger only — they never
+  // change a stock pool, see METAL_POOL_EFFECT) for the metal that
+  // permanently left the job this receipt. The finished portion is
+  // attributed to each output's consumed SOURCE purity — its own purity for
+  // a same-purity output, the issued purity (e.g. 24K) for a lower-karat
+  // output — never to an unissued purity. Recognized process loss, which
+  // has no physical purity of its own, is split across the job's issued
+  // fine-bearing purities by their issued fine-weight share. ----
   for (let i = 0; i < resolvedOutputs.length; i++) {
     const o = resolvedOutputs[i];
     if (o.fineWeight.greaterThan(0)) {
@@ -1452,8 +1769,8 @@ export async function receiveFinishedJewellery(
       await tx.metalStockMovement.create({
         data: {
           type: "CONSUMED_OUT",
-          metalType: o.input.metalType,
-          purityId: o.input.purityId,
+          metalType: metalTypeByPurityId.get(o.sourcePurityId)!,
+          purityId: o.sourcePurityId,
           grossWeight: "0.000",
           fineWeight: o.fineWeight.toFixed(3),
           costValue: metalCostShare.toFixed(2),
@@ -1495,6 +1812,22 @@ export async function receiveFinishedJewellery(
       });
     }
   }
+  const alloyConsumedGross = round3(companyAlloyGross.plus(alloyLossGross));
+  if (alloyPurityId && alloyConsumedGross.greaterThan(0)) {
+    await tx.metalStockMovement.create({
+      data: {
+        type: "CONSUMED_OUT",
+        metalType: "ALLOY",
+        purityId: alloyPurityId,
+        grossWeight: alloyConsumedGross.toFixed(3),
+        fineWeight: "0.000",
+        costValue: round2(alloyResolvedCost.minus(alloyReturnedCost)).toFixed(2),
+        sourceDocument: receiptCode,
+        jewelleryJobId: job.id,
+        createdByUserId: input.createdByUserId,
+      },
+    });
+  }
 
   // ---- Update job cumulative totals + status ----
   const anyUnresolvedDiamonds = await tx.jewelleryDiamondIssueLine.count({
@@ -1510,6 +1843,9 @@ export async function receiveFinishedJewellery(
       scrapFineWeight: round3(new Decimal(job.scrapFineWeight).plus(scrapFineWeight)).toFixed(3),
       karigarAddedFineWeight: round3(new Decimal(job.karigarAddedFineWeight).plus(karigarAddedFineWeight)).toFixed(3),
       karigarAddedCost: round2(new Decimal(job.karigarAddedCost).plus(karigarAddedCost)).toFixed(2),
+      consumedAlloyGrossWeight: round3(new Decimal(job.consumedAlloyGrossWeight).plus(alloyConsumedGross)).toFixed(3),
+      returnedAlloyGrossWeight: round3(new Decimal(job.returnedAlloyGrossWeight).plus(alloyReturnedGross)).toFixed(3),
+      remainingAlloyWipCost: round2(remainingAlloyCostBefore.minus(alloyResolvedCost)).toFixed(2),
       totalLabourCharge: round2(new Decimal(job.totalLabourCharge).plus(totalCharges)).toFixed(2),
       remainingWipCost: round2(totalCostPool.minus(resolvedCost)).toFixed(2),
       status: jobComplete ? "COMPLETED" : "PARTIALLY_RECEIVED",

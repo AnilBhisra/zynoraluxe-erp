@@ -16,12 +16,12 @@ export function OverrideAllocationForm({
   onDone,
 }: {
   receiptId: string;
-  outputs: { id: string; finishedCode: string; totalCost: string }[];
+  outputs: { id: string; finishedCode: string; totalCost: string | null }[];
   onDone?: () => void;
 }) {
   const [state, formAction, pending] = useActionState(overrideFinishedAllocationAction, undefined);
   const [costs, setCosts] = useState<Record<string, string>>(
-    Object.fromEntries(outputs.map((o) => [o.id, o.totalCost]))
+    Object.fromEntries(outputs.map((o) => [o.id, o.totalCost ?? ""]))
   );
   const [reason, setReason] = useState("");
 

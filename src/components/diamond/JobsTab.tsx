@@ -22,7 +22,8 @@ export type SerializedDiamondJob = {
   issuedRoughCarat: string;
   pendingCarat: string;
   status: string;
-  totalLabourCharge: string;
+  /** Owner-only — null for Staff (redacted on the server). */
+  totalLabourCharge: string | null;
 };
 
 const STATUS_LABELS: Record<string, string> = {

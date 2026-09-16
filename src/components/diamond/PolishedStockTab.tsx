@@ -18,8 +18,9 @@ export type SerializedPolishedDiamond = {
   widthMm: string | null;
   heightMm: string | null;
   certificateStatus: string;
-  allocatedCost: string;
-  costPerCarat: string;
+  /** Owner-only — null for Staff (redacted on the server). */
+  allocatedCost: string | null;
+  costPerCarat: string | null;
   status: string;
   photoUrl: string | null;
   certFileUrl: string | null;

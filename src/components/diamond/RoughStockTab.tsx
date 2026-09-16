@@ -15,7 +15,8 @@ export type SerializedRoughPiece = {
   id: string;
   roughCode: string;
   carat: string;
-  allocatedCost: string;
+  /** Owner-only — null for Staff (redacted on the server). */
+  allocatedCost: string | null;
   costLocked: boolean;
   status: string;
   colorEstimate: string | null;
@@ -31,14 +32,16 @@ export type SerializedRoughLot = {
   supplierName: string;
   piecesCount: number;
   totalRoughCarat: string;
-  totalPurchaseCost: string;
+  /** Owner-only — null for Staff (redacted on the server). */
+  totalPurchaseCost: string | null;
   status: string;
   availableCarat: string;
   photoUrl: string | null;
   pieces: SerializedRoughPiece[];
 };
 
-function formatMoney(v: string) {
+function formatMoney(v: string | null) {
+  if (v === null) return "—";
   return `₹${Number(v).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 

@@ -5,12 +5,15 @@ import { useState } from "react";
 
 import { markJewelleryJobInProgressAction, setJewelleryJobNeedsCorrectionAction } from "@/app/actions/jewellery";
 import { IssueMaterialsForm, type AvailablePolishedDiamondOption } from "@/components/jewellery/IssueMaterialsForm";
-import { ReceiveFinishedForm, type MetalPurityOption } from "@/components/jewellery/ReceiveFinishedForm";
+import { ReceiveFinishedForm, type IssuedMetalOption, type MetalPurityOption } from "@/components/jewellery/ReceiveFinishedForm";
 import { CancelJobForm } from "@/components/jewellery/CancelJobForm";
 import { OverrideAllocationForm } from "@/components/jewellery/OverrideAllocationForm";
 import { Button } from "@/components/ui/Button";
 import { jewelleryTypeLabel } from "@/lib/jewellery/types";
+import { formatThousandths, toThousandths } from "@/lib/jewellery/metalMath";
 
+/** Cost / payable figures are Owner-only and arrive as null for Staff —
+ * redacted on the server in src/app/(app)/jewellery-jobs/page.tsx. */
 export type SerializedJobDetail = {
   id: string;
   jobCode: string;
@@ -31,32 +34,48 @@ export type SerializedJobDetail = {
   targetPurityDisplayName: string | null;
   targetFinishedWeight: string | null;
   issuedMetalFineWeight: string;
-  issuedMetalCost: string;
-  issuedDiamondCost: string;
-  otherMaterialCost: string;
-  remainingWipCost: string;
-  totalLabourCharge: string;
+  issuedMetalCost: string | null;
+  issuedDiamondCost: string | null;
+  otherMaterialCost: string | null;
+  remainingWipCost: string | null;
+  totalLabourCharge: string | null;
   receivedFineWeight: string;
   returnedMetalFineWeight: string;
   scrapFineWeight: string;
   karigarAddedFineWeight: string;
-  karigarAddedCost: string;
+  karigarAddedCost: string | null;
+  issuedAlloyGrossWeight: string;
+  issuedAlloyCost: string | null;
+  consumedAlloyGrossWeight: string;
+  returnedAlloyGrossWeight: string;
+  remainingAlloyWipCost: string | null;
+  alloyPendingGrossWeight: string;
   pendingFineWeight: string;
-  totalIssuedCost: string;
+  totalIssuedCost: string | null;
   cancellationReason: string | null;
   isCompleted: boolean;
   finalMetalLossFineWeight: string | null;
-  metalLines: { id: string; metalType: string; purityId: string; purityDisplayName: string; grossWeight: string; fineWeight: string; costValue: string }[];
+  metalLines: {
+    id: string;
+    metalType: string;
+    purityId: string;
+    purityDisplayName: string;
+    finenessPercentSnapshot: string;
+    isAlloy: boolean;
+    grossWeight: string;
+    fineWeight: string;
+    costValue: string | null;
+  }[];
   diamondLines: {
     id: string;
     polishedDiamondId: string;
     polishedCode: string;
     shape: string;
     carat: string;
-    costAtIssue: string;
+    costAtIssue: string | null;
     resolvedAs: string | null;
   }[];
-  otherMaterialLines: { id: string; description: string; quantity: string; unit: string; weight: string | null; cost: string; note: string | null }[];
+  otherMaterialLines: { id: string; description: string; quantity: string; unit: string; weight: string | null; cost: string | null; note: string | null }[];
   receipts: {
     id: string;
     receiptCode: string;
@@ -65,11 +84,11 @@ export type SerializedJobDetail = {
     scrapFineWeight: string;
     processLossFineWeight: string;
     isAbnormalLoss: boolean;
-    labourCharge: string;
-    makingCharge: string;
-    settingCharge: string;
-    platingCharge: string;
-    otherExpense: string;
+    alloyAddedWeight: string;
+    returnedAlloyGrossWeight: string;
+    totalCharges: string | null;
+    karigarAlloyCost: string | null;
+    unabsorbedCost: string | null;
   }[];
   finishedOutputs: {
     id: string;
@@ -79,11 +98,15 @@ export type SerializedJobDetail = {
     quantity: number;
     netMetalWeight: string;
     fineMetalWeight: string;
-    totalCost: string;
+    purityDisplayName: string;
+    sourcePurityDisplayName: string | null;
+    alloyAddedWeight: string;
+    alloyCost: string | null;
+    totalCost: string | null;
     qcStatus: string;
     photoUrl: string | null;
   }[];
-  timeline: { id: string; type: string; detail: string; costValue: string; sourceDocument: string | null; createdAt: string }[];
+  timeline: { id: string; type: string; detail: string; costValue: string | null; sourceDocument: string | null; createdAt: string }[];
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -95,6 +118,29 @@ const STATUS_LABELS: Record<string, string> = {
   COMPLETED: "Completed",
   CANCELLED: "Cancelled",
 };
+
+/** Issued metal per purity (a job may have several issue lines of one purity). */
+function issuedMetalByPurity(lines: SerializedJobDetail["metalLines"]): IssuedMetalOption[] {
+  const byPurity = new Map<string, IssuedMetalOption>();
+  for (const line of lines) {
+    const existing = byPurity.get(line.purityId);
+    if (existing) {
+      existing.grossWeight = formatThousandths(toThousandths(existing.grossWeight) + toThousandths(line.grossWeight));
+      existing.fineWeight = formatThousandths(toThousandths(existing.fineWeight) + toThousandths(line.fineWeight));
+    } else {
+      byPurity.set(line.purityId, {
+        purityId: line.purityId,
+        metalType: line.metalType,
+        displayName: line.purityDisplayName,
+        finenessPercent: line.finenessPercentSnapshot,
+        isAlloy: line.isAlloy,
+        grossWeight: line.grossWeight,
+        fineWeight: line.fineWeight,
+      });
+    }
+  }
+  return [...byPurity.values()];
+}
 
 export function JobDetailView({
   job,
@@ -125,6 +171,7 @@ export function JobDetailView({
     job.status === "MATERIALS_ISSUED" || job.status === "IN_PROGRESS" || job.status === "PARTIALLY_RECEIVED" || job.status === "NEEDS_CORRECTION";
   const canCancel = isOwner && (job.status === "DRAFT" || job.status === "MATERIALS_ISSUED" || job.status === "IN_PROGRESS");
   const canToggleNeedsCorrection = job.status === "IN_PROGRESS" || job.status === "PARTIALLY_RECEIVED" || job.status === "NEEDS_CORRECTION";
+  const hasCompanyAlloy = toThousandths(job.issuedAlloyGrossWeight) > BigInt(0);
 
   const unresolvedDiamonds = job.diamondLines
     .filter((l) => !l.resolvedAs)
@@ -184,10 +231,17 @@ export function JobDetailView({
             value={`${job.isCompleted ? job.finalMetalLossFineWeight : job.pendingFineWeight}g`}
           />
           <Stat label="Returned / Scrap" value={`${job.returnedMetalFineWeight}g / ${job.scrapFineWeight}g`} />
+          {hasCompanyAlloy ? (
+            <Stat
+              label="Copper/Alloy issued"
+              value={`${job.issuedAlloyGrossWeight}g · ${job.consumedAlloyGrossWeight}g used · ${job.returnedAlloyGrossWeight}g returned · ${job.alloyPendingGrossWeight}g pending`}
+            />
+          ) : null}
           {isOwner ? <Stat label="Metal cost issued" value={`₹${job.issuedMetalCost}`} /> : null}
           {isOwner ? <Stat label="Diamond cost issued" value={`₹${job.issuedDiamondCost}`} /> : null}
           {isOwner ? <Stat label="Other material cost" value={`₹${job.otherMaterialCost}`} /> : null}
           {isOwner ? <Stat label="Remaining WIP cost" value={`₹${job.remainingWipCost}`} /> : null}
+          {isOwner && hasCompanyAlloy ? <Stat label="Remaining alloy cost" value={`₹${job.remainingAlloyWipCost}`} /> : null}
           {isOwner ? <Stat label="Labour/making/setting so far" value={`₹${job.totalLabourCharge}`} /> : null}
           {isOwner ? <Stat label="Total manufacturing cost issued" value={`₹${job.totalIssuedCost}`} /> : null}
         </div>
@@ -217,7 +271,7 @@ export function JobDetailView({
             <div className="flex flex-wrap gap-2">
               {job.metalLines.map((l) => (
                 <span key={l.id} className="rounded-full border border-[var(--border)] px-2.5 py-1 text-xs text-zinc-600 dark:text-zinc-400">
-                  {l.purityDisplayName} · {l.grossWeight}g gross / {l.fineWeight}g fine
+                  {l.isAlloy ? `${l.purityDisplayName} · ${l.grossWeight}g` : `${l.purityDisplayName} Issued · ${l.grossWeight}g gross / ${l.fineWeight}g fine`}
                 </span>
               ))}
             </div>
@@ -285,9 +339,10 @@ export function JobDetailView({
                 jobId={job.id}
                 jobCode={job.jobCode}
                 jewelleryType={job.jewelleryType}
-                pendingFineWeight={Number(job.pendingFineWeight)}
+                pendingFineWeight={job.pendingFineWeight}
                 purities={purities}
-                issuedPurityIds={[...new Set(job.metalLines.map((l) => l.purityId))]}
+                issuedMetal={issuedMetalByPurity(job.metalLines)}
+                alloyPendingGrossWeight={job.alloyPendingGrossWeight}
                 unresolvedDiamonds={unresolvedDiamonds}
                 isOwner={isOwner}
                 onDone={handleSaved}
@@ -301,14 +356,15 @@ export function JobDetailView({
         <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
           <h3 className="mb-3 text-sm font-semibold text-zinc-700 dark:text-zinc-300">Receipts</h3>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[640px] text-sm">
+            <table className="w-full min-w-[720px] text-sm">
               <thead className="bg-[var(--surface-muted)] text-left text-xs text-zinc-500 dark:text-zinc-400">
                 <tr>
                   <th className="px-3 py-2">Receipt</th>
                   <th className="px-3 py-2">Date</th>
                   <th className="px-3 py-2">Returned</th>
                   <th className="px-3 py-2">Scrap</th>
-                  <th className="px-3 py-2">Loss</th>
+                  <th className="px-3 py-2">Process Loss</th>
+                  <th className="px-3 py-2">Alloy Added</th>
                   {isOwner ? <th className="px-3 py-2">Charges</th> : null}
                 </tr>
               </thead>
@@ -317,14 +373,20 @@ export function JobDetailView({
                   <tr key={r.id}>
                     <td className="px-3 py-2 font-medium text-zinc-800 dark:text-zinc-200">{r.receiptCode}</td>
                     <td className="px-3 py-2">{new Date(r.receiveDate).toLocaleDateString("en-IN")}</td>
-                    <td className="px-3 py-2">{r.returnedMetalFineWeight}g</td>
+                    <td className="px-3 py-2">
+                      {r.returnedMetalFineWeight}g
+                      {toThousandths(r.returnedAlloyGrossWeight) > BigInt(0) ? ` + ${r.returnedAlloyGrossWeight}g alloy` : ""}
+                    </td>
                     <td className="px-3 py-2">{r.scrapFineWeight}g</td>
                     <td className="px-3 py-2">
                       {r.processLossFineWeight}g{r.isAbnormalLoss ? " (abnormal)" : ""}
                     </td>
+                    <td className="px-3 py-2">{r.alloyAddedWeight}g</td>
                     {isOwner ? (
                       <td className="px-3 py-2">
-                        ₹{(Number(r.labourCharge) + Number(r.makingCharge) + Number(r.settingCharge) + Number(r.platingCharge) + Number(r.otherExpense)).toFixed(2)}
+                        ₹{r.totalCharges}
+                        {r.karigarAlloyCost && Number(r.karigarAlloyCost) > 0 ? ` + ₹${r.karigarAlloyCost} alloy` : ""}
+                        {r.unabsorbedCost && Number(r.unabsorbedCost) > 0 ? ` (₹${r.unabsorbedCost} expensed)` : ""}
                       </td>
                     ) : null}
                   </tr>
@@ -347,10 +409,13 @@ export function JobDetailView({
                 ) : null}
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium text-zinc-900 dark:text-zinc-50">
-                    {o.finishedCode} · {jewelleryTypeLabel(o.jewelleryType)}
+                    {o.finishedCode} · {jewelleryTypeLabel(o.jewelleryType)} · {o.purityDisplayName}
+                    {o.sourcePurityDisplayName && o.sourcePurityDisplayName !== o.purityDisplayName ? ` (from ${o.sourcePurityDisplayName})` : ""}
                   </p>
                   <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                    Qty {o.quantity} · {o.netMetalWeight}g net / {o.fineMetalWeight}g fine · QC: {o.qcStatus.replace(/_/g, " ")}
+                    Qty {o.quantity} · {o.netMetalWeight}g net / {o.fineMetalWeight}g fine
+                    {toThousandths(o.alloyAddedWeight) > BigInt(0) ? ` · Alloy Added ${o.alloyAddedWeight}g` : ""} · QC:{" "}
+                    {o.qcStatus.replace(/_/g, " ")}
                     {isOwner ? ` · ₹${o.totalCost}` : ""}
                   </p>
                 </div>

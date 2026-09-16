@@ -921,6 +921,11 @@ enum MetalType {
   SILVER
   PLATINUM
   OTHER
+  // Phase 7 — Company-owned copper/alloy stock. Its purities carry 0%
+  // precious-metal fineness, so it never contributes fine weight; a job
+  // tracks it by GROSS weight in its own cost pool (JewelleryJob
+  // issuedAlloyGrossWeight / remainingAlloyWipCost).
+  ALLOY
 }
 
 // Configurable, never a hardcoded legal/purity assumption in code — every
@@ -1131,8 +1136,19 @@ model JewelleryJob {
   karigarAddedFineWeight  Decimal @default(0) @db.Decimal(10, 3)
   karigarAddedCost        Decimal @default(0) @db.Decimal(14, 2)
 
+  // Phase 7 — Company-owned Copper/Alloy (MetalType ALLOY, 0% fineness)
+  // issued to this job. Tracked by GROSS weight in its own cost pool,
+  // separate from remainingWipCost (which is fine-bearing metal only and
+  // drains by fine weight). Pending alloy = issued − consumed − returned.
+  issuedAlloyGrossWeight   Decimal @default(0) @db.Decimal(10, 3)
+  issuedAlloyCost          Decimal @default(0) @db.Decimal(14, 2)
+  consumedAlloyGrossWeight Decimal @default(0) @db.Decimal(10, 3)
+  returnedAlloyGrossWeight Decimal @default(0) @db.Decimal(10, 3)
+  remainingAlloyWipCost    Decimal @default(0) @db.Decimal(14, 2)
+
   // Drains to exactly 0 as receipts resolve it — mirrors DiamondJob's
   // remainingWipCost (see src/lib/diamond/posting.ts for the pattern).
+  // Phase 7: fine-bearing metal only — Company alloy has its own pool above.
   remainingWipCost  Decimal @default(0) @db.Decimal(14, 2)
   totalLabourCharge Decimal @default(0) @db.Decimal(14, 2)
 
@@ -1274,6 +1290,26 @@ model JewelleryReceipt {
   karigarAddedFineWeight Decimal @default(0) @db.Decimal(10, 3)
   karigarAddedCost       Decimal @default(0) @db.Decimal(14, 2)
 
+  // Phase 7 — Alloy Added in this receipt's outputs, split by source. The
+  // three gross weights always total exactly the alloy computed from the
+  // outputs (net weight not explained by consumed issued metal — see
+  // src/lib/jewellery/metalMath.ts computeOutputMetal).
+  companyAlloyGrossWeight  Decimal @default(0) @db.Decimal(10, 3)
+  // Company alloy pool cost moved into finished jewellery by this receipt
+  // (consumed alloy, plus any normal alloy loss absorbed on a final receipt).
+  companyAlloyCost         Decimal @default(0) @db.Decimal(14, 2)
+  karigarAlloyGrossWeight  Decimal @default(0) @db.Decimal(10, 3)
+  // Posted once, with this receipt: Dr Finished Jewellery Inventory / Cr AP (Karigar).
+  karigarAlloyCost         Decimal @default(0) @db.Decimal(14, 2)
+  includedAlloyGrossWeight Decimal @default(0) @db.Decimal(10, 3)
+  returnedAlloyGrossWeight Decimal @default(0) @db.Decimal(10, 3)
+  alloyLossGrossWeight     Decimal @default(0) @db.Decimal(10, 3)
+  // Cost this receipt resolved with no finished output to carry it (a
+  // returns-only final receipt's unabsorbable loss, or charges on a receipt
+  // with no output) — expensed to Business Expenses instead of leaving
+  // value in Finished Jewellery Inventory with no item behind it.
+  unabsorbedCost           Decimal @default(0) @db.Decimal(14, 2)
+
   labourCharge  Decimal @default(0) @db.Decimal(14, 2)
   makingCharge  Decimal @default(0) @db.Decimal(14, 2)
   settingCharge Decimal @default(0) @db.Decimal(14, 2)
@@ -1326,6 +1362,19 @@ model FinishedJewellery {
   purity                  MetalPurity @relation(fields: [purityId], references: [id])
   finenessPercentSnapshot Decimal     @db.Decimal(6, 3)
   fineMetalWeight         Decimal     @db.Decimal(10, 3)
+
+  // Phase 7 — the output's purity (above) is an ATTRIBUTE of the finished
+  // piece; the metal actually consumed is the job's issued SOURCE purity,
+  // snapshotted here (e.g. 24K issued, 18K output). For a same-purity
+  // output both snapshots name the same purity. Nullable: rows created
+  // before Phase 7 predate this record and are left untouched.
+  sourcePurityDisplayNameSnapshot String?
+  sourceFinenessPercentSnapshot   Decimal? @db.Decimal(6, 3)
+  // Net weight not explained by consumed source metal (e.g. copper added to
+  // 24K to make 18K), and its real cost share — alloyCost is already
+  // INCLUDED inside metalCost below; stored separately for display only.
+  alloyAddedWeight Decimal @default(0) @db.Decimal(10, 3)
+  alloyCost        Decimal @default(0) @db.Decimal(14, 2)
 
   // Allocated across outputs when a receipt has more than one — see
   // src/lib/jewellery/allocation.ts. Always sums exactly back to the

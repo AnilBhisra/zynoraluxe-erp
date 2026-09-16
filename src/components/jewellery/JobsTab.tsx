@@ -22,7 +22,8 @@ export type SerializedJewelleryJob = {
   status: string;
   issuedMetalFineWeight: string;
   pendingFineWeight: string;
-  totalIssuedCost: string;
+  /** Owner-only — null for Staff (redacted on the server). */
+  totalIssuedCost: string | null;
 };
 
 const STATUS_LABELS: Record<string, string> = {

@@ -11,7 +11,7 @@ const booleanFlag = z
   .default("false")
   .transform((v) => v === "true");
 
-export const METAL_TYPE_ENUM = z.enum(["GOLD", "SILVER", "PLATINUM", "OTHER"]);
+export const METAL_TYPE_ENUM = z.enum(["GOLD", "SILVER", "PLATINUM", "OTHER", "ALLOY"]);
 export const JEWELLERY_TYPE_ENUM = z.enum([
   "RING",
   "EARRINGS",
@@ -28,14 +28,22 @@ export const JEWELLERY_TYPE_ENUM = z.enum([
 // Metal / Purity master (Owner-only)
 // ---------------------------------------------------------------------------
 
-export const metalPuritySchema = z.object({
-  metalType: METAL_TYPE_ENUM,
-  displayName: z.string().trim().min(1, "Enter a display name, e.g. 18K.").max(50),
-  finenessPercent: z.coerce
-    .number()
-    .positive("Fineness must be greater than zero.")
-    .max(100, "Fineness cannot exceed 100%."),
-});
+export const metalPuritySchema = z
+  .object({
+    metalType: METAL_TYPE_ENUM,
+    displayName: z.string().trim().min(1, "Enter a display name, e.g. 18K.").max(50),
+    finenessPercent: z.coerce.number().min(0, "Fineness cannot be negative.").max(100, "Fineness cannot exceed 100%."),
+  })
+  .superRefine((data, ctx) => {
+    // Copper/Alloy carries no precious metal, so it must never add fine
+    // weight to a job; every other metal's purity must have some.
+    if (data.metalType === "ALLOY" && data.finenessPercent !== 0) {
+      ctx.addIssue({ code: "custom", path: ["finenessPercent"], message: "Copper/Alloy has no precious-metal fineness — enter 0." });
+    }
+    if (data.metalType !== "ALLOY" && data.finenessPercent <= 0) {
+      ctx.addIssue({ code: "custom", path: ["finenessPercent"], message: "Fineness must be greater than zero." });
+    }
+  });
 export type MetalPurityInput = z.infer<typeof metalPuritySchema>;
 
 // ---------------------------------------------------------------------------
@@ -178,6 +186,12 @@ export const receiveFinishedJewellerySchema = z.object({
   scrapMetalLines: z.array(metalReturnScrapLineSchema).default([]),
   karigarAddedFineWeight: z.coerce.number().min(0).default(0),
   karigarAddedCost: z.coerce.number().min(0).default(0),
+  // Phase 7 — how the outputs' Alloy Added was sourced (must total the
+  // computed alloy exactly; the server recomputes and enforces it).
+  companyAlloyGrossWeight: z.coerce.number().min(0, "Alloy weight cannot be negative.").default(0),
+  karigarAlloyGrossWeight: z.coerce.number().min(0, "Alloy weight cannot be negative.").default(0),
+  karigarAlloyCost: z.coerce.number().min(0, "Alloy charge cannot be negative.").default(0),
+  includedAlloyGrossWeight: z.coerce.number().min(0, "Alloy weight cannot be negative.").default(0),
   labourCharge: z.coerce.number().min(0).default(0),
   makingCharge: z.coerce.number().min(0).default(0),
   settingCharge: z.coerce.number().min(0).default(0),

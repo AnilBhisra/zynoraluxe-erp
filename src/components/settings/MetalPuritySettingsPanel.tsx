@@ -7,9 +7,22 @@ import { Field } from "@/components/ui/Field";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { METAL_TYPES, metalTypeLabel } from "@/lib/jewellery/types";
 import { useFieldId } from "@/lib/utils/useFieldId";
 
 export type MetalPurityRow = { id: string; metalType: string; displayName: string; finenessPercent: string; isActive: boolean };
+
+function MetalTypeOptions() {
+  return (
+    <>
+      {METAL_TYPES.map((m) => (
+        <option key={m.value} value={m.value}>
+          {m.label}
+        </option>
+      ))}
+    </>
+  );
+}
 
 function AddPurityForm() {
   const [state, formAction, pending] = useActionState(createMetalPurity, undefined);
@@ -27,14 +40,11 @@ function AddPurityForm() {
           defaultValue="GOLD"
           className="h-11 rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900 dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
         >
-          <option value="GOLD">Gold</option>
-          <option value="SILVER">Silver</option>
-          <option value="PLATINUM">Platinum</option>
-          <option value="OTHER">Other</option>
+          <MetalTypeOptions />
         </select>
       </div>
       <div className="w-40">
-        <Field label="Display name" name="displayName" placeholder="e.g. 18K" />
+        <Field label="Display name" name="displayName" placeholder="e.g. 9K" />
       </div>
       <div className="w-32">
         <Field label="Fineness %" name="finenessPercent" type="number" step="0.001" min={0} max={100} />
@@ -67,10 +77,7 @@ function EditPurityForm({ purity, onDone }: { purity: MetalPurityRow; onDone: ()
           defaultValue={purity.metalType}
           className="h-10 rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900 dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
         >
-          <option value="GOLD">Gold</option>
-          <option value="SILVER">Silver</option>
-          <option value="PLATINUM">Platinum</option>
-          <option value="OTHER">Other</option>
+          <MetalTypeOptions />
         </select>
       </div>
       <div className="w-40">
@@ -101,7 +108,7 @@ export function MetalPuritySettingsPanel({ purities }: { purities: MetalPurityRo
         aria-expanded={open}
         className="text-sm font-medium text-zinc-700 underline underline-offset-4 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-zinc-100"
       >
-        {open ? "Hide Metal/Purity master" : "Metal/Purity master (gold, silver, platinum karats)"}
+        {open ? "Hide Metal/Purity master" : "Metal/Purity master (gold, silver, platinum karats, Copper/Alloy)"}
       </button>
 
       {open ? (
@@ -109,6 +116,7 @@ export function MetalPuritySettingsPanel({ purities }: { purities: MetalPurityRo
           <p className="text-xs text-zinc-500 dark:text-zinc-400">
             Fineness % drives every fine-weight calculation across Metal Stock and Jewellery Jobs. Existing jobs keep a snapshot
             of the fineness at the time they were issued/received, so editing a purity here never changes historical figures.
+            Copper/Alloy is Company-owned alloy stock with 0% fineness — it adds weight and cost, never fine metal.
           </p>
           {purities.length === 0 ? (
             <EmptyState title="No purities yet" description="Add your first metal purity below." />
@@ -123,7 +131,7 @@ export function MetalPuritySettingsPanel({ purities }: { purities: MetalPurityRo
                   <li key={p.id} className="flex items-center justify-between gap-3 bg-[var(--surface)] p-3 text-sm">
                     <span>
                       <span className="font-medium text-zinc-800 dark:text-zinc-200">
-                        {p.metalType} · {p.displayName}
+                        {metalTypeLabel(p.metalType)} · {p.displayName}
                       </span>{" "}
                       <span className="text-xs text-zinc-500 dark:text-zinc-400">({p.finenessPercent}% fine)</span>
                       {!p.isActive ? (

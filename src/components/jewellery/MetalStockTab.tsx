@@ -11,14 +11,21 @@ import { Field } from "@/components/ui/Field";
 import { Alert } from "@/components/ui/Alert";
 import { EmptyState } from "@/components/ui/EmptyState";
 import type { PartyOption } from "@/components/accounting/PartySelect";
+import { metalTypeLabel } from "@/lib/jewellery/types";
 
+/** Usable stock (issuable, valued in Metal Inventory) and recoverable scrap
+ * (never issuable, valued in Scrap Metal Inventory) per metal + purity.
+ * Cost figures are Owner-only and arrive as null for Staff. */
 export type SerializedMetalStockBucket = {
   metalType: string;
   purityId: string;
   purityDisplayName: string;
   grossWeight: string;
   fineWeight: string;
-  costValue: string;
+  costValue: string | null;
+  scrapGrossWeight: string;
+  scrapFineWeight: string;
+  scrapCostValue: string | null;
 };
 
 export type SerializedMetalPurchase = {
@@ -30,7 +37,7 @@ export type SerializedMetalPurchase = {
   purityDisplayName: string;
   grossWeight: string;
   fineWeight: string;
-  totalPurchaseCost: string;
+  totalPurchaseCost: string | null;
 };
 
 function OpeningMetalStockForm({ purities, onDone }: { purities: MetalPurityOption[]; onDone?: () => void }) {
@@ -62,7 +69,7 @@ function OpeningMetalStockForm({ purities, onDone }: { purities: MetalPurityOpti
         >
           {[...new Set(purities.map((p) => p.metalType))].map((mt) => (
             <option key={mt} value={mt}>
-              {mt}
+              {metalTypeLabel(mt)}
             </option>
           ))}
         </select>
@@ -133,7 +140,7 @@ function MetalAdjustmentForm({ purities, onDone }: { purities: MetalPurityOption
         >
           {[...new Set(purities.map((p) => p.metalType))].map((mt) => (
             <option key={mt} value={mt}>
-              {mt}
+              {metalTypeLabel(mt)}
             </option>
           ))}
         </select>
@@ -205,13 +212,16 @@ export function MetalStockTab({
   }
 
   const totalFineWeight = buckets.reduce((sum, b) => sum + Number(b.fineWeight), 0);
-  const totalCost = buckets.reduce((sum, b) => sum + Number(b.costValue), 0);
+  const totalScrapFineWeight = buckets.reduce((sum, b) => sum + Number(b.scrapFineWeight), 0);
+  const totalCost = buckets.reduce((sum, b) => sum + Number(b.costValue ?? 0), 0);
+  const totalScrapCost = buckets.reduce((sum, b) => sum + Number(b.scrapCostValue ?? 0), 0);
+  const hasScrap = buckets.some((b) => Number(b.scrapGrossWeight) > 0);
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
-          <p className="text-xs text-zinc-500 dark:text-zinc-400">Total fine metal</p>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">Total fine metal (usable)</p>
           <p className="mt-1 text-lg font-semibold text-zinc-900 dark:text-zinc-50">{totalFineWeight.toFixed(3)}g</p>
         </div>
         {isOwner ? (
@@ -220,28 +230,44 @@ export function MetalStockTab({
             <p className="mt-1 text-lg font-semibold text-zinc-900 dark:text-zinc-50">₹{totalCost.toFixed(2)}</p>
           </div>
         ) : null}
+        {hasScrap ? (
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">Scrap (fine, not issuable)</p>
+            <p className="mt-1 text-lg font-semibold text-zinc-900 dark:text-zinc-50">{totalScrapFineWeight.toFixed(3)}g</p>
+          </div>
+        ) : null}
+        {isOwner && hasScrap ? (
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">Scrap cost</p>
+            <p className="mt-1 text-lg font-semibold text-zinc-900 dark:text-zinc-50">₹{totalScrapCost.toFixed(2)}</p>
+          </div>
+        ) : null}
       </div>
 
       {buckets.length > 0 ? (
         <div className="overflow-x-auto rounded-xl border border-[var(--border)]">
-          <table className="w-full min-w-[480px] text-sm">
+          <table className="w-full min-w-[640px] text-sm">
             <thead className="bg-[var(--surface-muted)] text-left text-xs text-zinc-500 dark:text-zinc-400">
               <tr>
                 <th className="px-3 py-2">Metal · Purity</th>
                 <th className="px-3 py-2">Gross weight</th>
                 <th className="px-3 py-2">Fine weight</th>
                 {isOwner ? <th className="px-3 py-2">Cost</th> : null}
+                <th className="px-3 py-2">Scrap</th>
+                {isOwner ? <th className="px-3 py-2">Scrap cost</th> : null}
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {buckets.map((b) => (
                 <tr key={b.purityId}>
                   <td className="px-3 py-2 font-medium text-zinc-800 dark:text-zinc-200">
-                    {b.metalType} · {b.purityDisplayName}
+                    {metalTypeLabel(b.metalType)} · {b.purityDisplayName}
                   </td>
                   <td className="px-3 py-2">{b.grossWeight}g</td>
                   <td className="px-3 py-2">{b.fineWeight}g</td>
                   {isOwner ? <td className="px-3 py-2">₹{b.costValue}</td> : null}
+                  <td className="px-3 py-2">{Number(b.scrapGrossWeight) > 0 ? `${b.scrapGrossWeight}g / ${b.scrapFineWeight}g fine` : "—"}</td>
+                  {isOwner ? <td className="px-3 py-2">{Number(b.scrapGrossWeight) > 0 ? `₹${b.scrapCostValue}` : "—"}</td> : null}
                 </tr>
               ))}
             </tbody>
@@ -310,7 +336,7 @@ export function MetalStockTab({
                   <td className="px-3 py-2">{new Date(p.purchaseDate).toLocaleDateString("en-IN")}</td>
                   <td className="px-3 py-2">{p.supplierName}</td>
                   <td className="px-3 py-2">
-                    {p.metalType} · {p.purityDisplayName}
+                    {metalTypeLabel(p.metalType)} · {p.purityDisplayName}
                   </td>
                   <td className="px-3 py-2">
                     {p.grossWeight}g / {p.fineWeight}g fine

@@ -20,11 +20,17 @@ import { JobDetailView, type SerializedJobDetail } from "@/components/diamond/Jo
 import { PolishedStockTab, type SerializedPolishedDiamond } from "@/components/diamond/PolishedStockTab";
 import type { AvailablePieceOption } from "@/components/diamond/IssueRoughForm";
 import { resolveDiamondAssetUrl } from "@/lib/storage/diamondMedia";
+import { ownerOnly } from "@/lib/security/ownerOnly";
 import type { DiamondJobStatus } from "@/generated/prisma/enums";
 
 export const metadata: Metadata = {
   title: "Diamond · ZYNORALUXE",
 };
+
+// Every cost / carrying-value / labour-payable figure below goes through
+// ownerOnly() on the server: a Staff request's RSC payload must not carry
+// those values at all, not merely have them hidden by the client
+// components (PHASE_7_CURRENT_STATE_AUDIT.md §4.16).
 
 type SearchParams = {
   tab?: string;
@@ -107,7 +113,7 @@ async function RoughStockTabContent({ search, isOwner }: { search: string; isOwn
       supplierName: lot.supplierName,
       piecesCount: lot.piecesCount,
       totalRoughCarat: lot.totalRoughCarat.toFixed(3),
-      totalPurchaseCost: lot.totalPurchaseCost.toFixed(2),
+      totalPurchaseCost: ownerOnly(isOwner, lot.totalPurchaseCost.toFixed(2)),
       status: lot.status,
       availableCarat: lot.availableCarat.toFixed(3),
       photoUrl: await resolveDiamondAssetUrl(lot.photoAssetId),
@@ -116,7 +122,7 @@ async function RoughStockTabContent({ search, isOwner }: { search: string; isOwn
           id: p.id,
           roughCode: p.roughCode,
           carat: p.carat.toFixed(3),
-          allocatedCost: p.allocatedCost.toFixed(2),
+          allocatedCost: ownerOnly(isOwner, p.allocatedCost.toFixed(2)),
           costLocked: p.costLocked,
           status: p.status,
           colorEstimate: p.colorEstimate,
@@ -181,9 +187,9 @@ async function JobsTabContent({
       returnedRoughCarat: detail.returnedRoughCarat.toFixed(3),
       pendingCarat: detail.pendingCarat.toFixed(3),
       status: detail.status,
-      issuedCostValue: detail.issuedCostValue.toFixed(2),
-      remainingWipCost: detail.remainingWipCost.toFixed(2),
-      totalLabourCharge: detail.totalLabourCharge.toFixed(2),
+      issuedCostValue: ownerOnly(isOwner, detail.issuedCostValue.toFixed(2)),
+      remainingWipCost: ownerOnly(isOwner, detail.remainingWipCost.toFixed(2)),
+      totalLabourCharge: ownerOnly(isOwner, detail.totalLabourCharge.toFixed(2)),
       notes: detail.notes,
       isCompleted: detail.isCompleted,
       finalWeightLossCarat: detail.finalWeightLossCarat ? detail.finalWeightLossCarat.toFixed(3) : null,
@@ -199,14 +205,14 @@ async function JobsTabContent({
         returnedRoughCarat: r.returnedRoughCarat.toFixed(3),
         weightLossCarat: r.weightLossCarat.toFixed(3),
         yieldPercent: r.yieldPercent.toFixed(3),
-        labourCharge: r.labourCharge.toFixed(2),
+        labourCharge: ownerOnly(isOwner, r.labourCharge.toFixed(2)),
       })),
       timeline: detail.timeline.map((m) => ({
         id: m.id,
         type: m.type,
         pieces: m.pieces,
         carat: m.carat.toFixed(3),
-        costValue: m.costValue.toFixed(2),
+        costValue: ownerOnly(isOwner, m.costValue.toFixed(2)),
         sourceDocument: m.sourceDocument,
         createdAt: m.createdAt.toISOString(),
       })),
@@ -242,7 +248,7 @@ async function JobsTabContent({
     issuedRoughCarat: j.issuedRoughCarat.toFixed(3),
     pendingCarat: j.pendingCarat.toFixed(3),
     status: j.status,
-    totalLabourCharge: j.totalLabourCharge.toFixed(2),
+    totalLabourCharge: ownerOnly(isOwner, j.totalLabourCharge.toFixed(2)),
   }));
 
   const availablePieces: AvailablePieceOption[] = availablePiecesRaw.map((p) => ({
@@ -250,7 +256,7 @@ async function JobsTabContent({
     roughCode: p.roughCode,
     lotCode: p.lotCode,
     carat: p.carat.toFixed(3),
-    allocatedCost: p.allocatedCost.toFixed(2),
+    allocatedCost: ownerOnly(isOwner, p.allocatedCost.toFixed(2)),
   }));
 
   return (
@@ -301,8 +307,8 @@ async function PolishedStockTabContent({ search, isOwner }: { search: string; is
       widthMm: p.widthMm ? p.widthMm.toFixed(3) : null,
       heightMm: p.heightMm ? p.heightMm.toFixed(3) : null,
       certificateStatus: p.certificateStatus,
-      allocatedCost: p.allocatedCost.toFixed(2),
-      costPerCarat: p.costPerCarat.toFixed(2),
+      allocatedCost: ownerOnly(isOwner, p.allocatedCost.toFixed(2)),
+      costPerCarat: ownerOnly(isOwner, p.costPerCarat.toFixed(2)),
       status: p.status,
       photoUrl: await resolveDiamondAssetUrl(p.photoAssetId),
       certFileUrl: await resolveDiamondAssetUrl(p.certFileAssetId),

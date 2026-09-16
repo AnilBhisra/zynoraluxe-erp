@@ -14,7 +14,8 @@ export type AvailablePolishedDiamondOption = {
   polishedCode: string;
   shape: string;
   carat: string;
-  allocatedCost: string;
+  /** Owner-only — null for Staff (redacted on the server). */
+  allocatedCost: string | null;
   certificateStatus: string;
 };
 

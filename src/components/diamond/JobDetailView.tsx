@@ -27,9 +27,10 @@ export type SerializedJobDetail = {
   returnedRoughCarat: string;
   pendingCarat: string;
   status: string;
-  issuedCostValue: string;
-  remainingWipCost: string;
-  totalLabourCharge: string;
+  /** Owner-only cost figures — null for Staff (redacted on the server). */
+  issuedCostValue: string | null;
+  remainingWipCost: string | null;
+  totalLabourCharge: string | null;
   notes: string | null;
   isCompleted: boolean;
   finalWeightLossCarat: string | null;
@@ -45,9 +46,9 @@ export type SerializedJobDetail = {
     returnedRoughCarat: string;
     weightLossCarat: string;
     yieldPercent: string;
-    labourCharge: string;
+    labourCharge: string | null;
   }[];
-  timeline: { id: string; type: string; pieces: number; carat: string; costValue: string; sourceDocument: string; createdAt: string }[];
+  timeline: { id: string; type: string; pieces: number; carat: string; costValue: string | null; sourceDocument: string; createdAt: string }[];
 };
 
 const MOVEMENT_LABELS: Record<string, string> = {
@@ -183,7 +184,7 @@ export function JobDetailView({ job, isOwner }: { job: SerializedJobDetail; isOw
                   <th className="px-3 py-2">Returned</th>
                   <th className="px-3 py-2">Loss</th>
                   <th className="px-3 py-2">Yield</th>
-                  <th className="px-3 py-2">Labour</th>
+                  {isOwner ? <th className="px-3 py-2">Labour</th> : null}
                 </tr>
               </thead>
               <tbody className="divide-y divide-[var(--border)]">
@@ -197,7 +198,7 @@ export function JobDetailView({ job, isOwner }: { job: SerializedJobDetail; isOw
                     <td className="px-3 py-2">{r.returnedRoughCarat}ct</td>
                     <td className="px-3 py-2">{r.weightLossCarat}ct</td>
                     <td className="px-3 py-2">{r.yieldPercent}%</td>
-                    <td className="px-3 py-2">₹{r.labourCharge}</td>
+                    {isOwner ? <td className="px-3 py-2">₹{r.labourCharge}</td> : null}
                   </tr>
                 ))}
               </tbody>

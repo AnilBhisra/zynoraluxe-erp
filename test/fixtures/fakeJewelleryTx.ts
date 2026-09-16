@@ -146,6 +146,11 @@ export function createFakeJewelleryTx() {
           scrapFineWeight: "0",
           karigarAddedFineWeight: "0",
           karigarAddedCost: "0",
+          issuedAlloyGrossWeight: "0",
+          issuedAlloyCost: "0",
+          consumedAlloyGrossWeight: "0",
+          returnedAlloyGrossWeight: "0",
+          remainingAlloyWipCost: "0",
           wipVoucherId: null,
           ...data,
         };
