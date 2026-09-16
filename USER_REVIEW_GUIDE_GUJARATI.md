@@ -33,7 +33,7 @@ database directly touch કર્યા વગર નવો password set કર�
 |---|---|
 | **Dashboard** | આજની business સ્થિતિ — Cash, Bank, કેટલા રૂપિયા લેવાના/આપવાના, Rough/Polished stock, Karigar પાસે material, pending jobs — બધું એક નજરમાં. |
 | **Accounting** | Purchase, Sale, Payment આપવું/લેવું, Expense — બધા પૈસાની entries. Parties (Customer/Supplier/Karigar) ની list, ledger, અને reports પણ અહીં. "New Sale" દબાવો ત્યારે હવે પહેલા પૂછશે — "Sell Finished Jewellery" (તૈયાર jewellery stock માંથી piece વેચવું, stock+profit આપોઆપ update થાય) કે "Other / Accounting-only Sale" (જૂની રીતે, ફક્ત accounting entry, stock touch ન થાય). |
-| **Diamond** | Rough diamond ખરીદવું, Karigarને cutting-polishing માટે આપવું, Polished diamond પાછું લેવું, Polished stock જોવું. |
+| **Diamond** | હવે 4 ભાગ: **Rough Diamond** (rough ખરીદી અને stock), **Manufacturer** (process માટે rough આપવો — 4P / Laser, HPHT / Grow, Polishing, Rough Polish), **Job Manufacturer** (polished packets process માટે આપવા અને size-wise પાછા લેવા), **Polished Diamond** (polished stock, packets, Party / Supplier અને Dalal / Broker સાથે નવી ખરીદી). |
 | **Jewellery Job** | Customer માટે jewellery job બનાવવો, Karigarને metal અને diamonds આપવા, તૈયાર jewellery પાછી લેવી. હવે 3 tabs: **Jobs**, **Metal Stock**, અને **Finished Stock** (તૈયાર jewellery ની list — કયો piece Available છે, કયો વેચાયો, ક્યાં return/damaged થયો). Finished Stock tab પર (ફક્ત Owner માટે) દરેક વેચેલા sale ને "Cancel sale" કરી શકાય, અને દરેક item ને "Return (Sellable)" કે "Return (Damaged)" કરી શકાય — તેમજ જેની Costing finalized હોય એવા item પર "Compare vs Costing" દબાવીને Phase 5 ના estimate profit અને Phase 6 ના real profit ની સરખામણી જોઈ શકાય. |
 | **Costing** (ફક્ત Owner માટે) | કોઈ jewellery piece ની ખરી cost કાઢવી, વેચવા પહેલાં estimate બનાવવું, selling price અને profit નક્કી કરવું, Customer માટે સાફ quotation બનાવવું. |
 | **Settings** (ફક્ત Owner માટે) | Company details, Staff accounts, Metal/Purity master, GST rates — બધા master settings. |
@@ -52,13 +52,14 @@ database directly touch કર્યા વગર નવો password set કર�
    જુઓ (save ન કરો, ફક્ત જુઓ). પછી form બંધ કરો.
 3. **Accounting → Parties** — એક નવો test Customer બનાવો (નામમાં
    "TEST" લખો, જેથી પછી ઓળખાય).
-4. **Diamond → Rough Stock** — હાલનો rough stock જુઓ.
+4. **Diamond → Rough Diamond** — હાલનો rough stock જુઓ.
 5. **Jewellery Job → Metal Stock** — હાલનું metal stock જુઓ.
 6. **Costing → Cost Sheets** — હાલની costings ની list જુઓ. એક
    જૂની Finalized costing ખોલી "Open customer quotation" દબાવો —
    શું એમાં ફક્ત selling price દેખાય છે, cost/profit નહીં?
-7. **Settings → Metal/Purity master** — 7 purity rows બરાબર
-   દેખાય છે? (10K, 14K, 18K, 22K, 24K, 925 Silver, 950 Platinum)
+7. **Settings → Metal/Purity master** — purity rows બરાબર
+   દેખાય છે? (10K, 14K, 18K, 22K, 24K, 925 Silver, 950 Platinum, અને
+   Phase 7 પછી 9K તથા Copper/Alloy)
 8. **Jewellery Job → Finished Stock** — list જુઓ. Staff account થી
    જુઓ તો cost/profit column, "Compare vs Costing" બટન, અને sale
    cancel/return કરવાનું section — આ ત્રણેય ન દેખાવા જોઈએ, ફક્ત
@@ -136,6 +137,34 @@ Login બંધ કરી દે છે — આ bug નથી, ઇરાદા�
 screen પર કંઈ અલગ દેખાય એવું નથી, ફક્ત background માં વધારાનું
 રક્ષણ છે. જો કોઈ page/button કંઈક "blocked" અથવા "not loading" જેવું
 અસામાન્ય વર્તન બતાવે, તો §6 પ્રમાણે screenshot સાથે report કરો.
+
+## 8. Phase 7 — નવું શું છે અને કેવી રીતે તપાસવું
+
+Test data ના નામમાં "TEST" લખો. Save કરેલી entry delete થતી નથી —
+ખોટું થાય તો cancel/opposite entry કરવી પડે, એટલે ધ્યાનથી કરો.
+
+1. **Diamond** ખોલો — ઉપર 4 tabs: Rough Diamond, Manufacturer, Job
+   Manufacturer, Polished Diamond. નામ બરાબર આ જ છે?
+2. **Polished Diamond → + New Polished Purchase** — "Party / Supplier"
+   અને "Dalal / Broker" labels દેખાય છે? Brokerage પસંદ કરી rate
+   નાખો ત્યારે નીચે brokerage અને Landed diamond cost બદલાય છે?
+3. **Manufacturer → Issue Rough** — "Process" list માં 4P / Laser,
+   HPHT / Grow, Polishing, Rough Polish છે?
+4. **Job Manufacturer → Issue packets** — packets ની list અને Pieces /
+   Carat બોક્સ દેખાય છે? બધા pieces પણ ઓછો carat નાખો — warning આવે છે?
+5. **Jewellery Job → Receive Finished Jewellery** — "24K Issued",
+   "Final Purity: 18K / 14K / 9K", "Fine Gold Weight", "Alloy Added",
+   "Returned Gold", "Scrap", "Process Loss" દેખાય છે? Alloy નો સરવાળો
+   ખોટો હોય તો Save બંધ રહે છે?
+6. **Staff account** થી Polished Diamond અને Job Manufacturer ખોલો —
+   કોઈ cost, landed cost, brokerage amount કે charge ₹ દેખાવો ન જોઈએ;
+   "Cancel purchase", "Adjust count" અને "Damaged/Lost" વિકલ્પ પણ ન
+   દેખાવા જોઈએ.
+7. **Accounting → New Purchase** — પહેલા "What are you buying?" પૂછે છે
+   અને Rough Diamond / Polished Diamond / Metal / Other purchase વિકલ્પ
+   આપે છે?
+8. **CSV** — Metal Stock, Polished Diamond અને Job Manufacturer પર
+   "Download CSV" ચાલે છે? Staff ની CSV માં cost column ન હોવું જોઈએ.
 
 ---
 

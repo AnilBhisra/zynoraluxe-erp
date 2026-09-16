@@ -363,13 +363,14 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
       title: "Diamond Manufacturing (Rough → Polished)",
       keywords: [
         "rough", "polished", "diamond", "karigar", "shape", "recut", "lot", "piece",
+        "packet", "dalal", "broker", "manufacturer", "job manufacturer", "4p", "laser", "hpht", "polishing",
         "રફ", "પોલિશ્ડ", "ડાયમંડ", "કારીગર",
       ],
       body: (
         <div className="flex flex-col gap-4">
           <SubHeading id="task-rough-purchase">New Rough Purchase (Rough Diamond ખરીદવો)</SubHeading>
           <Steps>
-            <li>Diamond → Rough Stock પર જાવ.</li>
+            <li>Diamond → Rough Diamond પર જાવ.</li>
             <li><Btn>New Rough Purchase</Btn> દબાવો.</li>
             <li>Supplier, તારીખ, Rate, કુલ ખર્ચ (Total purchase cost), અને carat ભરો.</li>
             <li><Btn>Save rough purchase</Btn> દબાવો.</li>
@@ -382,9 +383,9 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
 
           <SubHeading id="task-issue-rough">Issue Rough — Karigar ને rough આપવો</SubHeading>
           <Steps>
-            <li>Diamond → Cutting-Polishing Jobs પર જાવ.</li>
+            <li>Diamond → Manufacturer પર જાવ.</li>
             <li><Btn>Issue Rough</Btn> દબાવો.</li>
-            <li>Karigar પસંદ કરો, તારીખ ભરો.</li>
+            <li>Karigar / Manufacturer પસંદ કરો, તારીખ ભરો.</li>
             <li>યાદીમાંથી જે rough piece આપવો હોય એ ✓ ટીક કરો.</li>
             <li><Btn>Required shape</Btn> માં આકાર પસંદ કરો (નીચે જુઓ).</li>
             <li><Btn>Issue Rough</Btn> ફરીથી દબાવીને save કરો.</li>
@@ -476,6 +477,47 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
           <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
             Job માં હજુ polished diamond receive ના થયો હોય ત્યાં સુધી જ Owner Job ને Cancel કરી શકે — rough પાછો stock માં આવી જાય છે અને હિસાબ ઊલટાય છે.
           </p>
+          <SubHeading>Polished Diamond ખરીદવો (Party / Supplier અને Dalal / Broker)</SubHeading>
+          <Steps>
+            <li>Diamond → Polished Diamond પર જાવ, <Btn>+ New Polished Purchase</Btn> દબાવો.</li>
+            <li>Purchase date અને <Btn>Party / Supplier</Btn> પસંદ કરો.</li>
+            <li>દરેક packet માટે Shape, Size, Pieces, Carat, Quality, Colour, certificate અને rate ભરો. એક size = એક packet line.</li>
+            <li>Supplier નું bill amount (GST અને brokerage વગર) ભરો.</li>
+            <li>Dalal હોય તો <Btn>Dalal / Broker</Btn> ભાગમાં brokerage કેવી રીતે છે એ પસંદ કરો: bill માં પહેલેથી સામેલ, diamond ની કિંમતમાં ઉમેરવું, કે business expense — પછી Dalal, method (percentage / per carat / fixed) અને rate ભરો.</li>
+            <li>નીચેનો સરવાળો તપાસી <Btn>Save polished purchase</Btn> દબાવો.</li>
+          </Steps>
+          <Note>Brokerage એક જ વાર નોંધાય છે. “Already included” પસંદ કર્યું હોય તો તે ફરી ઉમેરાતું નથી. Dalal ને payment પછીથી Payment Given થી આપો.</Note>
+          <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+            <strong>Grouped stock</strong> માં એકસરખા stones (shape, size, quality, colour, lab, certificate અને ક્યાંથી આવ્યા) સાથે દેખાય છે; ખરીદેલા અને rough માંથી બનેલા stones ક્યારેય ભેગા થતા નથી. <strong>Each packet</strong> માં દરેક packet અલગ દેખાય છે.
+          </p>
+          <BadgeRow>
+            <OwnerOnlyBadge />
+          </BadgeRow>
+          <p className="text-sm text-zinc-600 dark:text-zinc-400">
+            Purchase cancel (<Btn>Cancel purchase</Btn>) ફક્ત ત્યારે થાય જ્યારે કોઈ packet માંથી હજુ કંઈ વપરાયું ન હોય. ગણતરીમાં stones ઓછા/વધુ નીકળે તો Owner <Btn>Adjust count</Btn> વાપરે — ભૂલ થાય તો ઊલટું adjustment કરો.
+          </p>
+
+          <SubHeading>Manufacturer — process માટે rough આપવો</SubHeading>
+          <Steps>
+            <li>Diamond → Manufacturer પર જાવ, <Btn>Issue Rough</Btn> દબાવો.</li>
+            <li><Btn>Karigar / Manufacturer</Btn> અને rough pieces પસંદ કરો.</li>
+            <li><Btn>Process</Btn> પસંદ કરો: 4P / Laser, HPHT / Grow, Polishing કે Rough Polish. Process ન હોય તો સામાન્ય cutting &amp; polishing રહે.</li>
+            <li>Charge નક્કી હોય તો <Btn>Process charge</Btn> (per carat / per piece / fixed) અને rate ભરો.</li>
+          </Steps>
+          <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+            4P / Laser, HPHT / Grow અને Rough Polish માંથી માલ <strong>rough</strong> તરીકે પાછો આવે છે — job ખોલી <Btn>Receive processed rough</Btn> માં દરેક piece નો carat ભરો; દરેક piece નવો Rough Diamond piece બને છે. Polishing માંથી polished આવે, એટલે <Btn>Receive Polished</Btn> વાપરો. HPHT / Grow ફક્ત બહાર કરાવેલું કામ (issue-return) છે.
+          </p>
+
+          <SubHeading>Job Manufacturer — polished packets process માટે આપવા</SubHeading>
+          <Steps>
+            <li>Diamond → Job Manufacturer પર જાવ, <Btn>Issue packets</Btn> દબાવો.</li>
+            <li>Manufacturer, Process અને charge ભરો; દરેક packet માંથી આપેલા Pieces અને Carat ભરો (size-wise).</li>
+            <li><Btn>Issue to Manufacturer</Btn> દબાવો.</li>
+            <li>માલ પાછો આવે ત્યારે job ખોલી <Btn>Receive return</Btn> દબાવો. દરેક size માટે: Returned to stock, Used in Jewellery Job (કયો job એ પસંદ કરો), અથવા Damaged/Lost (ફક્ત Owner, કારણ સાથે).</li>
+            <li>Size બદલાઈ હોય તો “Size (if changed)” માં નવી size લખો — નવો packet બનશે.</li>
+            <li><Btn>Save return</Btn> દબાવો.</li>
+          </Steps>
+          <Note>થોડું જ પાછું આવ્યું હોય તો બાકીનું Manufacturer પાસે pending રહે છે — loss ગણાતું નથી. એક packet ના બધા pieces પાછા આવી જાય ત્યારે જ બાકીનો carat Process Loss ગણાય.</Note>
         </div>
       ),
     },
@@ -486,6 +528,7 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
       title: "Metal Stock અને Jewellery Jobs",
       keywords: [
         "metal", "purity", "jewellery job", "set", "returned", "needs correction",
+        "24k", "18k", "14k", "9k", "alloy", "copper", "scrap", "process loss",
         "મેટલ", "જ્વેલરી જોબ", "શુદ્ધતા",
       ],
       body: (
@@ -523,6 +566,21 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
             <li>જરૂર હોય તો “More details” ખોલી Other material line (દા.ત. Enamel work) ઉમેરો.</li>
             <li><Btn>Issue Materials</Btn> દબાવીને save કરો.</li>
           </Steps>
+
+          <SubHeading>24K આપ્યું, 18K / 14K / 9K તૈયાર આવ્યું</SubHeading>
+          <Steps>
+            <li>Issue Materials માં 24K gold આપો. Company નું Copper/Alloy પણ આપવું હોય તો Copper/Alloy purity ની line ઉમેરો.</li>
+            <li><Btn>Receive Finished Jewellery</Btn> માં ઉપર “24K Issued” અને pending fine weight દેખાશે.</li>
+            <li>દરેક output માં net weight ભરો અને <Btn>Final Purity</Btn> માં 18K, 14K કે 9K પસંદ કરો. Fine Gold Weight અને Alloy Added આપોઆપ ગણાશે.</li>
+            <li>Alloy Added ને વહેંચો: From Company Copper/Alloy, Karigar-added alloy (charge સાથે), કે Included, no separate cost — સરવાળો બરાબર Alloy Added જેટલો જ હોવો જોઈએ.</li>
+            <li>Returned Gold, Scrap ભરો; નીચે Reconciliation તપાસો. હિસાબ મળે નહીં ત્યાં સુધી Save થતું નથી.</li>
+          </Steps>
+          <Note>ઉદાહરણ: 10.000 g 24K (100%) આપ્યું → 12.000 g 18K આવ્યું = 9.000 g fine gold + 3.000 g alloy, અને 1.000 g fine Process Loss. Scrap અલગ stock માં જાય છે, ફરી issue થતો નથી.</Note>
+
+          <SubHeading>Polished Diamond packets Jewellery Job માં</SubHeading>
+          <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+            Issue Materials માં “Polished Diamond packets” માંથી દરેક packet ના Pieces અને Carat ભરો. Receive વખતે દરેક packet માટે Set (કયા output માં), Returned, કે Damaged/Lost (Owner) ભરો. જે ન ભરો એ Karigar પાસે pending રહે; બધું મળી જાય ત્યારે જ job Completed થાય.
+          </p>
 
           <SubHeading>Mark In Progress</SubHeading>
           <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">

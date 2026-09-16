@@ -36,14 +36,23 @@ protection, Owner-only cancellation/item-level return (sellable vs
 damaged)/customer refund, and an actual Gross Sales → Net Profit P&L
 alongside the existing provisional one. Simple UI for non-accounting
 staff; Staff never receives cost/COGS/margin data from the server.
+Phase 7 (branch `phase-7-polished-metal-process`): corrected metal stock
+readings (informational consumption, separate scrap pool), 24K issued →
+18K/14K/9K finished with Company/Karigar/Included Alloy Added and an exact
+fine-weight reconciliation; direct Polished Diamond Purchase with
+Party / Supplier and Dalal / Broker and immutable packet stock; configurable
+Manufacturer processes (4P / Laser, HPHT / Grow, Polishing, Rough Polish) on
+the Manufacturer section and bulk packet jobs on the Job Manufacturer section.
 
 Full scope is defined in `../ZYNORALUXE_JEWELLERY_ERP_MASTER_PLAN.md`
 (the locked V1 source of truth, plus a Section 13 "Scope History"
 recording this Owner-approved Phase 6 addition). This build implements
-**Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5 + Phase 6**. See
+**Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5 + Phase 6 + Phase 7**. See
 `PHASE_2_VERIFICATION.md`, `PHASE_3_VERIFICATION.md`,
-`PHASE_4_VERIFICATION.md`, `PHASE_5_VERIFICATION.md`, and
-`PHASE_6_VERIFICATION.md` for the detailed verification reports.
+`PHASE_4_VERIFICATION.md`, `PHASE_5_VERIFICATION.md`,
+`PHASE_6_VERIFICATION.md` and `PHASE_7_VERIFICATION.md` for the detailed
+verification reports (Phase 7's real-database and browser checks are still
+pending — see "Known Phase 7 limitations").
 
 ## Stack
 
@@ -140,6 +149,9 @@ Visit http://localhost:3000 — it redirects to `/login` when signed out.
 | `npm run db:seed` | Create/update the Owner account from `.env` |
 | `npm run db:cleanup-login-rate-limits` | Deletes expired login rate-limit rows (safe to run any time; also happens opportunistically on successful logins — see "Login rate limiting" below) |
 | `npm run db:backfill-finished-jewellery-stock` | Idempotent one-time backfill: creates a `PRODUCED_IN` stock movement for any pre-Phase-6 `FinishedJewellery` output that doesn't have one yet. Safe to run any number of times. |
+| `npm run db:seed-phase7-masters` | Production-safe, create-only Phase 7 masters: 9K and Copper/Alloy purities, the 5400 Brokerage & Commission account, and the four Manufacturer processes. Never updates an existing row and never touches the Owner account (unlike `db:seed`). |
+| `npm run db:phase7-metal-reconciliation` | Read-only: old vs corrected usable metal pool and the scrap pool per purity, against GL 1300/1310. |
+| `npm run db:phase7-diamond-reconciliation` | Read-only: voucher debit = credit, packet ledger sanity, 1220 vs stones + packets, 1210 vs open job WIP. Exits non-zero on a mismatch. |
 | `npx tsx scripts/phase6LiveVerification.ts` | Real-database Phase 6 regression script — proves the full Sale/cancel/return/refund/concurrency chain against the live database using `PHASE6TEST`-prefixed rows, then deletes everything it created. Not wired into `package.json` (deliberately explicit to run). See `PHASE_6_VERIFICATION.md` §6, §11 and §13 (the real browser E2E pass covers the same ground end-to-end, live). |
 
 ## Database foundation
@@ -838,6 +850,138 @@ since Staff legitimately creates Jewellery Jobs), Costing's
 separate, Owner-gated wrappers — every Costing action, image uploads
 included, independently enforces `requireOwner()`.
 
+## Phase 7 — Polished Diamond, Manufacturer processes and metal purity
+
+Phase 7 is specified in `../ZYNORALUXE_PHASE_7_CLAUDE_MASTER_INSTRUCTIONS.md`.
+The audit of what existed before it is `PHASE_7_CURRENT_STATE_AUDIT.md`, the
+design (decisions D1–D10, every journal entry, the test and E2E plans) is
+`PHASE_7_IMPROVEMENT_PLAN.md`, and the evidence is `PHASE_7_VERIFICATION.md`.
+Every Phase 7 schema change is a forward-only, additive migration:
+`20260915120000_phase7a_metal_alloy_cross_purity`,
+`20260916090000_phase7b_polished_purchase_packets`,
+`20260917090000_phase7c_manufacturer_processes` and
+`20260918090000_phase7d_stock_adjustment_voucher`.
+
+### Metal stock — two corrected readings
+
+Two balance defects were found and fixed on the **read** side; no historical
+movement is rewritten:
+
+- `CONSUMED_OUT` is now informational. `ISSUE_OUT` already removed the metal
+  from stock, so counting `CONSUMED_OUT` again deducted it twice.
+- `SCRAP_RETURN_IN` goes to a separate **scrap pool** per purity, valued in
+  1310 Scrap Metal Inventory. Scrap is never issuable stock.
+
+`npm run db:phase7-metal-reconciliation` prints, read-only, the old figure,
+the corrected usable pool and the scrap pool per purity against GL 1300/1310,
+and flags any purity where scrap had already been re-issued (the Owner
+resolves that with an authorized adjustment — the script never writes).
+The Owner chose report-only for past postings.
+
+### 24K issued → 18K / 14K / 9K finished
+
+A job issued one fine-bearing purity (e.g. `24K Issued`) may receive outputs
+in a lower **Final Purity: 18K / 14K / 9K**. The final purity is an attribute
+of the finished piece; the consumed source stays the issued 24K pool, and no
+movement is ever posted against an 18K/14K/9K pool that was never issued.
+Fineness is snapshotted on every line (9K = 37.5%, 14K = 58.5%, 18K = 75%;
+24K stays at the Owner's 99.9%).
+
+All weights use exact integer thousandths shared by the form preview and the
+server (`src/lib/jewellery/metalMath.ts`):
+
+- `Fine Gold Weight` = net weight × final fineness
+- source gross equivalent = fine ÷ issued fineness
+- `Alloy Added` = net weight − source gross equivalent
+
+Reconciliation, enforced with no tolerance:
+`Issued 24K Fine + Added Fine = Finished Fine + Returned Fine + Scrap Fine + Process-Loss Fine`.
+Locked example (24K at 100%): 10.000 g issued → 12.000 g 18K = 9.000 g fine +
+3.000 g alloy, and 1.000 g fine is Process Loss.
+
+`Alloy Added` must be split exactly across **Company Copper/Alloy** (real
+stock with its own gross-weight pool and cost, issued like any metal line),
+**Karigar-added** (with an optional charge payable to the Karigar, posted
+once) and **Included, no separate cost**. The receive form shows the full
+reconciliation (`Gross Weight`, `Fine Gold Weight`, `Alloy Added`,
+`Returned Gold`, `Scrap`, `Process Loss`) and blocks saving until it balances.
+
+### Polished Diamond — purchases and packet stock
+
+Bulk polished stock is held as **packets** (`PolishedPacket`) with an
+immutable ledger (`PolishedPacketMovement`); balances are always summed from
+the ledger, never stored. Single certified stones from rough manufacturing
+stay `PolishedDiamond` rows, unchanged.
+
+- **New Polished Purchase** (Diamond → Polished Diamond): Purchase date,
+  `Party / Supplier`, packet lines (Shape, Size, Pieces, Carat, Quality,
+  Colour, certificate/Lab, rate basis and rate), supplier amount, GST,
+  payment, and `Dalal / Broker`. Each line becomes one packet with provenance
+  `PURCHASED` — never a fabricated parent Rough ID.
+- **Dalal / Broker** is a Party type. Brokerage is per carat, percentage of
+  the supplier amount, or fixed; the broker's name, method, rate and amount
+  are snapshotted. Treatment decides the posting, exactly once:
+  *already included in the supplier amount* (recorded only),
+  *added to diamond cost* (inside 1220, credited to the broker) or
+  *business expense* (5400 Brokerage & Commission, credited to the broker).
+  Brokerage is paid later through Payment Given.
+- **Merge key**: shape, custom shape, size, quality, colour, lab,
+  certificate status, provenance and currency. Packets sharing it appear
+  together in the **Grouped stock** view; nothing is merged or averaged
+  destructively, and purchased and manufactured stones are never grouped.
+- Packets can be issued to **Jewellery Jobs** by pieces and carat
+  (Dr 1320 / Cr 1220) and resolved at receipt as set, returned or
+  damaged/lost (Owner). Anything not entered stays pending with the Karigar;
+  a job completes only when every packet piece and carat is resolved.
+- **Owner cancellation** of a purchase is allowed only while every packet is
+  exactly as bought. **Owner count adjustments** post their own voucher
+  (`STOCK_ADJUSTMENT`: out Dr 5100 / Cr 1220 at carat-share cost, in
+  Dr 1220 / Cr 5100 at the cost entered).
+- Every packet mutation takes the packet's row lock before reading its
+  ledger, so concurrent issues cannot both draw on the same balance.
+
+### Manufacturer and Job Manufacturer
+
+Processes are a Settings master (Owner), seeded with `4P / Laser`,
+`HPHT / Grow`, `Polishing` and `Rough Polish`. `HPHT / Grow` is an outsourced
+issue-return-cost process only — there is no in-house growing module. Each
+process says whether it returns rough or polished and its default charge
+basis; jobs snapshot the name and output kind.
+
+- **Manufacturer** (Diamond → Manufacturer; the former Cutting-Polishing Jobs,
+  same engine): Issue Rough gains an optional process and agreed charge
+  (per carat, per piece or fixed — fixed is charged on the receipt that
+  closes the job). A **rough** process returns processed rough: each piece
+  becomes a new Available Rough Diamond piece carrying its share of resolved
+  WIP plus the charge (Dr 1200 / Cr 1210 + Cr 2000 Manufacturer). A
+  **polished** process uses the existing Receive Polished. Jobs without a
+  process show as "Cutting-Polishing (legacy)".
+- **Job Manufacturer** (Diamond → Job Manufacturer): polished packets issued
+  size-wise to a Manufacturer for a process (Dr 1210 / Cr 1220). Returns are
+  entered per issued line as returned to stock (back into the original
+  packet, or a child packet with provenance `RETURNED_FROM_JOB` when the size
+  changed), used in an open Jewellery Job (Dr 1320, linked to that job), or
+  damaged/lost (Owner, reason required, Dr 5100). The charge is capitalised
+  into returned and used stones and credited to the Manufacturer.
+  - A partial return never recognises loss. A line closes only when every
+    one of its pieces is accounted for; its remaining carat gap is then
+    Process Loss (absorbed, or expensed when the Owner marks it abnormal).
+  - The Owner may cancel before any return (mirror reversal, stones back
+    into their packets). Cancelling a Jewellery Job also reverses the cost of
+    stones that reached it from a Job Manufacturer return.
+
+### Reports, exports and reconciliation
+
+- CSV downloads: Metal Stock, Polished Diamond (grouped and per packet),
+  Job Manufacturer. Cost columns are included only for the Owner.
+- Accounting → New Purchase first asks what is being bought and sends stock
+  purchases (Rough Diamond, Polished Diamond, Metal) to the page that posts
+  their stock; "Other purchase" keeps the accounting-only form.
+- `npm run db:phase7-diamond-reconciliation` (read-only): every voucher's
+  debit = credit, packet ledger sanity, 1220 against stones + packets, 1210
+  against open Diamond Job and Job Manufacturer WIP. It exits non-zero on any
+  mismatch.
+
 ## Posting / cancellation rules
 
 Every voucher type posts a balanced set of journal lines inside one DB
@@ -1119,6 +1263,25 @@ rejected the same way a Staff click would be.
   captured-and-replayed real wire request and a full network-payload
   audit for cost-field absence (`PHASE_6_VERIFICATION.md` §14).
 
+## Permissions (Phase 7 additions)
+
+- **Staff** may record Polished Purchases (including the broker details on
+  entry), issue and return Job Manufacturer packets, issue rough for a
+  process, receive processed rough, and issue/resolve packet stones on
+  Jewellery Jobs.
+- **Owner-only**, enforced inside each Server Action (`requireOwner()` or a
+  role check before the posting engine runs): cancelling a Polished Purchase
+  or a Job Manufacturer job, packet count adjustments, the process master,
+  and every damaged/lost or abnormal-loss classification (stones, packets,
+  Job Manufacturer returns). The generic Accounting "Cancel voucher" refuses
+  Polished Purchase and `STOCK_ADJUSTMENT` vouchers.
+- **No cost data for Staff.** Every cost, landed cost, brokerage amount,
+  WIP, charge rate and charge figure on the Diamond, Jewellery Jobs and
+  Metal pages goes through `ownerOnly()` on the server, so a Staff response
+  carries `null`, not a hidden value. The Phase 7 DTOs live in
+  `src/lib/diamond/phase7Serializers.ts` and are tested by searching the Staff
+  payload for every secret value.
+
 ## Authentication & authorization model
 
 - `src/lib/auth/password.ts` — bcrypt hashing (12 rounds).
@@ -1307,6 +1470,31 @@ paise (no-tolerance) reconciliation, the damaged-return stock-equation
 proof, three real bugs found and fixed during that pass, and full
 test-data cleanup proof.
 
+## Known Phase 7 limitations
+
+- **Not yet verified against a real database or in a real browser.** Every
+  engine, action and serializer is covered by automated tests that run the
+  real posting code against in-memory transaction fixtures, and
+  `next build` passes, but applying the four migrations to an isolated
+  database, the seed idempotency proof, the reconciliation scripts on real
+  data and the Owner/Staff desktop/mobile browser E2E are still pending an
+  isolated test database. See `PHASE_7_VERIFICATION.md`.
+- Past postings are **reported, not rewritten** (Owner decision). The
+  corrected metal balances are the true ones; the metal reconciliation script
+  shows the difference.
+- The Phase 4 metal stock adjustment still posts stock only, with no voucher
+  (unchanged). Phase 7 packet adjustments do post their accounting.
+- A Jewellery Job return of packet stones always re-enters the packet it came
+  from (no size change is recorded there); size changes are recorded on Job
+  Manufacturer returns.
+- Stones marked "used in Jewellery Job" are refused when that Jewellery Job
+  already holds stones from the same packet, so two cost layers are never
+  averaged into one issue line.
+- Job Manufacturer cancellation is allowed only before the first return;
+  after that, corrections are made with further returns or adjustments.
+- Postgres cannot remove enum values, so the Phase 7 enum additions are the
+  one irreversible part of the migrations (unused values are harmless).
+
 ## What's deliberately not built yet
 
 Accounting, Diamond, Jewellery Jobs, Costing, and Finished Jewellery
@@ -1318,8 +1506,7 @@ COGS/P&L integration** — closing the intentionally-excluded Version 1
 gap where an Accounting Sale voucher didn't reference, consume, or
 reduce `FinishedJewellery` stock, and Profit & Loss stayed provisional
 (no automatic cost-of-goods matching). **Built and live-verified against the real database and a real
-browser this pass** (branch `phase-6-finished-sales`, not yet
-committed/merged/deployed) — see `PHASE_6_VERIFICATION.md` for the
+browser** (committed as `8d6df2c`; not deployed as part of Phase 6) — see `PHASE_6_VERIFICATION.md` for the
 full record, including the Phase 5 vs Phase 6 comparison view, the
 Owner and Staff browser E2E passes, and `V1_FINAL_ACCEPTANCE.md` §16
 for the original decision to add Phase 6.

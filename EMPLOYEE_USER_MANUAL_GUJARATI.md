@@ -53,14 +53,14 @@ Preview/totals ચકાસ્યા પછી જ form નો Save/Create butto
 
 ## 6. Rough Purchase અને rough pieces
 
-Diamond → `New Rough Purchase` ખોલો. Supplier, invoice/date અને purchase values भरो. દરેક actual rough piece માટે તેની ઓળખ, shape/weight જેવી દેખાતી વિગતો भरो અને Save કરો. એક physical piece ને duplicate row ન બનાવો. Save પછી `Rough Stock` માં lot/pieces અને status તપાસો.
+Diamond → `New Rough Purchase` ખોલો. Supplier, invoice/date અને purchase values भरो. દરેક actual rough piece માટે તેની ઓળખ, shape/weight જેવી દેખાતી વિગતો भरो અને Save કરો. એક physical piece ને duplicate row ન બનાવો. Save પછી `Rough Diamond` માં lot/pieces અને status તપાસો.
 
 ## 7. Issue Rough, Custom Shape, partial/final receipt અને Recut
 
 **Staff કરી શકે**
 
-1. Diamond → Jobs માં `Issue Rough` ખોલો.
-2. Karigar અને available rough piece પસંદ કરો.
+1. Diamond → `Manufacturer` માં `Issue Rough` ખોલો.
+2. `Karigar / Manufacturer` અને available rough piece પસંદ કરો (process માટે §18 જુઓ).
 3. Shape list માં ન હોય તો `Custom` પસંદ કરીને સાચું shape લખો.
 4. `Issue Rough` પહેલાં piece, Karigar અને weight તપાસો.
 5. માલ પાછો આવે ત્યારે job ખોલી `Receive Polished` વાપરો.
@@ -148,6 +148,60 @@ Costing → `New Costing` માં `A piece we already finished` (actual) અ�
 Settings → `Company details` માં company/GST details માત્ર verified document પ્રમાણે બદલવી. `Staff accounts` → `Add a Staff account` માં Name, Email અને Temporary password ભરી `Add staff account` દબાવો. દરેક employee માટે અલગ account રાખો; Owner password share ન કરો. Employee જાય ત્યારે `Deactivate`; પાછો આવે ત્યારે જ `Reactivate`.
 
 Metal/Purity master અને Accounting settings ના GST/payment accounts બદલતાં પહેલાં existing transactions પર અસર તપાસો. Credentials, database URL, keys, session values અથવા private configuration manual/notes માં ક્યારેય ન લખો.
+
+**ફક્ત Owner:** Settings → `Manufacturer processes` માં process ઉમેરો, નામ બદલો કે Inactive કરો. બદલાવ ફક્ત પછી issue થતા jobs પર લાગે છે.
+
+## 17. Polished Diamond ખરીદી — Party / Supplier અને Dalal / Broker
+
+**Staff કરી શકે**
+
+1. Diamond → `Polished Diamond` → `+ New Polished Purchase` ખોલો.
+2. Purchase date અને `Party / Supplier` પસંદ કરો.
+3. દરેક size માટે એક packet line: Shape, Size, Pieces, Carat, Quality, Colour, certificate અને rate ભરો. એક physical packet ને બે lines માં ન તોડો.
+4. Supplier bill નું amount (GST અને brokerage વગર) ભરો. Packet rates નો સરવાળો અલગ આવે તો warning દેખાશે — bill સાથે મેળવો.
+5. Dalal હોય તો `Dalal / Broker` ભાગમાં brokerage પસંદ કરો: bill માં પહેલેથી સામેલ, diamond ની કિંમતમાં ઉમેરવું, કે business expense. પછી Dalal, method (percentage / per carat / fixed) અને rate ભરો.
+6. નીચે Payable to Party / Supplier, Payable to Dalal / Broker અને Landed diamond cost તપાસી `Save polished purchase` દબાવો.
+
+Brokerage એક જ વાર નોંધાય છે. Dalal ને payment પછીથી Accounting → `Payment Given` થી આપો. `Grouped stock` માં એકસરખા stones સાથે દેખાય છે; ખરીદેલા અને rough માંથી બનેલા stones ક્યારેય ભેગા થતા નથી.
+
+**ફક્ત Owner:** `Cancel purchase` (કોઈ packet વપરાયો ન હોય ત્યાં સુધી જ) અને ગણતરીમાં ફરક આવે ત્યારે `Adjust count`. ભૂલ થાય તો ઊલટું adjustment કરો, record delete નહીં.
+
+## 18. Manufacturer — process માટે rough આપવો
+
+1. Diamond → `Manufacturer` → `Issue Rough` ખોલો.
+2. `Karigar / Manufacturer` અને rough pieces પસંદ કરો.
+3. `Process` પસંદ કરો: `4P / Laser`, `HPHT / Grow`, `Polishing` અથવા `Rough Polish`. Process ન હોય તો સામાન્ય cutting & polishing.
+4. Charge નક્કી હોય તો `Process charge` (Per carat / Per piece / Fixed amount) અને rate ભરો. Fixed charge job પૂરો થાય ત્યારે જ લાગે છે.
+5. `4P / Laser`, `HPHT / Grow`, `Rough Polish` માંથી માલ rough તરીકે આવે: job ખોલી `Receive processed rough` માં દરેક piece નો carat ભરો — દરેક piece નવો Rough Diamond piece બનશે.
+6. `Polishing` માંથી polished આવે: `Receive Polished` વાપરો.
+
+`HPHT / Grow` ફક્ત બહાર કરાવેલું issue-return કામ છે. થોડું જ પાછું આવ્યું હોય તો બાકીનું Manufacturer પાસે pending રહે; "Nothing more will come back" ટીક કરો ત્યારે જ weight loss ગણાય.
+
+## 19. Job Manufacturer — polished packets process માટે
+
+1. Diamond → `Job Manufacturer` → `Issue packets` ખોલો.
+2. Manufacturer, Process, Issue date અને charge ભરો.
+3. દરેક packet માંથી આપેલા Pieces અને Carat ભરો (size-wise). બધા pieces લો તો બધો carat પણ લેવો પડે.
+4. `Issue to Manufacturer` દબાવો.
+5. માલ પાછો આવે: job ખોલી `Receive return`. દરેક size માટે પસંદ કરો — `Returned to stock`, `Used in Jewellery Job` (કયો job એ પસંદ કરો), અથવા `Damaged/Lost (Owner)` કારણ સાથે.
+6. Size બદલાઈ હોય તો "Size (if changed)" માં નવી size લખો — નવો packet બનશે.
+7. `Save return` દબાવો.
+
+એક packet ના બધા pieces પાછા ન આવે ત્યાં સુધી બાકીનો માલ pending રહે છે, loss નહીં. Job બંધ કરવા "Nothing more will come back" ટીક કરો — ત્યારે દરેક piece નો હિસાબ આપવો જ પડે.
+
+**ફક્ત Owner:** Damaged/Lost, abnormal loss, અને કોઈ return આવ્યા પહેલાં `Cancel job`.
+
+## 20. 24K Issued → 18K / 14K / 9K અને Alloy Added
+
+1. Jewellery Job ખોલી `Issue Materials` માં 24K gold આપો. Company નું Copper/Alloy આપવું હોય તો `Copper/Alloy` purity ની line ઉમેરો.
+2. Polished packets વાપરવા હોય તો "Polished Diamond packets" માં દરેક packet ના Pieces અને Carat ભરો.
+3. માલ આવે ત્યારે `Receive Finished Jewellery` ખોલો — ઉપર "24K Issued" દેખાશે.
+4. દરેક output માં net weight અને `Final Purity: 18K / 14K / 9K` પસંદ કરો. `Fine Gold Weight` અને `Alloy Added` આપોઆપ ગણાશે.
+5. `Alloy Added` ને વહેંચો: `From Company Copper/Alloy (g)`, `Karigar-added alloy (g)` (charge હોય તો `Karigar alloy charge (₹)`), અથવા `Included, no separate cost (g)`. સરવાળો બરાબર Alloy Added જેટલો જ હોવો જોઈએ.
+6. `Returned Gold` અને `Scrap` ભરો; packet stones માટે Set / Returned / Damaged (Owner) ભરો.
+7. નીચે Reconciliation તપાસો — હિસાબ મળે નહીં ત્યાં સુધી Save નહીં થાય.
+
+ઉદાહરણ: 10.000 g 24K (100%) આપ્યું → 12.000 g 18K આવ્યું = 9.000 g fine gold + 3.000 g alloy, અને 1.000 g fine `Process Loss`. Scrap અલગ stock માં જાય છે અને ફરી issue થતો નથી. 9K = 37.5%, 14K = 58.5%, 18K = 75%.
 
 ---
 

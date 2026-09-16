@@ -97,6 +97,7 @@ vi.mock("@/lib/storage/diamondMedia", () => ({
   deleteDiamondAsset: mocks.deleteDiamondAsset,
 }));
 
+import { Prisma } from "@/generated/prisma/client";
 import {
   cancelDiamondJobAction,
   adjustPacketStockAction,
@@ -495,5 +496,47 @@ describe("Phase 7 — Manufacturer and Job Manufacturer actions", () => {
     expect(mocks.cancelPacketProcessJob).not.toHaveBeenCalled();
     expect(mocks.diamondProcessCreate).not.toHaveBeenCalled();
     expect(mocks.adjustPacketStock).not.toHaveBeenCalled();
+  });
+});
+
+describe("Phase 7 — concurrent duplicate submission", () => {
+  const conflict = () =>
+    new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+      code: "P2002",
+      clientVersion: "test",
+      meta: { target: ["idempotencyKey"] },
+    });
+
+  it("a polished purchase that loses the race returns the purchase the winner saved, posting nothing twice", async () => {
+    mocks.polishedPurchaseFindUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ purchaseCode: "ZL-PP-2026-000009" });
+    mocks.createPolishedPurchase.mockRejectedValue(conflict());
+    const result = await createPolishedPurchaseAction(
+      undefined,
+      formData({
+        purchaseDate: "2026-09-18",
+        supplierId: "party-1",
+        supplierAmount: "1000",
+        idempotencyKey: "same-key",
+        linesJson: JSON.stringify([{ shape: "ROUND", sizeLabel: "1.00MM", pieces: 1, carat: "0.100", rateBasis: "FIXED_TOTAL", rate: "1000" }]),
+      })
+    );
+    expect(result).toEqual({ success: true, code: "ZL-PP-2026-000009" });
+    expect(mocks.createPolishedPurchase).toHaveBeenCalledTimes(1);
+  });
+
+  it("a Job Manufacturer return that loses the race returns the receipt the winner saved", async () => {
+    mocks.packetProcessReceiptFindUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ receiptCode: "ZL-PJR-2026-000004" });
+    mocks.receivePacketProcessReturn.mockRejectedValue(conflict());
+    const result = await receivePacketProcessReturnAction(
+      undefined,
+      formData({
+        jobId: "ppj-1",
+        receiveDate: "2026-09-18",
+        idempotencyKey: "same-key",
+        rowsJson: JSON.stringify([{ jobLineId: "l1", disposition: "RETURNED_TO_STOCK", pieces: 1, carat: "0.1" }]),
+      })
+    );
+    expect(result).toEqual({ success: true, code: "ZL-PJR-2026-000004" });
+    expect(mocks.receivePacketProcessReturn).toHaveBeenCalledTimes(1);
   });
 });
