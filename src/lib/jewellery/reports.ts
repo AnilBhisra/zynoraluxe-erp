@@ -3,7 +3,9 @@ import "server-only";
 import { prisma } from "@/lib/db/prisma";
 import { Decimal, type DecimalInput, round2, ZERO } from "@/lib/accounting/money";
 import { round3 } from "@/lib/diamond/allocation";
+import { shapeLabel } from "@/lib/diamond/shapes";
 import { getAuthoritativeInventoryCost } from "@/lib/jewellery/finishedSalesPosting";
+import { jobIssuedCosts } from "@/lib/jewellery/jobIssuedCost";
 import { sumMetalPool } from "@/lib/jewellery/posting";
 import type {
   FinishedJewelleryStockStatus,
@@ -197,7 +199,7 @@ export async function listJewelleryJobs(filters?: {
     status: j.status,
     issuedMetalFineWeight: round3(j.issuedMetalFineWeight),
     pendingFineWeight: pendingFineWeightOf(j),
-    totalIssuedCost: round2(new Decimal(j.issuedMetalCost).plus(j.issuedDiamondCost).plus(j.otherMaterialCost)),
+    totalIssuedCost: jobIssuedCosts(j).totalIssuedCost,
   }));
 }
 
@@ -251,6 +253,23 @@ export type JewelleryJobDetail = JewelleryJobRow & {
     carat: Decimal;
     costAtIssue: Decimal;
     resolvedAs: string | null;
+  }[];
+  /** Phase 7 polished packets on this job — issued from stock, or used from a
+   * Job Manufacturer return. costAtIssue is Owner-only on the page. */
+  packetLines: {
+    id: string;
+    packetCode: string;
+    label: string;
+    fromJobManufacturer: boolean;
+    piecesAtIssue: number;
+    caratAtIssue: Decimal;
+    costAtIssue: Decimal;
+    setPieces: number;
+    setCarat: Decimal;
+    returnedPieces: number;
+    returnedCarat: Decimal;
+    damagedPieces: number;
+    damagedCarat: Decimal;
   }[];
   otherMaterialLines: {
     id: string;
@@ -339,6 +358,7 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
         targetPurity: true,
         metalIssueLines: { include: { purity: true } },
         diamondIssueLines: { include: { polishedDiamond: true } },
+        packetIssueLines: { include: { packet: true }, orderBy: { createdAt: "asc" } },
         otherMaterialLines: true,
         receipts: { orderBy: { receiveDate: "asc" } },
         finishedJewellery: { include: { purity: true } },
@@ -356,6 +376,7 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
     }),
   ]);
   if (!job) return null;
+  const issuedCosts = jobIssuedCosts(job);
 
   const timeline: JewelleryJobDetail["timeline"] = [
     ...metalMovements.map((m) => ({
@@ -397,7 +418,7 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
     targetFinishedWeight: job.targetFinishedWeight ? round3(job.targetFinishedWeight) : null,
     issuedMetalFineWeight: round3(job.issuedMetalFineWeight),
     issuedMetalCost: round2(job.issuedMetalCost),
-    issuedDiamondCost: round2(job.issuedDiamondCost),
+    issuedDiamondCost: issuedCosts.issuedDiamondCost,
     otherMaterialCost: round2(job.otherMaterialCost),
     remainingWipCost: round2(job.remainingWipCost),
     totalLabourCharge: round2(job.totalLabourCharge),
@@ -415,7 +436,7 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
       new Decimal(job.issuedAlloyGrossWeight).minus(job.consumedAlloyGrossWeight).minus(job.returnedAlloyGrossWeight)
     ),
     pendingFineWeight: pendingFineWeightOf(job),
-    totalIssuedCost: round2(new Decimal(job.issuedMetalCost).plus(job.issuedDiamondCost).plus(job.otherMaterialCost)),
+    totalIssuedCost: issuedCosts.totalIssuedCost,
     cancelledAt: job.cancelledAt,
     cancellationReason: job.cancellationReason,
     isCompleted: job.status === "COMPLETED",
@@ -443,6 +464,28 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
       carat: round3(l.caratAtIssue),
       costAtIssue: round2(l.costAtIssue),
       resolvedAs: l.resolvedAs,
+    })),
+    packetLines: job.packetIssueLines.map((l) => ({
+      id: l.id,
+      packetCode: l.packet.packetCode,
+      label: [
+        l.packet.shape === "CUSTOM" && l.packet.customShapeName ? l.packet.customShapeName : shapeLabel(l.packet.shape),
+        l.packet.sizeLabel,
+        l.packet.quality,
+        l.packet.colour,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      fromJobManufacturer: l.sourcePacketProcessReceiptLineId !== null,
+      piecesAtIssue: l.piecesAtIssue,
+      caratAtIssue: round3(l.caratAtIssue),
+      costAtIssue: round2(l.costAtIssue),
+      setPieces: l.setPieces,
+      setCarat: round3(l.setCarat),
+      returnedPieces: l.returnedPieces,
+      returnedCarat: round3(l.returnedCarat),
+      damagedPieces: l.damagedPieces,
+      damagedCarat: round3(l.damagedCarat),
     })),
     otherMaterialLines: job.otherMaterialLines.map((l) => ({
       id: l.id,

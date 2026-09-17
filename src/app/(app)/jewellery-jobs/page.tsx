@@ -17,6 +17,7 @@ import {
 import { listPolishedDiamonds } from "@/lib/diamond/reports";
 import { resolveJewelleryAssetUrl } from "@/lib/storage/jewelleryMedia";
 import { ownerOnly } from "@/lib/security/ownerOnly";
+import { serializeJobCostSummary, serializeJobPacketLines } from "@/lib/jewellery/jobDetailSerializers";
 import { JobsTab, type SerializedJewelleryJob } from "@/components/jewellery/JobsTab";
 import { JobDetailView, type SerializedJobDetail } from "@/components/jewellery/JobDetailView";
 import { MetalStockTab, type SerializedMetalStockBucket, type SerializedMetalPurchase } from "@/components/jewellery/MetalStockTab";
@@ -200,9 +201,7 @@ async function JobsTabContent({
       targetPurityDisplayName: detail.targetPurityDisplayName,
       targetFinishedWeight: detail.targetFinishedWeight ? detail.targetFinishedWeight.toFixed(3) : null,
       issuedMetalFineWeight: detail.issuedMetalFineWeight.toFixed(3),
-      issuedMetalCost: ownerOnly(isOwner, detail.issuedMetalCost.toFixed(2)),
-      issuedDiamondCost: ownerOnly(isOwner, detail.issuedDiamondCost.toFixed(2)),
-      otherMaterialCost: ownerOnly(isOwner, detail.otherMaterialCost.toFixed(2)),
+      ...serializeJobCostSummary(detail, isOwner),
       remainingWipCost: ownerOnly(isOwner, detail.remainingWipCost.toFixed(2)),
       totalLabourCharge: ownerOnly(isOwner, detail.totalLabourCharge.toFixed(2)),
       receivedFineWeight: detail.receivedFineWeight.toFixed(3),
@@ -217,7 +216,6 @@ async function JobsTabContent({
       remainingAlloyWipCost: ownerOnly(isOwner, detail.remainingAlloyWipCost.toFixed(2)),
       alloyPendingGrossWeight: detail.alloyPendingGrossWeight.toFixed(3),
       pendingFineWeight: detail.pendingFineWeight.toFixed(3),
-      totalIssuedCost: ownerOnly(isOwner, detail.totalIssuedCost.toFixed(2)),
       cancellationReason: detail.cancellationReason,
       isCompleted: detail.isCompleted,
       finalMetalLossFineWeight: detail.finalMetalLossFineWeight ? detail.finalMetalLossFineWeight.toFixed(3) : null,
@@ -241,6 +239,7 @@ async function JobsTabContent({
         costAtIssue: ownerOnly(isOwner, l.costAtIssue.toFixed(2)),
         resolvedAs: l.resolvedAs,
       })),
+      packetLines: serializeJobPacketLines(detail.packetLines, isOwner),
       otherMaterialLines: detail.otherMaterialLines.map((l) => ({
         id: l.id,
         description: l.description,

@@ -3,7 +3,8 @@ import "server-only";
 import { prisma } from "@/lib/db/prisma";
 import { SYSTEM_ACCOUNT_CODES } from "@/lib/accounting/accounts";
 import { Decimal, round2, ZERO } from "@/lib/accounting/money";
-import type { PartyType, VoucherStatus, VoucherType } from "@/generated/prisma/enums";
+import { voucherVisibilityWhere } from "@/lib/accounting/voucherVisibility";
+import type { PartyType, UserRole, VoucherStatus, VoucherType } from "@/generated/prisma/enums";
 
 async function accountIdsByCode(codes: string[]): Promise<Map<string, string>> {
   const accounts = await prisma.account.findMany({ where: { code: { in: codes } } });
@@ -204,6 +205,8 @@ export type VoucherListRow = {
 };
 
 export async function listVouchers(filters: {
+  /** Required: Staff never load internal costing vouchers (see voucherVisibility.ts). */
+  viewerRole: UserRole;
   types?: VoucherType[];
   status?: VoucherStatus;
   partyId?: string;
@@ -218,13 +221,18 @@ export async function listVouchers(filters: {
       status: filters.status,
       partyId: filters.partyId,
       date: { gte: filters.dateFrom, lte: filters.dateTo },
-      OR: filters.search
-        ? [
-            { voucherNumber: { contains: filters.search, mode: "insensitive" } },
-            { referenceNumber: { contains: filters.search, mode: "insensitive" } },
-            { party: { name: { contains: filters.search, mode: "insensitive" } } },
-          ]
-        : undefined,
+      AND: [
+        voucherVisibilityWhere(filters.viewerRole),
+        filters.search
+          ? {
+              OR: [
+                { voucherNumber: { contains: filters.search, mode: "insensitive" } },
+                { referenceNumber: { contains: filters.search, mode: "insensitive" } },
+                { party: { name: { contains: filters.search, mode: "insensitive" } } },
+              ],
+            }
+          : {},
+      ],
     },
     include: { party: true, paymentAccount: true },
     orderBy: [{ date: "desc" }, { createdAt: "desc" }],
@@ -335,7 +343,14 @@ export type ProfitAndLoss = {
   salesIncome: Decimal;
   purchases: Decimal;
   businessExpenses: Decimal;
-  /** salesIncome - purchases - businessExpenses. Provisional: rough/metal
+  /** Every EXPENSE-type account that has no dedicated line above or below
+   * (Purchases, Business Expenses, Finished Jewellery COGS and Damaged
+   * Jewellery Loss have their own), by account — e.g. Phase 7's 5400
+   * Brokerage & Commission. Only accounts with a non-zero net are listed. */
+  otherExpenses: { code: string; name: string; amount: Decimal }[];
+  /** Sum of otherExpenses. */
+  otherExpensesTotal: Decimal;
+  /** salesIncome - purchases - businessExpenses - otherExpensesTotal. Provisional: rough/metal
    * purchases posted through the generic Purchases account (non-inventory
    * misc procurement only — Metal/Rough purchases post to their own
    * inventory asset accounts, never here) have no matched cost-of-goods
@@ -352,7 +367,8 @@ export type ProfitAndLoss = {
   grossProfit: Decimal;
   grossMarginPercent: Decimal;
   damagedJewelleryLoss: Decimal;
-  /** grossProfit - damagedJewelleryLoss - purchases - businessExpenses. */
+  /** grossProfit - damagedJewelleryLoss - purchases - businessExpenses - otherExpensesTotal.
+   * Every EXPENSE-type account therefore reduces it exactly once. */
   netProfit: Decimal;
   /** Portion of grossSales that came from Sale vouchers with NO linked
    * FinishedJewellerySale (i.e. "Other / Accounting-only Sale") — these
@@ -390,7 +406,34 @@ export async function getProfitAndLoss(filters?: {
   const purchases = round2(await netFor(SYSTEM_ACCOUNT_CODES.PURCHASES));
   const businessExpenses = round2(await netFor(SYSTEM_ACCOUNT_CODES.BUSINESS_EXPENSES));
 
-  const provisionalProfit = round2(salesIncome.minus(purchases).minus(businessExpenses));
+  // Classification, not a fixed list: an expense account without its own line
+  // (5400 Brokerage & Commission, 8000 Round Off, anything added later) still
+  // reduces profit. Accounts created at runtime are payment accounts (ASSET),
+  // so this never picks up a non-expense account.
+  const DEDICATED_EXPENSE_CODES = new Set<string>([
+    SYSTEM_ACCOUNT_CODES.PURCHASES,
+    SYSTEM_ACCOUNT_CODES.BUSINESS_EXPENSES,
+    SYSTEM_ACCOUNT_CODES.FINISHED_JEWELLERY_COGS,
+    SYSTEM_ACCOUNT_CODES.DAMAGED_JEWELLERY_LOSS,
+  ]);
+  const expenseAccounts = await prisma.account.findMany({
+    where: { type: "EXPENSE" },
+    select: { id: true, code: true, name: true },
+    orderBy: { code: "asc" },
+  });
+  const otherExpenses: ProfitAndLoss["otherExpenses"] = [];
+  for (const account of expenseAccounts) {
+    if (DEDICATED_EXPENSE_CODES.has(account.code)) continue;
+    const { net } = await sumDebitCredit({
+      accountId: account.id,
+      voucher: { date: { gte: filters?.dateFrom, lte: filters?.dateTo } },
+    });
+    const amount = round2(net);
+    if (!amount.isZero()) otherExpenses.push({ code: account.code, name: account.name, amount });
+  }
+  const otherExpensesTotal = round2(otherExpenses.reduce((sum, e) => sum.plus(e.amount), ZERO));
+
+  const provisionalProfit = round2(salesIncome.minus(purchases).minus(businessExpenses).minus(otherExpensesTotal));
 
   // Sales Returns and the two new expense accounts are all debit-normal in
   // how they're actually posted here (Dr on return/loss) — read as-is, no
@@ -405,7 +448,7 @@ export async function getProfitAndLoss(filters?: {
     : ZERO;
   const damagedJewelleryLoss = round2(await netFor(SYSTEM_ACCOUNT_CODES.DAMAGED_JEWELLERY_LOSS));
   const netProfit = round2(
-    grossProfit.minus(damagedJewelleryLoss).minus(purchases).minus(businessExpenses)
+    grossProfit.minus(damagedJewelleryLoss).minus(purchases).minus(businessExpenses).minus(otherExpensesTotal)
   );
 
   const linkedSaleAgg = await prisma.finishedJewellerySale.aggregate({
@@ -430,6 +473,8 @@ export async function getProfitAndLoss(filters?: {
     salesIncome,
     purchases,
     businessExpenses,
+    otherExpenses,
+    otherExpensesTotal,
     provisionalProfit,
     grossSales,
     salesReturns,

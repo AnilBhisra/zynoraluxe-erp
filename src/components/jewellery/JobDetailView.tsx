@@ -84,6 +84,22 @@ export type SerializedJobDetail = {
     costAtIssue: string | null;
     resolvedAs: string | null;
   }[];
+  /** Polished packets on this job. costAtIssue is null for Staff. */
+  packetLines: {
+    id: string;
+    packetCode: string;
+    label: string;
+    fromJobManufacturer: boolean;
+    piecesAtIssue: number;
+    caratAtIssue: string;
+    costAtIssue: string | null;
+    setPieces: number;
+    setCarat: string;
+    returnedPieces: number;
+    returnedCarat: string;
+    damagedPieces: number;
+    damagedCarat: string;
+  }[];
   otherMaterialLines: { id: string; description: string; quantity: string; unit: string; weight: string | null; cost: string | null; note: string | null }[];
   receipts: {
     id: string;
@@ -301,6 +317,32 @@ export function JobDetailView({
                 </span>
               ))}
             </div>
+          </div>
+        ) : null}
+
+        {job.packetLines.length > 0 ? (
+          <div className="mt-4">
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Packet stones issued</h3>
+            <ul className="flex flex-col gap-2">
+              {job.packetLines.map((l) => (
+                <li
+                  key={l.id}
+                  data-testid={`packet-line-${l.packetCode}`}
+                  className="rounded-lg border border-[var(--border)] px-3 py-2 text-xs text-zinc-600 dark:text-zinc-400"
+                >
+                  <span className="font-medium text-zinc-800 dark:text-zinc-200">{l.packetCode}</span> · {l.label} ·{" "}
+                  {l.piecesAtIssue} pcs / {l.caratAtIssue}ct
+                  {l.fromJobManufacturer ? " · from Job Manufacturer" : ""}
+                  {isOwner && l.costAtIssue !== null ? ` · ₹${l.costAtIssue}` : ""}
+                  {l.setPieces > 0 || l.returnedPieces > 0 || l.damagedPieces > 0 ? (
+                    <span className="block text-zinc-500 dark:text-zinc-400">
+                      Set {l.setPieces} pcs / {l.setCarat}ct · Returned {l.returnedPieces} pcs / {l.returnedCarat}ct · Damaged/Lost{" "}
+                      {l.damagedPieces} pcs / {l.damagedCarat}ct
+                    </span>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
           </div>
         ) : null}
 

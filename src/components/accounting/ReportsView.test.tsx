@@ -12,7 +12,7 @@ vi.mock("@/app/actions/finishedSales", () => ({
   createCustomerRefundAction: vi.fn(),
 }));
 
-import { FinishedSalesReportView } from "./ReportsView";
+import { FinishedSalesReportView, ProfitAndLossView } from "./ReportsView";
 import type { FinishedJewellerySaleLineReportRow } from "@/lib/jewellery/reports";
 
 function line(overrides: Partial<FinishedJewellerySaleLineReportRow>): FinishedJewellerySaleLineReportRow {
@@ -125,5 +125,36 @@ describe("FinishedSalesReportView — cancelled/returned lines must not read as 
     expect(summary).toContain("₹1,20,000.00");
     expect(summary).toContain("₹80,000.00");
     expect(screen.queryByText(/excluded/)).toBeNull();
+  });
+});
+
+describe("ProfitAndLossView — expense accounts without their own line", () => {
+  const d = (v: string) => new Decimal(v);
+  const pnl = {
+    salesIncome: d("250000"),
+    purchases: d("0"),
+    businessExpenses: d("400"),
+    otherExpenses: [{ code: "5400", name: "Brokerage & Commission", amount: d("500") }],
+    otherExpensesTotal: d("500"),
+    provisionalProfit: d("249100"),
+    grossSales: d("250000"),
+    salesReturns: d("0"),
+    netSales: d("250000"),
+    finishedJewelleryCogs: d("78776.55"),
+    grossProfit: d("171223.45"),
+    grossMarginPercent: d("68.49"),
+    damagedJewelleryLoss: d("0"),
+    netProfit: d("170323.45"),
+    manualSalesAmount: d("0"),
+    manualSalesCount: 0,
+  };
+
+  it("lists Brokerage & Commission once as an expense line and shows the Net profit that includes it", () => {
+    render(<ProfitAndLossView pnl={pnl as never} />);
+    const brokerage = screen.getAllByText("Brokerage & Commission");
+    expect(brokerage).toHaveLength(1);
+    expect(brokerage[0].nextSibling?.textContent).toBe("− ₹500.00");
+    expect(screen.getByText("Business expenses").nextSibling?.textContent).toBe("− ₹400.00");
+    expect(screen.getByText("Net profit").nextSibling?.textContent).toBe("₹1,70,323.45");
   });
 });

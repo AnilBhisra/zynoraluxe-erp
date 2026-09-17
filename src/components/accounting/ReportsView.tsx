@@ -499,6 +499,12 @@ export function ProfitAndLossView({ pnl }: { pnl: ProfitAndLoss }) {
             − {money(pnl.businessExpenses)}
           </dd>
         </div>
+        {pnl.otherExpenses.map((e) => (
+          <div key={e.code} className="flex justify-between px-4 py-3 text-sm">
+            <dt className="text-zinc-600 dark:text-zinc-400">{e.name}</dt>
+            <dd className="font-medium text-zinc-900 dark:text-zinc-50">− {money(e.amount)}</dd>
+          </div>
+        ))}
         <div className="flex justify-between px-4 py-3 text-sm">
           <dt className="font-semibold text-zinc-900 dark:text-zinc-50">Net profit</dt>
           <dd className="font-semibold text-zinc-900 dark:text-zinc-50">{money(pnl.netProfit)}</dd>

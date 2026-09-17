@@ -47,6 +47,7 @@ export function TransactionsTab({
   companyStateCode,
   vouchers,
   canCancel,
+  showsInternalVouchers = true,
   initialOpen,
   availableFinishedItems,
 }: {
@@ -56,6 +57,8 @@ export function TransactionsTab({
   companyStateCode: string | null;
   vouchers: SerializedVoucherRow[];
   canCancel: boolean;
+  /** False for Staff: internal costing vouchers were not loaded (filtered on the server). */
+  showsInternalVouchers?: boolean;
   initialOpen?: EntryKind | null;
   availableFinishedItems: SerializedFinishedStockRow[];
 }) {
@@ -250,6 +253,11 @@ export function TransactionsTab({
         <h3 className="mb-3 text-sm font-semibold text-zinc-700 dark:text-zinc-300">
           Recent transactions
         </h3>
+        {showsInternalVouchers ? null : (
+          <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
+            Diamond, jewellery job and stock adjustment entries are posted automatically and are visible to the Owner only.
+          </p>
+        )}
         <VoucherList vouchers={vouchers} canCancel={canCancel} />
       </div>
     </div>

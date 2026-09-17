@@ -132,6 +132,7 @@ export default async function AccountingPage({
           dateFrom={params.dateFrom ?? startOfMonth()}
           dateTo={params.dateTo ?? today()}
           canSeeOwnerReports={user.role === "OWNER"}
+          viewerRole={user.role}
         />
       ) : null}
     </div>
@@ -150,7 +151,7 @@ async function TransactionsTabContent({
     prisma.paymentAccount.findMany({ where: { isActive: true }, orderBy: { name: "asc" } }),
     prisma.gstRate.findMany({ where: { isActive: true }, orderBy: { ratePercent: "asc" } }),
     getCompanyFySettings(),
-    listVouchers({ take: 50 }),
+    listVouchers({ take: 50, viewerRole: userRole }),
     listAvailableFinishedJewelleryForSale(),
   ]);
 
@@ -186,6 +187,7 @@ async function TransactionsTabContent({
         companyStateCode={fy.stateCode}
         vouchers={vouchers.map((v) => ({ ...v, amount: v.amount.toFixed(2) }))}
         canCancel={userRole === "OWNER"}
+        showsInternalVouchers={userRole === "OWNER"}
         initialOpen={initialOpen ?? null}
         availableFinishedItems={availableFinishedItems}
       />
@@ -310,11 +312,13 @@ async function ReportsTabContent({
   dateFrom,
   dateTo,
   canSeeOwnerReports,
+  viewerRole,
 }: {
   report: ReportKey;
   dateFrom: string;
   dateTo: string;
   canSeeOwnerReports: boolean;
+  viewerRole: "OWNER" | "STAFF";
 }) {
   const dateFromDate = new Date(`${dateFrom}T00:00:00.000Z`);
   const dateToDate = new Date(`${dateTo}T23:59:59.999Z`);
@@ -327,6 +331,7 @@ async function ReportsTabContent({
         dateFrom={dateFromDate}
         dateTo={dateToDate}
         canSeeOwnerReports={canSeeOwnerReports}
+        viewerRole={viewerRole}
       />
     </div>
   );
@@ -337,22 +342,24 @@ async function ReportBody({
   dateFrom,
   dateTo,
   canSeeOwnerReports,
+  viewerRole,
 }: {
   report: ReportKey;
   dateFrom: Date;
   dateTo: Date;
   canSeeOwnerReports: boolean;
+  viewerRole: "OWNER" | "STAFF";
 }) {
   if (report === "purchases") {
-    const vouchers = await listVouchers({ types: ["PURCHASE"], dateFrom, dateTo });
+    const vouchers = await listVouchers({ types: ["PURCHASE"], dateFrom, dateTo, viewerRole });
     return <VoucherReportView vouchers={vouchers} label="Purchases" filename="purchases.csv" />;
   }
   if (report === "sales") {
-    const vouchers = await listVouchers({ types: ["SALE"], dateFrom, dateTo });
+    const vouchers = await listVouchers({ types: ["SALE"], dateFrom, dateTo, viewerRole });
     return <VoucherReportView vouchers={vouchers} label="Sales" filename="sales.csv" />;
   }
   if (report === "expenses") {
-    const vouchers = await listVouchers({ types: ["EXPENSE"], dateFrom, dateTo });
+    const vouchers = await listVouchers({ types: ["EXPENSE"], dateFrom, dateTo, viewerRole });
     return <VoucherReportView vouchers={vouchers} label="Expenses" filename="expenses.csv" />;
   }
   if (report === "cashbank") {
