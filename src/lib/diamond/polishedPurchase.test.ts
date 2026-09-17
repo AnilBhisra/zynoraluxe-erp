@@ -5,6 +5,7 @@ import { SYSTEM_ACCOUNT_CODES } from "@/lib/accounting/accounts";
 import { Decimal, ZERO } from "@/lib/accounting/money";
 import { buildPacketMergeKey } from "@/lib/diamond/packets";
 import {
+  lineRateValue,
   cancelPolishedPurchase,
   computeBrokerageAmount,
   createPolishedPurchase,
@@ -144,7 +145,7 @@ describe("createPolishedPurchase", () => {
     expectEveryVoucherBalanced(fixture);
   });
 
-  it("splits landed cost across multiple packet lines by carat, summing exactly", async () => {
+  it("splits landed cost across multiple packet lines, summing exactly", async () => {
     const { fixture } = setup();
     const { packets } = await createPolishedPurchase(
       fixture.tx as never,
@@ -162,6 +163,49 @@ describe("createPolishedPurchase", () => {
     expect(total.toFixed(2)).toBe("10000.00");
     expect(ledger(fixture, SYSTEM_ACCOUNT_CODES.POLISHED_DIAMOND_INVENTORY)).toBe("10000.00");
     expectEveryVoucherBalanced(fixture);
+  });
+
+  it("splits landed cost by each line's own rate value, so a dearer size keeps its higher cost per carat", async () => {
+    // Found in the Phase 7 browser run: two sizes at 5,000/ct and 8,000/ct were
+    // split by carat, pricing both at 6,060/ct. By rate value they keep 5,050/ct
+    // and 8,080/ct once 1% capitalised brokerage is added.
+    const { fixture } = setup();
+    const broker = fixture.seedParty({ name: "Dalal", type: "BROKER" });
+    const { packets } = await createPolishedPurchase(
+      fixture.tx as never,
+      purchaseArgs(fixture, {
+        supplierAmount: 90000,
+        brokerPartyId: broker.id,
+        brokerageMethod: "PERCENT",
+        brokerageRate: 1,
+        brokerageTreatment: "CAPITALISED_PAYABLE_TO_BROKER",
+        lines: [
+          line({ sizeLabel: "1.00-1.20MM", pieces: 100, carat: 10, rateBasis: "PER_CARAT", rate: 5000 }),
+          line({ sizeLabel: "1.50MM", pieces: 50, carat: 5, rateBasis: "PER_CARAT", rate: 8000 }),
+        ],
+      })
+    );
+    const a = await getPacketBalanceInTx(fixture.tx as never, packets[0].id as string);
+    const b = await getPacketBalanceInTx(fixture.tx as never, packets[1].id as string);
+    expect(a.costValue.toFixed(2)).toBe("50500.00");
+    expect(b.costValue.toFixed(2)).toBe("40400.00");
+    expect(ledger(fixture, SYSTEM_ACCOUNT_CODES.POLISHED_DIAMOND_INVENTORY)).toBe("90900.00");
+    expectEveryVoucherBalanced(fixture);
+  });
+
+  it("falls back to carat only when some line has no rate value, and a per-piece rate counts pieces", async () => {
+    expect(lineRateValue({ rateBasis: "PER_PIECE", rate: 25, carat: 1, pieces: 40 }).toFixed(2)).toBe("1000.00");
+    expect(lineRateValue({ rateBasis: "FIXED_TOTAL", rate: 1234.5, carat: 1, pieces: 40 }).toFixed(2)).toBe("1234.50");
+    const { fixture } = setup();
+    const { packets } = await createPolishedPurchase(
+      fixture.tx as never,
+      purchaseArgs(fixture, {
+        supplierAmount: 9000,
+        lines: [line({ carat: 2, rate: 0 }), line({ carat: 1, sizeLabel: "+4-6", rate: 7000 })],
+      })
+    );
+    const first = await getPacketBalanceInTx(fixture.tx as never, packets[0].id as string);
+    expect(first.costValue.toFixed(2)).toBe("6000.00");
   });
 
   it("honours manual per-line costs only when they sum exactly to the landed cost", async () => {

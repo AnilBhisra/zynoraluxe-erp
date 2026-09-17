@@ -1,7 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/lib/db/prisma";
-import { Decimal, round2, ZERO } from "@/lib/accounting/money";
+import { Decimal, type DecimalInput, round2, ZERO } from "@/lib/accounting/money";
 import { round3 } from "@/lib/diamond/allocation";
 import { getAuthoritativeInventoryCost } from "@/lib/jewellery/finishedSalesPosting";
 import { sumMetalPool } from "@/lib/jewellery/posting";
@@ -558,6 +558,24 @@ export type FinishedJewelleryRow = {
   createdAt: Date;
 };
 
+/**
+ * Stones set in a finished piece: individually tracked diamonds plus Phase 7
+ * packet stones resolved as SET into it. Stock lists, the sale picker and the
+ * job output list all count through this, so packet stones are never shown as 0.
+ */
+export function setStoneTotals(
+  diamonds: { caratAtIssue: DecimalInput }[],
+  packetResolutions: { pieces: number; carat?: DecimalInput }[]
+): { count: number; carat: Decimal } {
+  const count = diamonds.length + packetResolutions.reduce((sum, r) => sum + r.pieces, 0);
+  const carat = round3(
+    diamonds
+      .reduce((sum, d) => sum.plus(d.caratAtIssue), new Decimal(0))
+      .plus(packetResolutions.reduce((sum, r) => sum.plus(r.carat ?? 0), new Decimal(0)))
+  );
+  return { count, carat };
+}
+
 export async function listFinishedJewellery(filters?: { search?: string }): Promise<FinishedJewelleryRow[]> {
   const outputs = await prisma.finishedJewellery.findMany({
     where: filters?.search
@@ -569,7 +587,12 @@ export async function listFinishedJewellery(filters?: { search?: string }): Prom
           ],
         }
       : undefined,
-    include: { job: { include: { karigar: true, customer: true } }, purity: true, diamonds: true },
+    include: {
+      job: { include: { karigar: true, customer: true } },
+      purity: true,
+      diamonds: true,
+      packetResolutions: { select: { pieces: true } },
+    },
     orderBy: { createdAt: "desc" },
     take: 300,
   });
@@ -587,7 +610,7 @@ export async function listFinishedJewellery(filters?: { search?: string }): Prom
     netMetalWeight: round3(o.netMetalWeight),
     fineMetalWeight: round3(o.fineMetalWeight),
     grossWeight: o.grossWeight ? round3(o.grossWeight) : null,
-    diamondCount: o.diamonds.length,
+    diamondCount: setStoneTotals(o.diamonds, o.packetResolutions).count,
     totalCost: round2(o.totalCost),
     qcStatus: o.qcStatus,
     photoAssetId: o.photoAssetId,
@@ -649,6 +672,7 @@ type StockRowSource = {
   job: { jobCode: string; designName: string; karigar: { name: string } };
   purity: { displayName: string };
   diamonds: { caratAtIssue: Decimal }[];
+  packetResolutions: { pieces: number; carat: Decimal }[];
   saleLines: { sale: { saleCode: string; saleDate: Date } }[];
 };
 
@@ -666,8 +690,8 @@ function toStockRow(o: StockRowSource, cost?: { inventoryCost: Decimal; costShee
     netMetalWeight: round3(o.netMetalWeight),
     fineMetalWeight: round3(o.fineMetalWeight),
     grossWeight: o.grossWeight ? round3(o.grossWeight) : null,
-    diamondCount: o.diamonds.length,
-    totalCarat: round3(o.diamonds.reduce((sum, d) => sum.plus(d.caratAtIssue), new Decimal(0))),
+    diamondCount: setStoneTotals(o.diamonds, o.packetResolutions).count,
+    totalCarat: setStoneTotals(o.diamonds, o.packetResolutions).carat,
     status: o.status,
     producedAt: o.createdAt,
     photoAssetId: o.photoAssetId,
@@ -722,6 +746,7 @@ export async function listFinishedJewelleryStock(filters?: {
         job: { select: { jobCode: true, designName: true, karigar: { select: { name: true } } } },
         purity: { select: { displayName: true } },
         diamonds: { select: { caratAtIssue: true } },
+        packetResolutions: { select: { pieces: true, carat: true } },
         costSheets: {
           where: { status: "FINALIZED", mode: "ACTUAL" },
           select: { costingNumber: true },
@@ -757,6 +782,7 @@ export async function listFinishedJewelleryStock(filters?: {
       job: { select: { jobCode: true, designName: true, karigar: { select: { name: true } } } },
       purity: { select: { displayName: true } },
       diamonds: { select: { caratAtIssue: true } },
+      packetResolutions: { select: { pieces: true, carat: true } },
       saleLines: ACTIVE_SALE_LINE_ARGS,
     },
     orderBy: { createdAt: "desc" },

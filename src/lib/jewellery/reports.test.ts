@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 // matching the pattern already used in src/lib/diamond/reports.test.ts.
 vi.mock("@/lib/db/prisma", () => ({ prisma: {} }));
 
-import { pendingFineWeightOf } from "./reports";
+import { pendingFineWeightOf, setStoneTotals } from "./reports";
 
 describe("pendingFineWeightOf", () => {
   it("is issued plus karigar-added, minus received/returned/scrap", () => {
@@ -51,5 +51,25 @@ describe("pendingFineWeightOf", () => {
       scrapFineWeight: "0",
     });
     expect(pending.toFixed(3)).toBe("2.500");
+  });
+});
+
+describe("setStoneTotals (Phase 7)", () => {
+  it("counts packet stones set into a piece alongside individually tracked diamonds", () => {
+    const totals = setStoneTotals(
+      [{ caratAtIssue: "0.500" }],
+      [
+        { pieces: 20, carat: "2.000" },
+        { pieces: 30, carat: "3.000" },
+      ]
+    );
+    expect(totals.count).toBe(51);
+    expect(totals.carat.toFixed(3)).toBe("5.500");
+  });
+
+  it("is zero for a plain metal piece", () => {
+    const totals = setStoneTotals([], []);
+    expect(totals.count).toBe(0);
+    expect(totals.carat.toFixed(3)).toBe("0.000");
   });
 });

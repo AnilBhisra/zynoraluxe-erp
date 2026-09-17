@@ -98,6 +98,14 @@ export function computeBrokerageAmount(input: {
   }
 }
 
+/** What a purchase line is worth at its own rate — the landed-cost allocation weight. */
+export function lineRateValue(line: { rateBasis: PolishedRateBasis; rate: DecimalInput; carat: DecimalInput; pieces: number }): Decimal {
+  const rate = new Decimal(line.rate ?? 0);
+  if (line.rateBasis === "PER_CARAT") return round2(rate.times(round3(line.carat)));
+  if (line.rateBasis === "PER_PIECE") return round2(rate.times(line.pieces));
+  return round2(rate);
+}
+
 export type PolishedPurchaseLineInput = {
   shape: DiamondShape;
   customShapeName?: string | null;
@@ -207,7 +215,10 @@ export async function createPolishedPurchase(tx: Tx, input: CreatePolishedPurcha
   const landedCost = round2(supplierAmount.plus(capitalisedBrokerage));
 
   // ---- Per-line landed cost: manual only when every line supplies one and
-  // they sum exactly; otherwise proportional by carat. ----
+  // they sum exactly. Otherwise each line takes its share in proportion to
+  // what its own rate says it is worth (rate × carat, rate × pieces, or its
+  // fixed total), so a dearer size is never averaged down to the cheaper
+  // one. Carat is only the fallback when some line has no rate value. ----
   const allManual = input.lines.every((l) => l.manualLandedCost != null);
   let lineCosts: Decimal[];
   if (allManual) {
@@ -219,9 +230,11 @@ export async function createPolishedPurchase(tx: Tx, input: CreatePolishedPurcha
       );
     }
   } else {
+    const rateValues = input.lines.map((l) => lineRateValue(l));
+    const useRateValues = rateValues.every((v) => v.greaterThan(0));
     const allocation = allocateProportionally(
       landedCost,
-      input.lines.map((l, i) => ({ key: String(i), weight: round3(l.carat) }))
+      input.lines.map((l, i) => ({ key: String(i), weight: useRateValues ? rateValues[i] : round3(l.carat) }))
     );
     lineCosts = input.lines.map((_, i) => allocation.find((a) => a.key === String(i))!.amount);
   }

@@ -48,7 +48,9 @@ export async function listPolishedPackets(filters?: { search?: string; includeEm
   const search = filters?.search?.trim();
   const packets = await prisma.polishedPacket.findMany({
     where: {
-      ...(filters?.includeEmpty ? {} : { status: "ACTIVE" }),
+      // Emptied packets are shown when asked (a count correction can add stones back);
+      // cancelled packets never are.
+      status: filters?.includeEmpty ? { in: ["ACTIVE", "EMPTY"] } : "ACTIVE",
       ...(search
         ? {
             OR: [
