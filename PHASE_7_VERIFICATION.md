@@ -6,43 +6,54 @@ Audit: `PHASE_7_CURRENT_STATE_AUDIT.md`. Design: `PHASE_7_IMPROVEMENT_PLAN.md`.
 
 ## 1. Result
 
-**PASS. Every required acceptance check in §13 passed.** The checks ran
-against the isolated local PostgreSQL 17 database `zynoraluxe_phase7_test`
-(role `zynoraluxe_phase7_user`, not a superuser) and a real Google Chrome 152
-browser.
+**PASS on the final code (`5f7ed1d`).** Every required acceptance check passed
+after the fixes below. The checks ran against the isolated local PostgreSQL 17
+database `zynoraluxe_phase7_test` (role `zynoraluxe_phase7_user`, not a
+superuser) and real Google Chrome 152.
 
-Production was never connected to. A wrapper ran every database command. Before
-each command it checked that `current_database()` is `zynoraluxe_phase7_test`
-and `current_user` is `zynoraluxe_phase7_user`. It also set `DATABASE_URL`,
-`DIRECT_URL`, the session secret, the Owner/Staff logins and storage to
-test-only values. `DATABASE_URL` in `.env` was never changed.
+**How it got here:**
 
-The real verification found **four real bugs** (§7, items 13–16). All four are
-fixed and have regression tests that fail without the fix. Browser E2E parts 2–5
-ran on the build with bugs 13–15 fixed. Bug 16
-was found after the browser run. Its fix changes only the error-recovery branch
-of the server actions. It was proven on the real database (§9.5), and the full
-test suite, lint, type check, production build and secret scans were run again
-afterwards. Three existing behaviours are reported to the Owner and were not
-changed (§8).
+1. **First acceptance (`7ee879b`).** All checks passed.
+2. **Conditional PASS.** The Owner downgraded the result because the
+   duplicate-submit fix (`2da3038`) came after the browser run.
+3. **Complete rerun on `7ee879b`.** It found two failed checks and one
+   confidentiality defect:
+   - The Profit and Loss page left out expensed brokerage (5400).
+   - The Jewellery Job detail page did not show packet stones or their cost.
+   - Staff could see automatic stock-movement voucher amounts in
+     Accounting › Transactions.
+4. **Fixes (`5f7ed1d`).** All three were fixed with regression tests that fail
+   without the fix.
+5. **Final run.** Everything was re-verified, starting again from the test
+   database with no business data (§9).
 
-| Acceptance check (§13) | Result |
+**Test database safety.** Production was never connected to. A wrapper ran
+every database command. Before each command it checked that
+`current_database()` is `zynoraluxe_phase7_test` and `current_user` is
+`zynoraluxe_phase7_user`. It also set `DATABASE_URL`, `DIRECT_URL`, the session
+secret, the Owner/Staff logins and storage to test-only values. `DATABASE_URL`
+in `.env` was never changed.
+
+| Acceptance check (§13) | Result on the final code |
 |---|---|
 | `prisma validate` | ✅ The schema is valid |
-| `prisma migrate status` | ✅ Empty database: 13 migrations found, "Database schema is up to date!" · Pre-Phase-7 database: 5 migrations not yet applied → applied → "up to date" · After cleanup: "up to date" |
-| Migration drift | ✅ `migrate diff` against `prisma/schema.prisma`: no difference, on both the empty and the upgraded database |
+| `prisma migrate status` | ✅ The test database is "up to date" (13 migrations), before the run and after cleanup. A new empty schema also reports "up to date" after `migrate deploy` of all 13 migrations |
+| Migration drift | ✅ `migrate diff --exit-code` against `prisma/schema.prisma`: "No difference detected." on the test database and on the new empty schema |
 | TypeScript (`tsc --noEmit`) | ✅ exit 0 |
 | ESLint (`eslint . --max-warnings=0`) | ✅ exit 0 |
-| Full Vitest suite | ✅ **55 files / 740 tests passed, 0 skipped.** This includes the 19 `rateLimit.test.ts` database tests, run on the test database |
-| Production `next build` (clean `.next`) | ✅ exit 0, on the final code |
+| Full Vitest suite | ✅ **59 files / 762 tests passed, 0 skipped.** This includes the 19 `rateLimit.test.ts` database tests, run on the test database |
+| Production `next build` (clean `.next`) | ✅ exit 0. The browser run used this build |
 | Client-bundle secret scan | ✅ 38 static files checked for 10 secret-shaped `.env` values and 5 secret variable names: 0 hits |
-| Tracked/changed-file secret scan | ✅ Phase 7 diff: 0 hits. Whole tree: only the two storage bucket names, which are not secret and are already in `.env.example`. `.env` is ignored by git |
-| Database schema migration review | ✅ Read, grep-checked, and applied to an empty database and to a pre-Phase-7 database with data (§4) |
-| Real browser E2E | ✅ Owner on desktop and mobile, Staff on desktop and mobile: 0 console errors, 0 page errors, 0 failed requests, 0 CSP violations, 0 HTTP 5xx (§9.3) |
-| Direct database reconciliation | ✅ Stock matches the ledger for 1220/1210/1300/1310/1320/1330. Payables by party, COGS and every voucher's debit = credit also match (§9.4) |
-| Real concurrent double-submit | ✅ On the real database, duplicates collapse to one record and a race cannot over-issue a packet (§9.5) |
+| Tracked/changed-file secret scan | ✅ `b472901..HEAD` (including `5f7ed1d`): 0 hits. Whole tree: only the two storage bucket names, which are not secret. `.env` is ignored by git |
+| Database schema migration review | ✅ No new migration since `7ee879b`. Earlier proofs still apply: empty database and pre-Phase-7 upgrade (§4) |
+| Real browser E2E | ✅ 68 steps over Owner desktop, Staff desktop, Staff mobile and Owner mobile: 0 console errors, 0 page errors, 0 failed requests, 0 CSP violations, 0 HTTP 5xx (§9.3) |
+| Profit and Loss page vs ledger | ✅ Every displayed line and Net profit match the ledger, including 5400 Brokerage & Commission (§9.4) |
+| Jewellery Job packet quantities and Owner-only cost | ✅ Packet code, pieces and carat are shown to both roles. Exact packet costs and totals are shown to the Owner and are absent from Staff pages and payloads (§9.3) |
+| Staff cost-leak checks | ✅ 0 leaks in 122 Staff responses (1,784,526 bytes), searching 33 internal cost figures and internal voucher amounts. The pages covered: Transactions, three party ledgers, the Purchases, Outstanding and P&L reports, and every Phase 7 page (§9.3) |
+| Direct database reconciliation | ✅ Stock matches the ledger for 1210/1220/1300/1310/1320/1330. Payables by party and every voucher's debit = credit also match. Both reconciliation scripts exit 0 (§9.4) |
+| Duplicate submit | ✅ A browser double-submit (two submits of one form at once) saves one purchase and one voucher, on Staff desktop and on Owner mobile. The real-Postgres race proof is in §9.5 |
 | Temporary-data cleanup | ✅ Dry run first, then one checked transaction back to the seeded baseline (§9.6) |
-| `git diff --check` | ✅ Clean for the whole branch |
+| `git diff --check` | ✅ Clean |
 | Final `git status --short` | ✅ Clean after the final commit (§10) |
 
 Changes are **committed** on the branch (§10).
@@ -61,7 +72,9 @@ Changes are **committed** on the branch (§10).
 | Owner decision | `7271a6e` | Job Manufacturer packet line closure: explicit confirmation, audit fields (`closedAt`, `closedByUserId`, `closingReceiptId`), closed lines refuse receipts |
 | Real-verification fixes | `a674556` | Polished landed cost shared by line rate value; packet stones counted in Finished Stock; cancelled packets hidden from stock |
 | Real-verification fix | `2da3038` | Idempotency-key conflict recovery works with the Postgres driver adapter (all action files) |
-| Acceptance | final commit | This report and README updated with the real-verification results |
+| Acceptance docs | `7ee879b` | First acceptance evidence |
+| Rerun fixes | `5f7ed1d` | P&L counts every expense account once (5400 included); Jewellery Job detail shows packet lines and packet-inclusive cost; Staff Transactions exclude internal costing vouchers |
+| Acceptance | final commit | This report and README updated with the final-run evidence |
 
 The UI keeps the existing navigation. The Diamond page's sections are now
 `Rough Diamond`, `Manufacturer`, `Job Manufacturer` and `Polished Diamond`
@@ -72,31 +85,37 @@ The UI keeps the existing navigation. The Diamond page's sections are now
 | | Test files | Tests passed | Not run |
 |---|---|---|---|
 | Before Phase 7 (audit baseline, `b472901`) | 44 | 590 | 19 in `rateLimit.test.ts` (it would have used the production database) |
-| After Phase 7, on the test database | **55** | **740** | none |
+| First acceptance (`7ee879b`) | 55 | 740 | none |
+| **Final (`5f7ed1d`), on the test database** | **59** | **762** | none |
 
-The 740 tests are the 590 old ones, the 19 `rateLimit.test.ts` database tests
-now run on the test database, and 131 new tests.
+The 762 tests are the 590 old ones, the 19 `rateLimit.test.ts` database tests
+now run on the test database, and 153 new tests.
 
 No existing test was deleted or weakened. `git diff --numstat b472901..HEAD`
-over every `*.test.ts(x)` file shows only added lines. The one changed line is
-an `import` in `reports.test.ts` that now also imports `setStoneTotals`. The 131
-new tests are in 11 new files, plus additions to 4 existing files:
+over every `*.test.ts(x)` file shows only added lines, apart from three
+changed `import` lines that now import more names.
 
 | File | Tests | Covers |
 |---|---|---|
 | `src/lib/jewellery/metalMath.test.ts` | 13 | thousandths parsing and rounding, fine/gross, locked 18K example at 100% and 99.9%, 14K/9K, pool effects |
 | `src/lib/jewellery/phase7MetalPosting.test.ts` | 21 | both metal defects inverted into regressions, 24K → 18K/14K/9K across partial and final receipts, snapshots, alloy paths, abnormal loss, idempotency key |
-| `src/lib/diamond/polishedPurchase.test.ts` | 17 | credit, paid now, GST, multi-line allocation by rate value (per carat, per piece, fixed), all brokerage methods and treatments, no double posting, broker required, cancellation |
+| `src/lib/diamond/polishedPurchase.test.ts` | 17 | credit, paid now, GST, multi-line allocation by rate value, all brokerage methods and treatments, no double posting, broker required, cancellation |
 | `src/lib/diamond/packets.test.ts` | 8 | exact ledger balance, merge-key grouping, provenance never mixed |
 | `src/lib/jewellery/phase7PacketJob.test.ts` | 14 | packet issue, row-lock status re-check, set/returned/damaged, pending never auto-loss, completion gating, cancellation, COGS chain |
 | `src/lib/diamond/processCharge.test.ts` | 5 | per carat, per piece, fixed-on-final, rounding |
 | `src/lib/diamond/phase7Manufacturer.test.ts` | 8 | process snapshot, processed rough, partial return, fixed charge, rate mismatch refused, wrong receive path refused, voucher amount |
-| `src/lib/diamond/packetProcess.test.ts` | 13 | Job Manufacturer issue, cancel, partial/final returns, child packet on size change, pieces must be accounted for, no close on piece count alone, explicit line closure with audit fields, closed line refuses receipts, damaged + abnormal loss, used in Jewellery Job and its cancellation |
+| `src/lib/diamond/packetProcess.test.ts` | 13 | Job Manufacturer issue, cancel, partial/final returns, child packet on size change, explicit line closure with audit fields, closed line refuses receipts, damaged + abnormal loss, used in Jewellery Job and its cancellation |
 | `src/lib/diamond/phase7Serializers.test.ts` | 3 | no cost/brokerage/WIP/charge value in any Staff DTO |
 | `src/lib/diamond/packetAdjustment.test.ts` | 4 | adjustment out/in with accounting, stranded residue refused, cancelled packet refused |
-| `src/lib/db/uniqueConflict.test.ts` | 6 | the exact P2002 shape the real database returned, the classic shape, other unique violations not mistaken for duplicates, whole column names only |
+| `src/lib/db/uniqueConflict.test.ts` | 6 | the exact P2002 shape the real database returned, the classic shape, other unique violations not mistaken for duplicates |
+| `src/lib/jewellery/jobDetailSerializers.test.ts` | 6 | packet-inclusive diamond and total cost issued (exact ₹ figures from the run), packet lines loaded with code/description/pieces/carat/cost, Staff DTO carries no cost, Owner keeps exact costs |
+| `src/lib/accounting/voucherVisibility.test.ts` | 5 | an explicit Staff visibility decision for every voucher type, reversals follow the reversed voucher, Owner sees all, the database filter matches the rule for every type and reversal |
+| `src/components/jewellery/JobDetailView.test.tsx` | 2 | Staff sees packet code/pieces/carat and no ₹ anywhere; Owner sees packet costs and packet-inclusive totals |
+| `src/components/accounting/TransactionsTab.test.tsx` | 2 | Staff list has ordinary vouchers and reversals only, no internal voucher label or amount, Owner-only note; Owner sees every voucher |
+| `src/lib/accounting/reports.test.ts` (+6) | 6 | P&L: expensed brokerage reduces Net profit exactly once and equals the ledger (real purchase engine), capitalised brokerage never reaches P&L, only non-dedicated non-zero expense accounts listed; `listVouchers` never loads internal vouchers for Staff, Owner unrestricted, search does not replace the restriction |
+| `src/components/accounting/ReportsView.test.tsx` (+1) | 1 | Brokerage & Commission shown once and Net profit includes it |
 | `src/lib/jewellery/reports.test.ts` (+2) | 2 | packet stones counted with individual diamonds in Finished Stock |
-| action tests (`diamond` +12, `jewellery` +2, `vouchers` +3) | 17 | Owner/Staff enforcement for every new Owner-only action, Staff damaged/lost and abnormal loss refused, idempotent resubmission, concurrent duplicate recovery (both error shapes), line-closure confirmations passed through, generic voucher cancel guards |
+| action tests (`diamond` +12, `jewellery` +2, `vouchers` +3) | 17 | Owner/Staff enforcement for every new Owner-only action, Staff damaged/lost and abnormal loss refused, idempotent resubmission, concurrent duplicate recovery (both error shapes), line-closure confirmations, generic voucher cancel guards |
 
 All posting tests run the **real** engine code against in-memory transaction
 fixtures and assert exact 2-dp money, exact 3-dp weights, and debit = credit on
@@ -108,7 +127,7 @@ every voucher.
 |---|---|
 | Direct polished purchase: credit, immediate payment, GST, multiple packet lines | `polishedPurchase.test.ts` |
 | Supplier and Dalal/Broker linkage; brokerage for all rate bases | `polishedPurchase.test.ts` |
-| No duplicate landed-cost/payable posting | `polishedPurchase.test.ts` ("never posts brokerage twice", included treatment) |
+| No duplicate landed-cost/payable posting | `polishedPurchase.test.ts`; P&L exactly-once tests in `reports.test.ts` |
 | Purchased vs manufactured provenance | `polishedPurchase.test.ts`, `packets.test.ts`, `packetProcess.test.ts` (child packet `RETURNED_FROM_JOB`) |
 | Packet issue / partial / final return; size-wise pieces and carat | `packetProcess.test.ts`, `phase7PacketJob.test.ts` |
 | Merge-compatible and incompatible returns | `packetProcess.test.ts` (same size → original packet; new size → child packet) |
@@ -120,8 +139,8 @@ every voucher.
 | Exact WIP drain and debit = credit | every posting test file |
 | Historical fineness snapshot | `phase7MetalPosting.test.ts` |
 | Same-purity workflow unchanged; Phase 6 sale/COGS/return/cancel/refund | existing suites, all passing unchanged; COGS chain assertion in `phase7PacketJob.test.ts` |
-| Owner/Staff server-side enforcement | action tests, `phase7Serializers.test.ts`, help-content test |
-| Idempotent actions and concurrent duplicate submission | action tests and `uniqueConflict.test.ts`, **plus a real concurrent run on PostgreSQL** (§9.5) |
+| Owner/Staff server-side enforcement | action tests, `phase7Serializers.test.ts`, `jobDetailSerializers.test.ts`, `voucherVisibility.test.ts`, `listVouchers` authorization tests, help-content test |
+| Idempotent actions and concurrent duplicate submission | action tests and `uniqueConflict.test.ts`, plus real-Postgres and real-browser proofs (§9.3, §9.5) |
 
 ## 4. New migrations
 
@@ -195,31 +214,35 @@ issued, 2.991 g alloy, 0.990 g loss.
 
 ## 6. Permissions and data security
 
-| Action | Owner | Staff | Enforced by |
+| Action or data | Owner | Staff | Enforced by |
 |---|---|---|---|
 | Polished purchase create; Job Manufacturer issue/return; rough for a process; processed-rough receipt; packet issue/resolve on Jewellery Jobs | ✅ | ✅ | `requireUser()` |
 | Cancel polished purchase / Job Manufacturer job; packet count adjustment; process master | ✅ | ❌ | `requireOwner()` |
 | Damaged/lost (stones, packets, Job Manufacturer returns), abnormal loss | ✅ | ❌ | role check in the action before the engine runs |
 | Generic "Cancel voucher" on polished purchase or `STOCK_ADJUSTMENT` vouchers | ❌ | ❌ | `cancelVoucherAction` guard |
+| Jewellery Job packet lines: code, description, pieces, carat, set/returned/damaged | ✅ | ✅ | `serializeJobPacketLines()` |
+| Jewellery Job packet cost, diamond cost issued, total manufacturing cost issued | ✅ | ❌ | `ownerOnly()` in `jobDetailSerializers.ts` |
+| Accounting › Transactions and voucher reports: purchase, sale, payment given/received, expense, opening balance, sale return, customer refund, and reversals of these | ✅ | ✅ | `voucherVisibilityWhere()` inside the `listVouchers` query |
+| Accounting › Transactions: diamond issue/receipt, jewellery issue/receipt, stock adjustment, and their reversals | ✅ | ❌ | same filter, applied in the database, so the rows never reach a Staff payload |
+| Profit and Loss, GST and Finished Sales reports | ✅ | ❌ | existing Owner-only report guard |
 
 Staff cost data: on `/diamond`, `/jewellery-jobs` and Metal Stock, the server
 passes every cost, landed cost, brokerage amount, WIP, charge rate and charge
 through `ownerOnly()`. For Staff, those fields are `null` in the page data sent
-to the browser (the RSC payload). `phase7Serializers.test.ts` turns every
-Phase 7 Staff DTO into JSON and searches it for each cost value. Staff CSV
-exports leave out the cost columns. The in-app help test still proves that Staff
-help contains no Owner-only terms.
+to the browser (the RSC payload). `listVouchers` now requires the viewer's role
+and filters with an allowlist, so a voucher type added later stays hidden from
+Staff until someone deliberately allows it.
 
-**Real browser proof (§9.3).** While logged in as Staff, every server response
-was recorded: HTML documents and RSC payloads. On desktop that was 38 responses
-(545,852 bytes); on mobile, 42 responses (508,224 bytes). The responses were
-searched for 14 cost figures created earlier in the run, such as packet costs
-₹50,500.00 and ₹40,400.00 and finished-piece costs ₹78,776.55, ₹60,613.14 and
-₹17,439.41. The Diamond, Jewellery Jobs, Metal Stock and Finished Stock pages
-had **0 hits**. Staff saw no Owner-only controls: `Cancel purchase`,
-`Adjust count` and the Settings link were all absent. `/settings` and
-`/costing` redirected Staff to `/unauthorized`. A polished purchase that Staff
-saved showed pieces and carat, but no landed cost and no brokerage.
+**Real browser proof (§9.3).** While logged in as Staff, every HTML and RSC
+response was recorded: 64 on desktop, 58 on mobile. The responses were searched
+for 33 figures read from the database: packet, finished-piece, job, metal-pool
+and landed costs, plus every internal costing voucher amount. Matches only
+count at number boundaries.
+
+- **Leaks: 0.**
+- **Allowed matches:** ₹2,000.00, ₹3,000.00, ₹3,50,000.00 and ₹90,900.00. These
+  are the bill totals of ordinary purchase vouchers, shown on Accounting pages
+  (§8).
 
 ## 7. Bugs found and fixed
 
@@ -233,14 +256,17 @@ saved showed pieces and carat, but no landed cost and no brokerage.
 | 6 | P0 | No-output final receipt with abnormal loss produced an unbalanced voucher | cost split to returned/scrap or expensed | same |
 | 7 | P0 | A receipt that only returned a diamond posted a zero voucher amount (the database requires > 0) | amount = total debit | same |
 | 8 | P2 | Polished receipt voucher amount left out returned rough cost | amount = full debit | `phase7Manufacturer.test.ts` |
-| 9 | P2 | The production-safe `db:seed-phase7-masters` did not create the 5400 account that brokerage posts to | shared create-only `prisma/phase7Masters.ts` | seed run twice on a real database (§9.1) |
+| 9 | P2 | The production-safe `db:seed-phase7-masters` did not create the 5400 account that brokerage posts to | shared create-only `prisma/phase7Masters.ts` | seeds run twice on a real database (§9.1) |
 | 10 | P2 | Packet issues read the ledger without a row lock (concurrent over-issue possible) | `lockPacketInTx` before every ledger read | status re-check test; real race (§9.5) |
 | 11 | P2 | Cancelling a Jewellery Job would return Job Manufacturer-sourced stones to stock without reversing their 1320 cost | explicit Dr 1220 / Cr 1320 on cancel | `packetProcess.test.ts` |
 | 12 | Docs | README and master plan still said Phase 6 was uncommitted | README corrected; master plan note appended | — |
-| 13 | Browser E2E | A multi-line polished purchase shared its landed cost by **carat**, not by each line's rate value. Two lines with different per-carat rates therefore got the wrong packet costs, although the total was right | shared by `lineRateValue` (rate × carat, rate × pieces, or the fixed rate); falls back to carat only when a line has no value; manual per-line costs still take priority | `polishedPurchase.test.ts` (+2) · `a674556` |
-| 14 | Browser E2E | Finished Stock, the sale picker and job outputs counted only individually tracked diamonds. Packet stones set into a piece were left out (a piece with 20 packet stones showed 0) | `setStoneTotals` adds packet resolutions | `reports.test.ts` (+2) · `a674556` |
-| 15 | Browser E2E | The Owner's polished packet list also showed packets from **cancelled** purchases | list only `ACTIVE`/`EMPTY` packets | — (query filter, no unit test) · `a674556` |
-| 16 | Real concurrency run | Every action's `isIdempotencyConflict` looked only at `meta.target`. The `@prisma/adapter-pg` driver reports a unique violation in `meta.driverAdapterError.cause.constraint` instead. When two submissions raced on a real database, the losing one showed "Could not save" although the first had saved. **No data was duplicated.** This existed in all six action files since Phase 2 | one shared `src/lib/db/uniqueConflict.ts` that understands both shapes | `uniqueConflict.test.ts` (6) and action tests (+2, both fail without the fix) · `2da3038` |
+| 13 | Browser E2E | A multi-line polished purchase shared its landed cost by carat, not by each line's rate value | shared by `lineRateValue` | `polishedPurchase.test.ts` (+2) · `a674556` |
+| 14 | Browser E2E | Finished Stock, the sale picker and job outputs did not count packet stones set into a piece | `setStoneTotals` adds packet resolutions | `reports.test.ts` (+2) · `a674556` |
+| 15 | Browser E2E | The Owner's packet list also showed packets from cancelled purchases | list only `ACTIVE`/`EMPTY` packets | browser check (§9.3) · `a674556` |
+| 16 | Real concurrency run | `isIdempotencyConflict` looked only at `meta.target`, but `@prisma/adapter-pg` reports the constraint in `meta.driverAdapterError.cause.constraint`. A lost double-submit race showed "Could not save" although the first submission had saved (no data duplicated). This existed in all six action files since Phase 2 | shared `src/lib/db/uniqueConflict.ts` | `uniqueConflict.test.ts` (6), action tests (+2) · `2da3038` |
+| 17 | Rerun: P&L vs ledger | The Profit and Loss page read a fixed list of accounts, so expensed Dalal / Broker brokerage (5400) never reduced Net profit. The page showed ₹-400.00; the ledger gave ₹-900.00 | every EXPENSE-type account without its own line is listed by name and deducted once (accounts created at runtime are ASSET payment accounts) | `reports.test.ts` (+3), `ReportsView.test.tsx` (+1) · `5f7ed1d` |
+| 18 | Rerun: job detail | The Jewellery Job detail page never loaded packet issue lines or `issuedPacketDiamondCost`. Packet stones were missing, "Diamond cost issued" showed ₹0.00, and "Total manufacturing cost issued" showed ₹1,40,500.00 instead of ₹1,50,712.58 | packet lines loaded and shown; `jobIssuedCosts()` used by the detail and the jobs list; costs redacted for Staff in tested serializers | `jobDetailSerializers.test.ts` (6), `JobDetailView.test.tsx` (2) · `5f7ed1d` |
+| 19 | Rerun: Staff payload audit | Accounting › Transactions sent Staff every voucher, including automatic diamond, jewellery-job and stock-adjustment vouchers whose amounts are internal carrying cost (for example ₹2,707.89 and ₹5,150.00) | allowlist filter inside the database query for Staff; a note tells Staff these entries are Owner-only | `voucherVisibility.test.ts` (5), `reports.test.ts` (+3), `TransactionsTab.test.tsx` (2) · `5f7ed1d` |
 
 Test-infrastructure issue fixed along the way: two fixture layers generated
 colliding row ids for seeded packets, which could hide a packet's purchase
@@ -250,163 +276,183 @@ movement.
 
 Found during real verification. None of these was changed:
 
-- **Staff can see voucher totals in Accounting › Transactions.** This is the
-  documented access from Phase 2. For a polished purchase with capitalised
-  brokerage and no GST, the bill total equals the landed cost, so Staff can work
-  out that cost there. The Phase 7 module pages do not show it (§6). If this
-  should be hidden, the Owner needs to decide on a change to the Accounting
-  pages.
+- **Staff still see bill totals of ordinary purchases** in Accounting ›
+  Transactions and the Purchases report. Staff record and pay these purchases.
+  For a polished purchase with brokerage added to diamond cost and no GST, the
+  bill total equals the landed cost (for example ₹90,900.00), so Staff can work
+  out that cost there.
+- **A party's ledger shows Staff the payable lines of automatic vouchers.**
+  Examples: a Manufacturer's process charge on a Diamond Receipt, and a
+  Karigar's labour and alloy charge on a Jewellery Receipt. These are amounts
+  owed to that party, which Staff need to record payments. They are not
+  internal stock cost, and the audit found none of the internal cost figures
+  there. Hiding them would be an Owner decision.
 - **Jewellery Jobs list "pending" includes recognised process loss.**
   `b472901` uses the same formula, so this is not a Phase 7 regression. The job
   detail page shows the correct reconciliation.
 - **Polished Diamond stock shows the raw status `SET_IN_JEWELLERY`** as its
   label. This is cosmetic and also existed before Phase 7.
 
-Design limitations (unchanged from the plan):
+Design limitations (unchanged):
 
 - Past postings are reported, not rewritten (Owner decision). The metal
-  reconciliation script shows the difference. On the pre-Phase-7 data, the old
-  reading showed 22K at 0.916 g fine, while the corrected pools show 13.740 g
-  fine and match 1300/1310 exactly.
+  reconciliation script shows the difference.
 - The Phase 4 metal adjustment still posts stock only, without a voucher
   (unchanged). Phase 7 packet adjustments post their accounting.
 - A Jewellery Job return of packet stones goes back into its original packet.
   Size changes are recorded only on Job Manufacturer returns.
 - "Used in Jewellery Job" is refused when that job already holds stones from
-  the same packet. Two cost layers are never averaged into one line.
+  the same packet.
 - A Job Manufacturer job can be cancelled only before its first return.
-- Job Manufacturer line closure follows the Owner decision of 2026-09-17. A line
-  may close once all its pieces are resolved; its carat gap is then recorded as
-  loss for that line, while other lines stay open. Closing needs an explicit
-  confirmation, or an exact carat match. A closed line refuses further
-  receipts. There is no Owner correction/reversal workflow for closed lines yet.
-- A loss confirmed on a later receipt than the stones' return is expensed,
-  because those stones are already back in stock at their resolved cost.
+- Job Manufacturer line closure follows the Owner decision of 2026-09-17: a
+  line closes only with explicit confirmation (or an exact carat match), and a
+  closed line refuses further receipts. There is no Owner correction/reversal
+  workflow for closed lines yet.
+- A loss confirmed on a later receipt than the stones' return is expensed.
 - Enum additions cannot be rolled back in Postgres.
-- P&L was checked in the ledger (4000 Sales, 4100 Sales Returns, 5200 COGS),
-  not by opening the P&L report page.
 
 ## 9. Real verification performed (instructions §12)
 
 Setup: local PostgreSQL 17 on `localhost:5432`. Only the role
-`zynoraluxe_phase7_user` and the database `zynoraluxe_phase7_test` were created.
-Only `TEST_DATABASE_URL` was written to the gitignored `.env`. The app ran with
-`next build` + `next start` on port 3100 through the same identity-checking
-wrapper. The browser was installed Google Chrome 152, driven by `playwright-core`
-from a temporary folder outside the repository. All business data used the
-`PHASE7TEST` prefix.
+`zynoraluxe_phase7_user` and the database `zynoraluxe_phase7_test` exist for
+this work. Only `TEST_DATABASE_URL` is in the gitignored `.env`. The app ran
+with `next build` + `next start` on port 3100 through the identity-checking
+wrapper. The browser was installed Google Chrome 152, driven by
+`playwright-core` from a temporary folder outside the repository. All business
+data used the `PHASE7TEST` prefix.
 
-### 9.1 Empty database and seeds
+### 9.1 Migrations and seeds
 
-- `migrate deploy` / `migrate status` / `migrate diff`: see §4.
-- `db:seed` run twice and `db:seed-phase7-masters` run twice gave the same row
-  counts after every run: users 1, accounts 27 (including 5400 Brokerage &
-  Commission), payment accounts 3, GST rates 6, purities 9 (24K stays 99.900,
-  9K 37.500, Copper/Alloy 0.000), processes 4. The first seed printed "Phase 7
-  masters ready: 6 created, 1 already present"; every later run printed "0
-  created, 7 already present".
-- The production path (masters script only) was checked on the empty schema:
-  "7 created", then "0 created, 7 already present".
+- **First acceptance.** `migrate deploy` of all 13 migrations into an empty
+  schema. Upgrade of a pre-Phase-7 database with data created by `b472901`:
+  3 parties, 9 balanced vouchers, metal and stone movements, finished pieces and
+  a sale. Row counts and ledger balances were identical after the upgrade, and
+  `migrate status` and `migrate diff` were clean.
+- **Final run.** `prisma migrate reset` was refused by Prisma's own safety guard
+  for AI agents, and was not bypassed. It changed nothing. Instead:
+  - A new empty schema `phase7_empty` received `migrate deploy` of all 13
+    migrations ("All migrations have been successfully applied."), then
+    "Database schema is up to date!" and "No difference detected.".
+  - The main test database was already at the seeded baseline with **no
+    business data** (0 vouchers, 0 parties, 0 packets). Its `migrate status`
+    and drift check were also clean.
+  - `db:seed` and `db:seed-phase7-masters` were each run twice with identical
+    counts: users 1, accounts 27 (including 5400), payment accounts 3, GST rates
+    6, purities 9, processes 4. Each printed "Phase 7 masters ready: 0 created,
+    7 already present".
 
 ### 9.2 Pre-Phase-7 upgrade
 
-See §4. The metal reconciliation on this old data matched 1300/1310, and so did
-the diamond reconciliation.
+Covered in §9.1 and §4. There is no new migration since then.
 
-### 9.3 Browser E2E (Owner and Staff, desktop 1440×900 and mobile 390×844)
+### 9.3 Browser E2E on the final code
 
-Every step watched for console errors, page errors, failed requests, CSP
-violations and HTTP 5xx. **Result: 0 of each.** Browser dialogs were accepted.
-Business results were then checked directly in the database.
+Owner desktop 1440×900, Staff desktop, Staff mobile 390×844 and Owner mobile:
+68 steps. 67 passed on the first try. One step failed because the test
+script's expected value was wrong: it expected packet A at ₹10,100.00, but
+packet A's average cost after its Job Manufacturer returns is ₹10,212.58. The
+application figure was correct. After the expectation was corrected, the step
+passed on re-run; state tracking prevented any duplicate data. There were
+**0 console errors, 0 page errors, 0 failed requests, 0 CSP violations and
+0 HTTP 5xx**.
 
 | §12 step | What was done in the browser | Result |
 |---|---|---|
-| 1–2 Polished purchase with Supplier and Dalal/Broker; accounting, payable, stock | `ZL-PP-2026-000003`, 2 packet lines (150 pcs / 15.000 ct), capitalised brokerage | Landed ₹90,900.00 (brokerage ₹900.00). Packet A `ZL-PKT-2026-000004` ₹50,500.00, packet B `-000005` ₹40,400.00, shared by line rate value (bug 13). AP: supplier ₹90,000, Dalal ₹900 |
-| 3 Issue to Job Manufacturer | `ZL-PJ-2026-000001`, both packets, Polishing, per-carat charge | 1220 → 1210 |
-| 4 Partial and final returns | `PJR-000001` partial. `PJR-000002` closed line A only after the explicit "Close this line" tick (0.150 ct loss). `PJR-000003` final for line B: 30 pcs / 3.000 ct used in a Jewellery Job, 20 pcs / 1.950 ct back, 0.050 ct loss | Charges ₹100 + ₹285 + ₹495 = ₹880 payable to the Manufacturer. After `PJR-000002` the detail page showed A Closed and B still Open, and the closed line was not offered for further returns. After `PJR-000003` the job is `COMPLETED` |
-| 5 Returned stock, merge and provenance | a size change on return | child packet `ZL-PKT-2026-000006` (`RETURNED_FROM_JOB`, 20 pcs / 1.900 ct, ₹10,290.00). Same size → original packet |
-| 6–10 Jewellery Job, 24K only → 18K/14K/9K, both alloy paths, returned 24K, scrap, loss | `ZL-JJOB-2026-000004`, receipt `ZL-JREC-2026-000003` | Outputs: `FJ-000003` 18K 12 g (packet stones 20 / 2.000 ct), `FJ-000004` 14K 8 g (30 / 3.000 ct), `FJ-000005` 9K 6 g. Returned 1.998 g fine, scrap 0.999 g fine, loss 1.053 g fine. Alloy 10.054 g = Company 5.000 g + Karigar 5.054 g (charge ₹500). Job `COMPLETED` |
-| 11 Job cost and finished inventory value | Finished Stock | ₹78,776.55 / ₹60,613.14 / ₹17,439.41. Diamond counts include packet stones (bug 14) |
-| 12 Phase 6 sale, COGS, P&L | `ZL-FJS-2026-000002`, the 18K piece, credit sale, CGST+SGST 3% | COGS ₹78,776.55. The piece shows Sold with its sale reference |
-| 13 Cancellation and return paths | sellable return of that sale line; Job Manufacturer job `ZL-PJ-2026-000002` cancelled; purchases `ZL-PP-2026-000001` and `-000002` cancelled; one stray draft Jewellery Job cancelled | The piece is Available again. Stones are back in the child packet. Cancelled packets are not listed (bug 15) |
-| 14 Owner and Staff separately | Staff desktop and mobile | see §6; Staff purchase `ZL-PP-2026-000004` shows no cost |
-| 15 Desktop and mobile | Owner and Staff on every Phase 7 page, plus the Job Manufacturer and Jewellery Job detail pages and both new forms | horizontal overflow **0 px** on every page at 390 px |
+| 1–2 Polished purchase with Supplier and Dalal/Broker | `ZL-PP-2026-000001`: 2 lines (150 pcs / 15.000 ct), 1% brokerage added to diamond cost. `ZL-PP-2026-000002`: 10 pcs / 1.000 ct, ₹500 brokerage as a business expense | Landed ₹90,900.00 (brokerage ₹900.00); packet A ₹50,500.00, packet B ₹40,400.00. Expensed purchase: landed ₹4,000.00, brokerage ₹500.00 (Dr 5400) |
+| Owner adjustment | 1 pc / 0.100 ct out of the 2.50MM packet | 9 pcs · 0.900 ct · ₹3,600.00; Dr 5100 ₹400.00 |
+| 3–4 Job Manufacturer issue, partial and final returns | `ZL-PJ-2026-000001`: 40 pcs of A and 50 pcs of B, Polishing ₹100/ct. `PJR-000001` partial; `PJR-000002` closes A only after the explicit tick (0.150 ct loss); final return of B: 30 pcs / 3 ct used in the Jewellery Job + 20 pcs / 1.95 ct back (0.050 ct loss) | Charges ₹880 payable to the Manufacturer; job `COMPLETED`; closed line not offered again |
+| 5 Returned stock, merge, provenance | new size on return; `ZL-PJ-2026-000002` cancelled before any return | child packet `ZL-PKT-2026-000005` (`RETURNED_FROM_JOB`, 20 pcs / 1.900 ct, ₹10,290.00); same size back into packet A; cancelled stones back in the child packet |
+| 6–10 Jewellery Job, only 24K → 18K/14K/9K, both alloy paths, returned 24K, scrap, loss | `ZL-JJOB-2026-000001`: issued 24K 20 g, Company alloy 5 g, packet A 20 pcs / 2 ct | Outputs 18K 12 g (20 / 2.000 ct), 14K 8 g (30 / 3.000 ct), 9K 6 g. Returned 1.998 g fine, scrap 0.999 g, loss 1.053 g. Alloy 10.054 g = Company 5.000 + Karigar 5.054 (₹500) |
+| **Jewellery Job packet lines and Owner-only cost** | Owner job detail after the direct issue, after the Job Manufacturer stones arrived, and after completion | A: `ZL-PKT-2026-000001 · Round · 1.00-1.20MM · VS · F · 20 pcs / 2.000ct · ₹10212.58`. B: `ZL-PKT-2026-000002 · Round · 1.50MM · VS · F · 30 pcs / 3.000ct · from Job Manufacturer · ₹24784.85`. Diamond cost issued ₹10,212.58 → ₹34,997.43; Total manufacturing cost issued ₹1,50,712.58 → ₹1,75,497.43; both lines Set in full. **Staff** (desktop and mobile) see the same codes, pieces and carat, no ₹ figure anywhere on the page, and neither cost label |
+| 11 Job cost and finished inventory value | Finished Stock | ₹78,776.55 / ₹60,613.14 / ₹17,439.41, with packet stones counted |
+| 12 Phase 6 sale, COGS, **P&L page** | `ZL-FJS-2026-000001`: the 18K piece, ₹2,50,000 credit, CGST+SGST 3% | COGS ₹78,776.55. P&L page: Gross sales ₹2,50,000.00, COGS − ₹78,776.55, Business expenses − ₹400.00, **Brokerage & Commission − ₹500.00 (listed once)**, Net profit ₹1,70,323.45 |
+| 13 Cancellation and return paths | sellable return of that sale; `ZL-PP-2026-000003` cancelled; Owner-mobile purchase `ZL-PP-2026-000005` cancelled on mobile | The piece is Available again. P&L page: Sales returns − ₹2,50,000.00, COGS − ₹0.00, **Net profit ₹-900.00**. Cancelled packets are not listed |
+| 14 Owner and Staff separately | Staff desktop and mobile | **Accounting › Transactions** lists only Purchase, Sale, Sale Return and Reversal rows (8, then 9 after Staff's purchase), with the Owner-only note. Owner (mobile) still sees Diamond Issue, Diamond Receipt, Jewellery Issue, Jewellery Receipt and Stock Adjustment. No Owner-only controls for Staff; P&L shows "Owner only."; `/settings` and `/costing` redirect to `/unauthorized` |
+| Duplicate submit | the same polished purchase form submitted twice at once as Staff on desktop (`ZL-PP-2026-000004`) and as Owner on mobile (`ZL-PP-2026-000005`) | no error shown; exactly 1 purchase and 1 voucher per idempotency key (checked in the database) |
+| **Staff cost-leak audit** | every HTML/RSC response of both Staff sessions: every Phase 7 page, both detail pages, Transactions, the Manufacturer, Karigar and Polished Supplier ledgers, and the Purchases, Outstanding and P&L reports | desktop 64 responses / 943,222 bytes; mobile 58 / 841,304 bytes; 33 figures; **0 leaks**. Allowed matches only on Accounting pages, and only for ordinary purchase bill totals: ₹2,000.00, ₹3,000.00, ₹3,50,000.00, ₹90,900.00 |
+| 15 Desktop and mobile | Owner and Staff on every page above, both detail pages, both new forms, the P&L page | horizontal overflow **0 px** on every page at 390 px |
 | 16 Console, page errors, failed requests, CSP | every step | 0 / 0 / 0 / 0 |
-
-Bugs 13–15 were found during the browser run. After `a674556`, parts 2–5 ran on
-a new build: the purchase cost split, Finished Stock with packet stones, the
-sale, the returns, the cancellations and both roles. Part 1 (masters, party
-types, alloy purchase) ran before that fix; the fix does not touch those
-flows. Bug 16 was found after the browser run (§9.5).
 
 ### 9.4 Direct database reconciliation (after the browser run)
 
-`db:phase7-metal-reconciliation` and `db:phase7-diamond-reconciliation` ran on
-the test database, together with SQL tie-outs:
+A read-only check script and both reconciliation scripts ran on the test
+database (both exit 0).
+
+**Profit and Loss page vs ledger (after the return):**
+
+| P&L line | Page | Ledger |
+|---|---|---|
+| Gross sales (4000) | ₹2,50,000.00 | 250,000.00 |
+| Sales returns (4100) | − ₹2,50,000.00 | 250,000.00 |
+| Finished jewellery COGS (5200) | − ₹0.00 | 0.00 |
+| Damaged jewellery loss (5300) | − ₹0.00 | 0.00 |
+| Other purchases (5000) | − ₹0.00 | 0.00 |
+| Business expenses (5100) | − ₹400.00 | 400.00 |
+| Brokerage & Commission (5400) | − ₹500.00 | 500.00 |
+| Net profit | ₹-900.00 | −900.00 = income − every EXPENSE account |
+
+No expense account with a balance is missing from the page. 8000 Round Off is
+₹0.00. After the sale, the page's ₹1,70,323.45 equals
+250,000 − 78,776.55 − 400 − 500.
 
 | Check | Stock / sub-ledger | General ledger |
 |---|---|---|
-| Vouchers | 27 checked, 0 unbalanced | — |
-| 1220 Polished Diamond Inventory | stones ₹18,164.84 + 7 packets ₹59,128.24 = ₹77,293.08 | ₹77,293.08 |
-| 1210 Diamond WIP | open jobs' remaining WIP ₹0.00 | ₹0.00 |
-| 1300 Metal Inventory | usable pools ₹330,104.31 | ₹330,104.31 |
-| 1310 Scrap Metal Inventory | scrap pools ₹10,547.33 | ₹10,547.33 |
-| 1320 Jewellery WIP | 0 open jobs, ₹0.00 | ₹0.00 |
-| 1330 Finished Jewellery Inventory | 4 available pieces ₹216,671.21 | ₹216,671.21 |
-| 5200 COGS | sales `FJS-000001` ₹42,394.36 + `FJS-000002` ₹78,776.55, the latter reversed by its sellable return | ₹42,394.36 |
-| 2000 payables by party | Dalal ₹900 · Karigar ₹10,500 · Manufacturer ₹880 · Polished Supplier ₹92,345.67 · Supplier ₹582,000 | total ₹686,625.67 |
-| Job Manufacturer lines | 3 checked, all closed lines have their audit record, 0 awaiting confirmation | — |
-| 24K job | metal movements only on 24K and Copper/Alloy; nothing moved against 18K/14K/9K pools | — |
+| Vouchers | 20 checked, 0 unbalanced | — |
+| 1220 Polished Diamond Inventory | 7 packets ₹62,728.24 | ₹62,728.24 |
+| 1210 Diamond WIP | remaining WIP ₹0.00 | ₹0.00 |
+| 1300 Metal Inventory | usable pools ₹2,26,278.89 | ₹2,26,278.89 |
+| 1310 Scrap Metal Inventory | scrap pools ₹7,389.44 | ₹7,389.44 |
+| 1320 Jewellery WIP | 0 open jobs | ₹0.00 |
+| 1330 Finished Jewellery Inventory | 3 available pieces ₹1,56,829.10 | ₹1,56,829.10 |
+| 2000 payables by party | Dalal ₹1,400 (900 + 500) · Karigar ₹3,500 (labour 3,000 + alloy 500) · Manufacturer ₹880 · Polished Supplier ₹96,345.67 · Supplier ₹3,52,000 | total ₹4,54,125.67 |
+| Jewellery Job packet lines | A 20 pcs / 2.000 ct ₹10,212.58; B 30 pcs / 3.000 ct ₹24,784.85; all set | page shows the same; diamond ₹34,997.43, total ₹1,75,497.43 |
+| Voucher visibility | 9 Owner-only (diamond issue/receipt, a diamond-issue reversal, jewellery issue/receipt, stock adjustment) · 11 Staff-visible (purchase, purchase reversals, sale, sale return) | matches the Staff Transactions list |
+| Job Manufacturer lines | 3 checked, all closed lines have their audit record | — |
 
-### 9.5 Real concurrent double-submit
+### 9.5 Real concurrent double-submit (engine on Postgres, first acceptance)
 
 A temporary script ran the real posting engine inside real Postgres
-transactions. When a submission hit the unique idempotency key, it used the same recovery
-as the server actions: find the saved record and return it.
+transactions, with the server actions' conflict recovery:
 
-| Scenario | Result |
-|---|---|
-| The same polished purchase submitted 5 times at once with one idempotency key | 1 purchase, 1 voucher. The other 4 submissions returned the same `ZL-PP-2026-000001` |
-| Two different Job Manufacturer issues racing for 8 of the same packet's 10 pieces | one issued (`ZL-PJ-2026-000001`), one refused: "Only 2 piece(s) available." Packet balance 2 pcs / 0.200 ct, never negative |
-| The same issue submitted 5 times at once with one idempotency key | 1 job (`ZL-PJ-2026-000002`); the other 4 returned it. Packet balance 1 pc / 0.100 ct |
-| Every voucher | 3 checked, 0 unbalanced |
+- The same purchase submitted 5 times at once gave 1 purchase and 1 voucher.
+- Two issues racing for 8 of the same packet's 10 pieces: one was issued, the
+  other refused with "Only 2 piece(s) available.".
+- The same issue submitted 5 times at once gave 1 job.
 
-The first attempt of this run found bug 16. The run above is on the fixed code.
+All vouchers balanced. The final run added the browser double-submits in §9.3.
 
 ### 9.6 Cleanup and baseline proof
 
 `cleanup.js` (temporary, outside the repository) worked like this:
 
 1. It checked the database identity.
-2. It proved that every party is named `PHASE7TEST…`, every user is a
-   `phase7test.…@example.test` test user, and no row was created by anyone
-   else (0 in each case).
-3. It worked out the delete order from the foreign keys and printed a dry run.
+2. It proved 0 non-`PHASE7TEST` parties, 0 non-test users and 0 rows created by
+   anyone else.
+3. It printed a dry run.
 4. It deleted everything in one transaction, which rolls back unless the
    baseline matches exactly.
 
-After the browser run it deleted rows in 36 tables (for example 27 vouchers,
-83 journal entries, 7 packets, 5 finished pieces and 6 parties), the Staff test
-user and the `phase7_empty` schema. After the concurrency run it deleted that
-run's rows the same way.
+Final run deletions: rows in 28 tables (including 20 vouchers, 59 journal
+entries, 7 packets, 3 finished pieces and 6 parties), the Staff test user and
+the `phase7_empty` schema (54 tables).
 
-Final baseline, checked after the last run: users 1 (the test Owner), accounts
-27, payment accounts 3, GST rates 6, purities 9, processes 4, migrations 13.
-All 47 other tables are empty, and schema `phase7_empty` is gone.
-`migrate status` reports "up to date". Both reconciliation scripts match at
-₹0.00 (0 vouchers, 1220/1210/1300/1310 all ₹0.00).
+After cleanup:
 
-Temporary files were deleted: the pre-Phase-7 code extract, the build folder
-used for it, the E2E packages, the test-only secrets file and the temporary
-scripts in the repository. No temporary file was committed.
+- users 1 (the test Owner), accounts 27, payment accounts 3, GST rates 6,
+  purities 9, processes 4, migrations 13, and all 47 other tables empty
+- `migrate status` "up to date"
+- both reconciliation scripts match at ₹0.00
+
+Temporary files were deleted: the test-only secrets file, the E2E packages and
+the scratch copies. No temporary file was committed.
 
 ## 10. Changed files and repository state
 
 Base `b472901` → branch `phase-7-polished-metal-process`.
 
 Commits: `95c05cf`, `336a08a`, `833be66`, `e3f001c`, `6611961`, `fbd5cbf`,
-`7271a6e`, `a674556`, `2da3038`, and the final acceptance documentation commit
-that updates this report and the README.
+`7271a6e`, `a674556`, `2da3038`, `7ee879b`, `5f7ed1d`, and the final
+acceptance documentation commit that updates this report and the README.
 
 ```text
 M  EMPLOYEE_USER_MANUAL_GUJARATI.md
@@ -427,6 +473,7 @@ M  prisma/seed.ts
 A  scripts/phase7DiamondReconciliation.ts
 A  scripts/phase7MetalStockReconciliation.ts
 A  scripts/seedPhase7Masters.ts
+M  src/app/(app)/accounting/page.tsx
 M  src/app/(app)/diamond/page.tsx
 M  src/app/(app)/jewellery-jobs/page.tsx
 M  src/app/(app)/settings/page.tsx
@@ -442,6 +489,9 @@ M  src/app/actions/vouchers.ts
 M  src/components/accounting/PartyEditForm.tsx
 M  src/components/accounting/PartyForm.tsx
 M  src/components/accounting/PartySelect.tsx
+M  src/components/accounting/ReportsView.test.tsx
+M  src/components/accounting/ReportsView.tsx
+A  src/components/accounting/TransactionsTab.test.tsx
 M  src/components/accounting/TransactionsTab.tsx
 M  src/components/accounting/VoucherList.tsx
 A  src/components/diamond/AdjustPacketForm.tsx
@@ -462,6 +512,7 @@ M  src/components/diamond/ReceivePolishedForm.tsx
 A  src/components/diamond/ReceiveProcessedRoughForm.tsx
 M  src/components/diamond/RoughStockTab.tsx
 M  src/components/jewellery/IssueMaterialsForm.tsx
+A  src/components/jewellery/JobDetailView.test.tsx
 M  src/components/jewellery/JobDetailView.tsx
 M  src/components/jewellery/JobsTab.tsx
 M  src/components/jewellery/MetalStockTab.tsx
@@ -471,6 +522,10 @@ A  src/components/settings/DiamondProcessSettingsPanel.tsx
 M  src/components/settings/MetalPuritySettingsPanel.tsx
 M  src/lib/accounting/accounts.ts
 M  src/lib/accounting/numbering.ts
+M  src/lib/accounting/reports.test.ts
+M  src/lib/accounting/reports.ts
+A  src/lib/accounting/voucherVisibility.test.ts
+A  src/lib/accounting/voucherVisibility.ts
 A  src/lib/db/uniqueConflict.test.ts
 A  src/lib/db/uniqueConflict.ts
 M  src/lib/diamond/numbering.ts
@@ -491,6 +546,9 @@ A  src/lib/diamond/processCharge.test.ts
 A  src/lib/diamond/processCharge.ts
 M  src/lib/diamond/reports.ts
 M  src/lib/help/sections.tsx
+A  src/lib/jewellery/jobDetailSerializers.test.ts
+A  src/lib/jewellery/jobDetailSerializers.ts
+A  src/lib/jewellery/jobIssuedCost.ts
 A  src/lib/jewellery/metalMath.test.ts
 A  src/lib/jewellery/metalMath.ts
 A  src/lib/jewellery/phase7MetalPosting.test.ts
@@ -513,7 +571,7 @@ A  test/fixtures/fakePolishedTx.ts
 Outside the repository: `../ZYNORALUXE_JEWELLERY_ERP_MASTER_PLAN.md`
 (Section 13 appended; the original 591 lines are byte-identical).
 
-The test database `zynoraluxe_phase7_test` and its role were kept at the seeded
+The test database `zynoraluxe_phase7_test` and its role are kept at the seeded
 baseline for future verification. `.env` gained only `TEST_DATABASE_URL`.
 
 Not pushed, not merged, not tagged, not deployed.

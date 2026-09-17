@@ -928,7 +928,9 @@ stay `PolishedDiamond` rows, unchanged.
   *already included in the supplier amount* (recorded only),
   *added to diamond cost* (inside 1220, credited to the broker) or
   *business expense* (5400 Brokerage & Commission, credited to the broker).
-  Brokerage is paid later through Payment Given.
+  Brokerage is paid later through Payment Given. Expensed brokerage appears
+  on the Profit and Loss report as its own line (every expense account without
+  a dedicated line is listed by name and deducted once).
 - **Merge key**: shape, custom shape, size, quality, colour, lab,
   certificate status, provenance and currency. Packets sharing it appear
   together in the **Grouped stock** view; nothing is merged or averaged
@@ -937,7 +939,10 @@ stay `PolishedDiamond` rows, unchanged.
   (Dr 1320 / Cr 1220) and resolved at receipt as set, returned or
   damaged/lost (Owner). Packet stones set into a piece count in Finished
   Stock's stone totals. Anything not entered stays pending with the Karigar;
-  a job completes only when every packet piece and carat is resolved.
+  a job completes only when every packet piece and carat is resolved. The
+  Jewellery Job detail lists each packet's code, pieces and carat for everyone.
+  Its cost, and the packet-inclusive "Diamond cost issued" and "Total
+  manufacturing cost issued", are Owner-only.
 - **Owner cancellation** of a purchase is allowed only while every packet is
   exactly as bought. **Owner count adjustments** post their own voucher
   (`STOCK_ADJUSTMENT`: out Dr 5100 / Cr 1220 at carat-share cost, in
@@ -1489,12 +1494,18 @@ test-data cleanup proof.
 - **Verified on a real database and in a real browser** (see
   `PHASE_7_VERIFICATION.md`): migrations from empty and on top of
   pre-Phase-7 data, seed idempotency, reconciliation, real concurrent
-  double-submits, and Owner/Staff desktop/mobile E2E. It found four real bugs,
-  all fixed with regression tests.
-- **Staff can still see voucher totals in Accounting › Transactions** (the
-  Phase 2 design). For a polished purchase with brokerage added to diamond
-  cost and no GST, that bill total equals the landed cost. The Phase 7 pages
-  themselves never send cost to Staff. Hiding it would be an Owner decision.
+  double-submits, the Profit and Loss page against the ledger, and
+  Owner/Staff desktop/mobile E2E with a Staff payload leak audit. It found
+  seven real bugs, all fixed with regression tests.
+- **Staff see ordinary transactions only in Accounting › Transactions**:
+  purchases, sales, payments, expenses, opening balances, sale returns,
+  customer refunds and reversals of these. Automatic diamond, jewellery job
+  and stock adjustment vouchers (internal carrying cost) are Owner-only.
+  Staff still see ordinary purchase bill totals. For a polished purchase with
+  brokerage added to diamond cost and no GST, that total equals the landed
+  cost. A party's ledger also shows Staff the payable lines of automatic
+  vouchers (for example a Manufacturer's process charge). Hiding either would
+  be an Owner decision.
 - Existing behaviour, not changed: the Jewellery Jobs list's "pending"
   figure includes recognised process loss (the job detail page shows the
   correct reconciliation), and Polished Diamond stock shows the raw status
