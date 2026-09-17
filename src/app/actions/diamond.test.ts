@@ -477,6 +477,12 @@ describe("Phase 7 — Manufacturer and Job Manufacturer actions", () => {
     expect(result).toEqual({ success: true, code: "ZL-PJR-2026-000001" });
   });
 
+  it("passes explicit line-closure confirmations through to the posting engine", async () => {
+    mocks.receivePacketProcessReturn.mockResolvedValue({ receipt: { receiptCode: "ZL-PJR-2026-000005" } });
+    await receivePacketProcessReturnAction(undefined, returnFields([], { closeLineIdsJson: JSON.stringify(["l1"]) }));
+    expect(mocks.receivePacketProcessReturn.mock.calls[0][1]).toMatchObject({ closeLineIds: ["l1"], rows: [] });
+  });
+
   it("cancelPacketProcessJobAction and saveDiamondProcessAction require Owner", async () => {
     mocks.requireOwner.mockImplementation(() => {
       throw new Error("redirect to /unauthorized");

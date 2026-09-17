@@ -260,6 +260,15 @@ The broker's name, method, rate and amount are snapshotted on the purchase. A br
 - `USED_IN_JEWELLERY_JOB`: the target Jewellery Job must be open (not Draft, Completed or Cancelled). Creates a `JewelleryPacketIssueLine` on that job at resolved cost plus charge share.
 - Cancellation (Owner): only while no receipt exists → mirror reversal of the issue voucher + `PROCESS_ISSUE_CANCEL_IN` per line.
 
+**Owner decision (2026-09-17), superseding the job-level loss rule above:**
+keep per-packet-line closure. A line may close when all its issued pieces are
+fully resolved, and its missing carat is then line-level Process Loss even if
+other lines remain open. It must not close from the piece count alone: the UI
+shows the line reconciliation and requires an explicit final confirmation
+(an exact piece-and-carat match has no loss to recognise and closes by itself).
+Once closed, a line rejects further receipts unless an Owner-only audited
+correction/reversal workflow exists (none does yet).
+
 ### 8.5 Manufacturer (rough process on the existing Diamond Job)
 - Issue Rough gains optional `processId` (active processes only), with the name and output kind snapshotted.
 - Receive for a `POLISHED` process: existing path, plus optional charge rate basis.

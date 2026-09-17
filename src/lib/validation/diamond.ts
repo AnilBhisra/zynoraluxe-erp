@@ -282,6 +282,8 @@ export const packetProcessReturnSchema = z.object({
   jobId: z.string().trim().min(1),
   receiveDate: DATE_ONLY,
   markJobComplete: booleanFlag,
+  /** Lines whose closure (with any carat gap as line-level loss) is explicitly confirmed. */
+  closeLineIds: z.array(z.string().trim().min(1)).default([]),
   isAbnormalLoss: booleanFlag,
   abnormalLossReason: optionalString(300),
   notes: optionalString(1000),

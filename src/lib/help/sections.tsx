@@ -517,7 +517,7 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
             <li>Size બદલાઈ હોય તો “Size (if changed)” માં નવી size લખો — નવો packet બનશે.</li>
             <li><Btn>Save return</Btn> દબાવો.</li>
           </Steps>
-          <Note>થોડું જ પાછું આવ્યું હોય તો બાકીનું Manufacturer પાસે pending રહે છે — loss ગણાતું નથી. એક packet ના બધા pieces પાછા આવી જાય ત્યારે જ બાકીનો carat Process Loss ગણાય.</Note>
+          <Note>થોડું જ પાછું આવ્યું હોય તો બાકીનું Manufacturer પાસે pending રહે છે — loss ગણાતું નથી. બધા pieces પાછા આવે પણ carat ઓછો હોય તો line આપોઆપ બંધ થતી નથી — હિસાબ તપાસી “Close this line” જાતે ટીક કરો, ત્યારે જ એ carat Process Loss ગણાય. બંધ line માં પછી કોઈ return નોંધાતું નથી.</Note>
         </div>
       ),
     },

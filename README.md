@@ -859,8 +859,9 @@ design (decisions D1–D10, every journal entry, the test and E2E plans) is
 Every Phase 7 schema change is a forward-only, additive migration:
 `20260915120000_phase7a_metal_alloy_cross_purity`,
 `20260916090000_phase7b_polished_purchase_packets`,
-`20260917090000_phase7c_manufacturer_processes` and
-`20260918090000_phase7d_stock_adjustment_voucher`.
+`20260917090000_phase7c_manufacturer_processes`,
+`20260918090000_phase7d_stock_adjustment_voucher` and
+`20260919090000_phase7e_packet_line_closure_audit`.
 
 ### Metal stock — two corrected readings
 
@@ -963,9 +964,18 @@ basis; jobs snapshot the name and output kind.
   changed), used in an open Jewellery Job (Dr 1320, linked to that job), or
   damaged/lost (Owner, reason required, Dr 5100). The charge is capitalised
   into returned and used stones and credited to the Manufacturer.
-  - A partial return never recognises loss. A line closes only when every
-    one of its pieces is accounted for; its remaining carat gap is then
-    Process Loss (absorbed, or expensed when the Owner marks it abnormal).
+  - A partial return never recognises loss. A packet line may close once every
+    issued piece is resolved, and its carat gap is then that line's Process
+    Loss — even while other lines stay open. It closes by itself only when the
+    carat also matches exactly; otherwise the return form shows the line's
+    reconciliation and closing needs the explicit "Close this line"
+    confirmation (or closing the whole job). A confirmed loss is absorbed into
+    stones returned on the same receipt, expensed when the Owner marks it
+    abnormal, and expensed when confirmed on a later receipt (the stones are
+    already back in stock). Who closed the line, when, and on which receipt
+    are recorded (migration `20260919090000_phase7e_packet_line_closure_audit`).
+  - A closed line accepts no further receipts. There is no correction or
+    reversal workflow for a closed line yet, so any later entry is refused.
   - The Owner may cancel before any return (mirror reversal, stones back
     into their packets). Cancelling a Jewellery Job also reverses the cost of
     stones that reached it from a Job Manufacturer return.
@@ -1475,7 +1485,7 @@ test-data cleanup proof.
 - **Not yet verified against a real database or in a real browser.** Every
   engine, action and serializer is covered by automated tests that run the
   real posting code against in-memory transaction fixtures, and
-  `next build` passes, but applying the four migrations to an isolated
+  `next build` passes, but applying the five migrations to an isolated
   database, the seed idempotency proof, the reconciliation scripts on real
   data and the Owner/Staff desktop/mobile browser E2E are still pending an
   isolated test database. See `PHASE_7_VERIFICATION.md`.

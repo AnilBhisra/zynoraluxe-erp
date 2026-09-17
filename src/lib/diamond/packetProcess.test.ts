@@ -174,7 +174,7 @@ describe("Job Manufacturer — returns", () => {
     ).rejects.toThrow(/still unaccounted for/);
   });
 
-  it("closes one line whose pieces are all back while another line stays pending", async () => {
+  it("all pieces back with a carat shortfall does NOT close the line on piece count alone", async () => {
     const { f, packetA, packetB, issue, receive, lineFor } = setup();
     const job = await issue([
       { packetId: packetA.id, pieces: 40, carat: 4 },
@@ -183,14 +183,95 @@ describe("Job Manufacturer — returns", () => {
     const { receipt, job: after } = await receive(job.id as string, [
       { jobLineId: lineFor(job.id as string, packetA.id).id, disposition: "RETURNED_TO_STOCK", pieces: 40, carat: 3.8 },
     ]);
+    const lineA = lineFor(job.id as string, packetA.id);
     expect(receipt.isFinal).toBe(false);
-    expect(receipt.lossCarat).toBe("0.200");
-    expect(after.status).toBe("PARTIALLY_RETURNED");
-    expect(lineFor(job.id as string, packetA.id).isClosed).toBe(true);
-    expect(lineFor(job.id as string, packetB.id).isClosed).toBe(false);
-    // Line A's whole 40000.00 resolved; line B's 40000.00 still in WIP.
-    expect(after.remainingWipCost).toBe("40000.00");
+    expect(receipt.lossCarat).toBe("0.000");
+    expect(lineA.isClosed).toBe(false);
+    expect(lineA.closedAt ?? null).toBeNull();
+    // 3.8 of 4ct drained (38000.00); the 0.2ct share (2000.00) waits in WIP with line B's 40000.00.
+    expect(after.remainingWipCost).toBe("42000.00");
     expectBalanced(f);
+
+    // Rows against a line whose pieces are all back are refused — close it instead.
+    await expect(
+      receive(job.id as string, [{ jobLineId: lineA.id, disposition: "RETURNED_TO_STOCK", pieces: 1, carat: 0.1 }])
+    ).rejects.toThrow(/confirm closing the line/);
+  });
+
+  it("an explicit confirmation closes that line alone, recognises line-level loss and records who closed it", async () => {
+    const { f, packetA, packetB, issue, receive, lineFor } = setup();
+    const job = await issue([
+      { packetId: packetA.id, pieces: 40, carat: 4 },
+      { packetId: packetB.id, pieces: 50, carat: 5 },
+    ]);
+    const lineAId = lineFor(job.id as string, packetA.id).id;
+    await receive(job.id as string, [{ jobLineId: lineAId, disposition: "RETURNED_TO_STOCK", pieces: 40, carat: 3.8 }]);
+
+    // Confirmation on a later receipt: the stones already went back to stock,
+    // so the loss share cannot be absorbed into them and is expensed.
+    const { receipt, job: after } = await receive(job.id as string, [], { closeLineIds: [lineAId], createdByUserId: "user-2" });
+    const lineA = lineFor(job.id as string, packetA.id);
+    expect(lineA.isClosed).toBe(true);
+    expect(lineA.lossCarat).toBe("0.200");
+    expect(lineA.closedByUserId).toBe("user-2");
+    expect(lineA.closingReceiptId).toBe(receipt.id);
+    expect(lineA.closedAt).toBeInstanceOf(Date);
+    expect(lineFor(job.id as string, packetB.id).isClosed).toBe(false);
+    expect(receipt.isFinal).toBe(false);
+    expect(after.status).toBe("PARTIALLY_RETURNED");
+    expect(after.remainingWipCost).toBe("40000.00");
+    expect(voucherLine(f, receipt.postingVoucherId as string, SYSTEM_ACCOUNT_CODES.BUSINESS_EXPENSES, "debit")).toBe("2000.00");
+    expectBalanced(f);
+
+    // A closed line accepts nothing further.
+    await expect(
+      receive(job.id as string, [{ jobLineId: lineAId, disposition: "RETURNED_TO_STOCK", pieces: 1, carat: 0.1 }])
+    ).rejects.toThrow(/already closed/);
+    await expect(receive(job.id as string, [], { closeLineIds: [lineAId] })).rejects.toThrow(/already closed/);
+  });
+
+  it("confirming in the same receipt absorbs the line's normal loss into the returned stones", async () => {
+    const { f, packetA, packetB, issue, receive, lineFor } = setup();
+    const job = await issue([
+      { packetId: packetA.id, pieces: 40, carat: 4 },
+      { packetId: packetB.id, pieces: 50, carat: 5 },
+    ]);
+    const lineAId = lineFor(job.id as string, packetA.id).id;
+    const { receipt } = await receive(
+      job.id as string,
+      [{ jobLineId: lineAId, disposition: "RETURNED_TO_STOCK", pieces: 40, carat: 3.8 }],
+      { closeLineIds: [lineAId] }
+    );
+    expect(receipt.lossCarat).toBe("0.200");
+    expect(lineFor(job.id as string, packetA.id).isClosed).toBe(true);
+    expect(voucherLine(f, receipt.postingVoucherId as string, SYSTEM_ACCOUNT_CODES.POLISHED_DIAMOND_INVENTORY, "debit")).toBe("40000.00");
+    expect(voucherLine(f, receipt.postingVoucherId as string, SYSTEM_ACCOUNT_CODES.BUSINESS_EXPENSES, "debit")).toBe("0.00");
+    expectBalanced(f);
+  });
+
+  it("refuses to confirm closing a line while any of its pieces are unaccounted for", async () => {
+    const { packetA, issue, receive, lineFor } = setup();
+    const job = await issue([{ packetId: packetA.id, pieces: 40, carat: 4 }]);
+    const lineAId = lineFor(job.id as string, packetA.id).id;
+    await expect(
+      receive(job.id as string, [{ jobLineId: lineAId, disposition: "RETURNED_TO_STOCK", pieces: 39, carat: 3.9 }], {
+        closeLineIds: [lineAId],
+      })
+    ).rejects.toThrow(/cannot close yet/);
+  });
+
+  it("an exact return of every piece and carat closes the line without confirmation (no loss to recognise)", async () => {
+    const { packetA, packetB, issue, receive, lineFor } = setup();
+    const job = await issue([
+      { packetId: packetA.id, pieces: 40, carat: 4 },
+      { packetId: packetB.id, pieces: 50, carat: 5 },
+    ]);
+    const { receipt } = await receive(job.id as string, [
+      { jobLineId: lineFor(job.id as string, packetA.id).id, disposition: "RETURNED_TO_STOCK", pieces: 40, carat: 4 },
+    ]);
+    expect(receipt.lossCarat).toBe("0.000");
+    expect(lineFor(job.id as string, packetA.id).isClosed).toBe(true);
+    expect(receipt.isFinal).toBe(false);
   });
 
   it("damaged/lost stones and abnormal loss go to Business Expenses", async () => {

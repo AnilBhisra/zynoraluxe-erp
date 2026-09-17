@@ -28,7 +28,7 @@ const detail = {
   status: "PARTIALLY_RETURNED" as const, issuedPieces: 10, issuedCarat: "1.000", pendingPieces: 5, pendingCarat: "0.500",
   returnedPieces: 5, usedPieces: 0, damagedPieces: 0, lossCarat: "0.000", issuedCostValue: "22222.22", remainingWipCost: "33333.33",
   totalCharge: "44444.44", notes: null, chargeRateBasis: "PER_CARAT", chargeRate: "777.7777", cancellationReason: null, hasReceipts: true,
-  lines: [{ id: "l1", packetCode: "ZL-PKT-1", label: "1.00MM", piecesAtIssue: 10, caratAtIssue: "1.000", costAtIssue: "55555.55", pendingPieces: 5, pendingCarat: "0.500", lossCarat: "0.000", isClosed: false }],
+  lines: [{ id: "l1", packetCode: "ZL-PKT-1", label: "1.00MM", piecesAtIssue: 10, caratAtIssue: "1.000", costAtIssue: "55555.55", pendingPieces: 5, pendingCarat: "0.500", lossCarat: "0.000", isClosed: false, closedAt: null }],
   receipts: [{
     id: "r1", receiptCode: "ZL-PJR-1", receiveDate: D, isFinal: false, lossCarat: "0.000", processCharge: "66666.66",
     lines: [{ disposition: "RETURNED_TO_STOCK", pieces: 5, carat: "0.500", sizeLabel: "1.00MM", costValue: "88888.88", jewelleryJobCode: null, resultPacketCode: "ZL-PKT-1", reason: null }],

@@ -33,7 +33,7 @@ export type SerializedPacketProcessJobDetail = {
   remainingWipCost: string | null;
   totalCharge: string | null;
   chargeRate: string | null;
-  lines: (PacketProcessLineOption & { piecesAtIssue: number; caratAtIssue: string; lossCarat: string; costAtIssue: string | null })[];
+  lines: (PacketProcessLineOption & { lossCarat: string; closedAt: string | null; costAtIssue: string | null })[];
   receipts: {
     id: string;
     receiptCode: string;
@@ -111,6 +111,7 @@ export function PacketProcessJobDetailView({
               <th className="px-3 py-2 text-right font-medium">Issued</th>
               <th className="px-3 py-2 text-right font-medium">Pending</th>
               <th className="px-3 py-2 text-right font-medium">Loss</th>
+              <th className="px-3 py-2 font-medium">Line</th>
               {isOwner ? <th className="px-3 py-2 text-right font-medium">Cost at issue</th> : null}
             </tr>
           </thead>
@@ -127,6 +128,13 @@ export function PacketProcessJobDetailView({
                   {l.pendingPieces} pcs / {l.pendingCarat}ct
                 </td>
                 <td className="px-3 py-2 text-right tabular-nums">{l.lossCarat}ct</td>
+                <td className="px-3 py-2 text-xs">
+                  {l.isClosed
+                    ? `Closed${l.closedAt ? ` ${new Date(l.closedAt).toLocaleDateString("en-IN")}` : ""}`
+                    : l.pendingPieces === 0
+                      ? "Awaiting close confirmation"
+                      : "Open"}
+                </td>
                 {isOwner ? <td className="px-3 py-2 text-right tabular-nums">₹{l.costAtIssue}</td> : null}
               </tr>
             ))}

@@ -19,7 +19,7 @@ still no isolated test database:
 > no migration, seed, `prisma migrate status`, reconciliation script,
 > browser session or `rateLimit.test.ts` run.
 
-What that leaves unproven until a test database exists: the four migrations
+What that leaves unproven until a test database exists: the five migrations
 applying to an empty and to a pre-Phase-7 database, the hand-written CHECK
 constraints under real data, seed idempotency, the two reconciliation scripts
 on real rows, Owner/Staff desktop/mobile browser E2E, real concurrent
@@ -31,7 +31,7 @@ double-submits, and temporary-data cleanup proof.
 | `prisma migrate status` | ⛔ **Not run** — would query the production database |
 | TypeScript (`tsc --noEmit`) | ✅ exit 0 |
 | ESLint (`eslint . --max-warnings=0`) | ✅ exit 0 |
-| Full Vitest suite | ✅ **53 files / 704 tests passed** (excluding `rateLimit.test.ts`, see §3) |
+| Full Vitest suite | ✅ **53 files / 709 tests passed** (excluding `rateLimit.test.ts`, see §3) |
 | Production `next build` (from a clean `.next`) | ✅ exit 0 |
 | Client-bundle secret scan | ✅ 38 static files, 9 secret-shaped `.env` values and 5 secret variable names: 0 hits |
 | Tracked/changed-file secret scan | ✅ Phase 7 diff: 0 hits for env values and credential patterns. Whole tree: only the two storage **bucket names** (non-secret defaults already in `.env.example` and pre-Phase-7 code) |
@@ -64,14 +64,14 @@ The UI keeps the existing navigation. The Diamond page's sections are now
 | | Files | Tests run | Not run |
 |---|---|---|---|
 | Before Phase 7 (audit baseline) | 43 (+1 not run) | 590 | 19 in `src/lib/auth/rateLimit.test.ts` |
-| After Phase 7 | 53 (+1 not run) | **704** | the same 19 |
+| After Phase 7 | 53 (+1 not run) | **709** | the same 19 |
 
 `rateLimit.test.ts` connects to `DATABASE_URL` and wipes `login_rate_limits`
 around each test, so it cannot run against the production database. It is
 unchanged by Phase 7.
 
 No existing test was deleted or weakened: `git diff --numstat b472901..HEAD`
-over every `*.test.ts(x)` file shows additions only. The 114 new tests are in
+over every `*.test.ts(x)` file shows additions only. The 119 new tests are in
 10 new files plus additions to 4 existing action/help test files:
 
 | File | Tests | Covers |
@@ -83,10 +83,10 @@ over every `*.test.ts(x)` file shows additions only. The 114 new tests are in
 | `src/lib/jewellery/phase7PacketJob.test.ts` | 14 | packet issue, row-lock status re-check, set/returned/damaged, pending never auto-loss, completion gating, cancellation, COGS chain |
 | `src/lib/diamond/processCharge.test.ts` | 5 | per carat, per piece, fixed-on-final, rounding |
 | `src/lib/diamond/phase7Manufacturer.test.ts` | 8 | process snapshot, processed rough, partial return, fixed charge, rate mismatch refused, wrong receive path refused, voucher amount |
-| `src/lib/diamond/packetProcess.test.ts` | 9 | Job Manufacturer issue, cancel, partial/final returns, child packet on size change, pieces must be accounted for, per-line close, damaged + abnormal loss, used in Jewellery Job and its cancellation |
+| `src/lib/diamond/packetProcess.test.ts` | 13 | Job Manufacturer issue, cancel, partial/final returns, child packet on size change, pieces must be accounted for, no close on piece count alone, explicit line closure with audit fields, closed line refuses receipts, damaged + abnormal loss, used in Jewellery Job and its cancellation |
 | `src/lib/diamond/phase7Serializers.test.ts` | 3 | no cost/brokerage/WIP/charge value in any Staff DTO |
 | `src/lib/diamond/packetAdjustment.test.ts` | 4 | adjustment out/in with accounting, stranded residue refused, cancelled packet refused |
-| action tests (`diamond`, `jewellery`, `vouchers`) | 14 | Owner/Staff enforcement for every new Owner-only action, Staff damaged/lost and abnormal loss refused, idempotent resubmission, concurrent duplicate (unique-key conflict) recovery, generic voucher cancel guards |
+| action tests (`diamond`, `jewellery`, `vouchers`) | 15 | Owner/Staff enforcement for every new Owner-only action, Staff damaged/lost and abnormal loss refused, idempotent resubmission, concurrent duplicate (unique-key conflict) recovery, line-closure confirmations passed through, generic voucher cancel guards |
 
 All posting tests run the **real** engine code against in-memory transaction
 fixtures and assert exact 2-dp money, exact 3-dp weights, and debit = credit on
@@ -121,6 +121,7 @@ every voucher.
 | `20260916090000_phase7b_polished_purchase_packets` | `PartyType` + `BROKER`, `MANUFACTURER`; sequence types; 6 enums; 6 tables (purchases, lines, packets, packet movements, jewellery packet issue lines and resolutions); CHECK constraints on the new tables |
 | `20260917090000_phase7c_manufacturer_processes` | 4 enums; `diamond_processes`, `packet_process_jobs`, `…_job_lines`, `…_receipts`, `…_receipt_lines`; nullable process/charge columns on `diamond_jobs`; CHECK constraints |
 | `20260918090000_phase7d_stock_adjustment_voucher` | `VoucherType` + `STOCK_ADJUSTMENT` |
+| `20260919090000_phase7e_packet_line_closure_audit` | nullable `closedAt`, `closedByUserId`, `closingReceiptId` on `packet_process_job_lines`, with foreign keys and `CHECK (isClosed = (closedAt IS NOT NULL))` |
 
 Review evidence (read and grep, not a database apply):
 
@@ -219,10 +220,13 @@ movement.
 - "Used in Jewellery Job" is refused when that job already holds stones from
   the same packet (two cost layers are never averaged into one line).
 - Job Manufacturer cancellation only before the first return.
-- A Job Manufacturer line closes when all its pieces are back, recognising its
-  carat gap as loss even while other lines stay pending (pending pieces are
-  never loss). Plan §8.4 described loss only at job close; this refinement is
-  recorded in the README.
+- Job Manufacturer line closure follows the Owner decision of 2026-09-17: a
+  line may close once all its pieces are resolved, recognising its carat gap
+  as line-level loss while other lines stay open, but only with explicit
+  confirmation (or an exact match). A closed line refuses further receipts;
+  no Owner correction/reversal workflow for closed lines exists yet.
+- A loss confirmed on a later receipt than the stones' return is expensed,
+  because those stones are already back in stock at their resolved cost.
 - Enum additions cannot be rolled back in Postgres.
 
 ## 9. Real verification still to run (instructions §12)
@@ -234,7 +238,7 @@ command below must be pointed at that database only.
 1. `migrate deploy` on an empty database → `db:seed` → `db:seed-phase7-masters`
    twice, comparing row counts (idempotency proof).
 2. A database holding the eight pre-Phase-7 migrations plus representative
-   data → apply the four Phase 7 migrations → `migrate status`.
+   data → apply the five Phase 7 migrations → `migrate status`.
 3. `next build` + `next start`; a real Chromium session using only
    `PHASE7TEST`-prefixed data, Owner and Staff, desktop 1440×900 and mobile
    390×844, capturing console errors, page errors, failed requests and CSP

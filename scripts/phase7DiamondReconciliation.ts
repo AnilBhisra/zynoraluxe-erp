@@ -15,7 +15,8 @@ import { pendingPacketQuantity, sumPacketMovements } from "../src/lib/diamond/pa
 //      (Available + Recut, which has no voucher) + every packet balance.
 //   4. 1210 Diamond WIP = open Diamond Jobs' + open Job Manufacturer jobs'
 //      remaining WIP cost.
-//   5. Job Manufacturer lines never resolve more than was issued.
+//   5. Job Manufacturer lines never resolve more than was issued, completed
+//      jobs have every line closed, and every closed line has its audit record.
 
 const D = Prisma.Decimal;
 type Dec = Prisma.Decimal;
@@ -101,7 +102,10 @@ async function main() {
       problems.push(`job ${l.job.jobCode}: completed but a line is still open (${pending.pieces} pcs / ${pending.carat}ct)`);
     }
   }
-  console.log(`Job Manufacturer lines checked: ${lines.length}`);
+  const awaitingClose = lines.filter((l) => !l.isClosed && l.job.status !== "CANCELLED" && l.resolvedPieces === l.piecesAtIssue).length;
+  const closedWithoutAudit = lines.filter((l) => l.isClosed && !l.closedAt).length;
+  if (closedWithoutAudit > 0) problems.push(`${closedWithoutAudit} closed Job Manufacturer line(s) have no closure audit record`);
+  console.log(`Job Manufacturer lines checked: ${lines.length} (awaiting close confirmation: ${awaitingClose})`);
 
   await prisma.$disconnect();
   if (problems.length > 0) {

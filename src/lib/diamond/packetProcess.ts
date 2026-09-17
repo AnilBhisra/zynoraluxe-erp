@@ -247,8 +247,14 @@ export async function receivePacketProcessReturn(
     jobId: string;
     receiveDate: Date;
     rows: PacketReturnRowInput[];
-    /** Explicitly closes the job: any carat still unaccounted for becomes process loss. */
+    /** Explicitly closes the job — confirms closing every open line. */
     markJobComplete: boolean;
+    /**
+     * Lines whose closure is explicitly confirmed on this receipt. A line whose
+     * pieces are all resolved but whose carat falls short never closes on piece
+     * count alone: it stays open (no loss recognised) until confirmed here.
+     */
+    closeLineIds?: string[];
     isAbnormalLoss: boolean;
     abnormalLossReason?: string | null;
     notes?: string | null;
@@ -263,17 +269,31 @@ export async function receivePacketProcessReturn(
   if (input.isAbnormalLoss && (!input.abnormalLossReason || input.abnormalLossReason.trim().length < 3)) {
     throw new PostingError("Give a short reason for classifying this loss as abnormal.");
   }
-  if (input.rows.length === 0 && !input.markJobComplete) {
-    throw new PostingError("Record at least one returned, used or damaged/lost line.");
+  const closeLineIds = new Set(input.closeLineIds ?? []);
+  if (closeLineIds.size !== (input.closeLineIds ?? []).length) {
+    throw new PostingError("The same line was confirmed for closing more than once.");
+  }
+  if (input.rows.length === 0 && !input.markJobComplete && closeLineIds.size === 0) {
+    throw new PostingError("Record at least one returned, used or damaged/lost line, or confirm closing a line.");
   }
 
   const jobLines = await tx.packetProcessJobLine.findMany({ where: { jobId: job.id } });
   const lineById = new Map(jobLines.map((l) => [l.id, l]));
+  // A closed line accepts nothing further. There is no Owner correction or
+  // reversal workflow for a closed line yet, so any receipt against it is refused.
+  for (const id of closeLineIds) {
+    const line = lineById.get(id);
+    if (!line) throw new PostingError("One or more lines confirmed for closing do not belong to this job.");
+    if (line.isClosed) throw new PostingError("One or more of those lines are already closed.");
+  }
 
   type Row = PacketReturnRowInput & { carat3: Decimal; lineIndex: number };
   const rows: Row[] = input.rows.map((row, lineIndex) => {
     const line = lineById.get(row.jobLineId);
     if (!line) throw new PostingError("One or more return lines do not belong to this job.");
+    if (line.isClosed) {
+      throw new PostingError("That packet line is already closed — it cannot receive further returns.");
+    }
     const carat3 = round3(row.carat);
     if (!Number.isInteger(row.pieces) || row.pieces < 1 || !carat3.greaterThan(0)) {
       throw new PostingError("Each return line needs at least one piece and a carat greater than zero.");
@@ -311,6 +331,11 @@ export async function receivePacketProcessReturn(
   for (const plan of plans) {
     const packet = await tx.polishedPacket.findUnique({ where: { id: plan.line.packetId } });
     packetCodeById.set(plan.line.packetId, packet?.packetCode ?? plan.line.packetId);
+    if (plan.thisPieces > 0 && plan.pendingPieces === 0) {
+      throw new PostingError(
+        `Packet ${packetCodeById.get(plan.line.packetId)}: every issued piece is already back — confirm closing the line instead.`
+      );
+    }
     if (plan.thisPieces > plan.pendingPieces || plan.thisCarat.greaterThan(plan.pendingCarat)) {
       throw new PostingError(
         `Packet ${packetCodeById.get(plan.line.packetId)}: this return is more than the ${plan.pendingPieces} pcs / ${plan.pendingCarat.toFixed(3)}ct still with the Manufacturer.`
@@ -318,9 +343,12 @@ export async function receivePacketProcessReturn(
     }
   }
 
-  // A line closes once every one of its pieces is accounted for: no stone is
-  // left with the Manufacturer, so any carat gap is definite process loss.
-  // While even one piece is pending, nothing is treated as loss.
+  // Line closure (Owner decision 2026-09-17). A line may close once every issued
+  // piece is resolved — no stone is left with the Manufacturer, so its carat gap
+  // is line-level process loss, even while other lines stay open. It closes by
+  // itself only when the carat also matches exactly (nothing to recognise);
+  // otherwise closing needs explicit confirmation (closeLineIds, or
+  // markJobComplete for every line). While a piece is pending nothing is loss.
   const openPlans = plans.filter((p) => !p.line.isClosed);
   for (const plan of openPlans) {
     if (plan.thisPieces < plan.pendingPieces && plan.thisCarat.greaterThan(0) && plan.thisCarat.equals(plan.pendingCarat)) {
@@ -329,11 +357,21 @@ export async function receivePacketProcessReturn(
       );
     }
   }
-  const closesLine = (plan: LinePlan) => plan.thisPieces === plan.pendingPieces && plan.pendingPieces > 0;
-  const isFinal = input.markJobComplete || openPlans.every(closesLine);
-  if (isFinal) {
+  const allPiecesResolved = (plan: LinePlan) => plan.thisPieces === plan.pendingPieces;
+  const confirmed = (plan: LinePlan) => input.markJobComplete || closeLineIds.has(plan.line.id);
+  const closesLine = (plan: LinePlan) =>
+    allPiecesResolved(plan) && (confirmed(plan) || (plan.thisPieces > 0 && plan.thisCarat.equals(plan.pendingCarat)));
+  for (const plan of openPlans) {
+    if (closeLineIds.has(plan.line.id) && !allPiecesResolved(plan)) {
+      throw new PostingError(
+        `Packet ${packetCodeById.get(plan.line.packetId)}: ${plan.pendingPieces - plan.thisPieces} piece(s) are still unaccounted for — the line cannot close yet.`
+      );
+    }
+  }
+  const isFinal = openPlans.every(closesLine);
+  if (input.markJobComplete) {
     for (const plan of openPlans) {
-      if (!closesLine(plan)) {
+      if (!allPiecesResolved(plan)) {
         throw new PostingError(
           `Packet ${packetCodeById.get(plan.line.packetId)}: ${plan.pendingPieces - plan.thisPieces} piece(s) are still unaccounted for — return them, mark them used or damaged/lost before closing the job.`
         );
@@ -547,6 +585,7 @@ export async function receivePacketProcessReturn(
         lossCarat: round3(new Decimal(plan.line.lossCarat).plus(update.lossCarat)).toFixed(3),
         resolvedCost: round2(new Decimal(plan.line.resolvedCost).plus(update.resolvedLineCost)).toFixed(2),
         isClosed: update.closes,
+        ...(update.closes ? { closedAt: new Date(), closedByUserId: input.createdByUserId, closingReceiptId: receipt.id } : {}),
       },
     });
   }

@@ -187,7 +187,11 @@ Brokerage એક જ વાર નોંધાય છે. Dalal ને payment �
 6. Size બદલાઈ હોય તો "Size (if changed)" માં નવી size લખો — નવો packet બનશે.
 7. `Save return` દબાવો.
 
-એક packet ના બધા pieces પાછા ન આવે ત્યાં સુધી બાકીનો માલ pending રહે છે, loss નહીં. Job બંધ કરવા "Nothing more will come back" ટીક કરો — ત્યારે દરેક piece નો હિસાબ આપવો જ પડે.
+એક packet ના બધા pieces પાછા ન આવે ત્યાં સુધી બાકીનો માલ pending રહે છે, loss નહીં. દરેક packet line નીચે હિસાબ દેખાય છે: Issued, Pending before, This return, Still with Manufacturer.
+
+બધા pieces પાછા આવી ગયા હોય પણ carat ઓછો હોય, તો line આપોઆપ બંધ થતી નથી. હિસાબ તપાસી "Close this line — record … ct as Process Loss" જાતે ટીક કરો; બાકીના packets ખુલ્લા રહી શકે છે. એ જ return માં ટીક કરવું સારું — પછીથી ટીક કરો તો loss expense તરીકે જાય છે. Pieces અને carat બંને પૂરા મળે તો line loss વગર જાતે બંધ થાય છે.
+
+બંધ થયેલી line માં પછી કોઈ return નોંધી શકાતું નથી — ભૂલ લાગે તો Owner ને જણાવો. આખો job બંધ કરવા "Nothing more will come back" ટીક કરો — ત્યારે દરેક piece નો હિસાબ આપવો જ પડે.
 
 **ફક્ત Owner:** Damaged/Lost, abnormal loss, અને કોઈ return આવ્યા પહેલાં `Cancel job`.
 

@@ -105,6 +105,7 @@ model User {
   packetProcessJobsCreated       PacketProcessJob[]       @relation("PacketProcessJobCreatedBy")
   packetProcessJobsCancelled     PacketProcessJob[]       @relation("PacketProcessJobCancelledBy")
   packetProcessReceiptsCreated   PacketProcessReceipt[]   @relation("PacketProcessReceiptCreatedBy")
+  packetProcessJobLinesClosed    PacketProcessJobLine[]   @relation("PacketProcessJobLineClosedBy")
 
   @@map("users")
 }
@@ -2703,6 +2704,16 @@ model PacketProcessJobLine {
   resolvedCost   Decimal @default(0) @db.Decimal(14, 2)
   isClosed       Boolean @default(false)
 
+  /// A line closes when every issued piece is resolved and either the carat
+  /// matches exactly or someone explicitly confirmed closing it (recognising
+  /// the carat gap as line-level Process Loss). Recorded for audit; a closed
+  /// line accepts no further receipts.
+  closedAt         DateTime?
+  closedByUserId   String?
+  closedBy         User?                 @relation("PacketProcessJobLineClosedBy", fields: [closedByUserId], references: [id])
+  closingReceiptId String?
+  closingReceipt   PacketProcessReceipt? @relation("PacketProcessLineClosingReceipt", fields: [closingReceiptId], references: [id])
+
   createdAt DateTime @default(now())
 
   receiptLines PacketProcessReceiptLine[]
@@ -2737,7 +2748,8 @@ model PacketProcessReceipt {
 
   createdAt DateTime @default(now())
 
-  lines PacketProcessReceiptLine[]
+  lines          PacketProcessReceiptLine[]
+  closedJobLines PacketProcessJobLine[]     @relation("PacketProcessLineClosingReceipt")
 
   @@index([jobId])
   @@map("packet_process_receipts")

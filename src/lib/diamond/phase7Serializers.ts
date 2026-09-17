@@ -124,6 +124,7 @@ export function serializePacketProcessJobDetail(detail: PacketProcessJobDetail, 
       pendingCarat: l.pendingCarat,
       lossCarat: l.lossCarat,
       isClosed: l.isClosed,
+      closedAt: l.closedAt ? l.closedAt.toISOString() : null,
       costAtIssue: ownerOnly(isOwner, l.costAtIssue),
     })),
     receipts: detail.receipts.map((r) => ({

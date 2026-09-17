@@ -315,6 +315,7 @@ export type PacketProcessJobDetail = PacketProcessJobRow & {
     pendingCarat: string;
     lossCarat: string;
     isClosed: boolean;
+    closedAt: Date | null;
   }[];
   receipts: {
     id: string;
@@ -370,6 +371,7 @@ export async function getPacketProcessJobDetail(jobId: string): Promise<PacketPr
         pendingCarat: pending.carat,
         lossCarat: l.lossCarat.toFixed(3),
         isClosed: l.isClosed,
+        closedAt: l.closedAt,
       };
     }),
     receipts: job.receipts.map((r) => ({
