@@ -156,6 +156,38 @@ describe("idempotent duplicate submission", () => {
     expect(result?.voucherNumber).toBe("PMT-OUT/2026-27/0001");
   });
 
+  it("also recovers when the conflict carries the Postgres driver adapter's constraint name instead of meta.target", async () => {
+    mocks.transaction.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+        code: "P2002",
+        clientVersion: "test",
+        meta: {
+          driverAdapterError: {
+            name: "DriverAdapterError",
+            cause: { originalCode: "23505", kind: "UniqueConstraintViolation", constraint: { index: "vouchers_idempotencyKey_key" }, table: "vouchers" },
+          },
+          modelName: "Voucher",
+        },
+      })
+    );
+    // Pre-check misses (the winner has not committed yet); recovery lookup finds it.
+    mocks.voucherFindUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: "existing-1", voucherNumber: "PMT-OUT/2026-27/0001" });
+
+    const result = await createPaymentGiven(
+      undefined,
+      formData({
+        date: "2026-06-15",
+        partyId: "party-1",
+        paymentAccountId: "pa-1",
+        amount: "500",
+        idempotencyKey: "same-key-resubmitted",
+      })
+    );
+
+    expect(result?.success).toBe(true);
+    expect(result?.voucherNumber).toBe("PMT-OUT/2026-27/0001");
+  });
+
   it("short-circuits before posting at all when the key was already used on a prior successful call", async () => {
     mocks.voucherFindUnique.mockResolvedValue({
       id: "existing-1",

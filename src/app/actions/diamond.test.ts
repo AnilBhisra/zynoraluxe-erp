@@ -545,4 +545,32 @@ describe("Phase 7 — concurrent duplicate submission", () => {
     expect(result).toEqual({ success: true, code: "ZL-PJR-2026-000004" });
     expect(mocks.receivePacketProcessReturn).toHaveBeenCalledTimes(1);
   });
+
+  it("recovers from the conflict shape the Postgres driver adapter really returns (constraint name, no meta.target)", async () => {
+    mocks.polishedPurchaseFindUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ purchaseCode: "ZL-PP-2026-000010" });
+    mocks.createPolishedPurchase.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+        code: "P2002",
+        clientVersion: "test",
+        meta: {
+          driverAdapterError: {
+            name: "DriverAdapterError",
+            cause: { originalCode: "23505", kind: "UniqueConstraintViolation", constraint: { index: "vouchers_idempotencyKey_key" }, table: "vouchers" },
+          },
+          modelName: "Voucher",
+        },
+      })
+    );
+    const result = await createPolishedPurchaseAction(
+      undefined,
+      formData({
+        purchaseDate: "2026-09-18",
+        supplierId: "party-1",
+        supplierAmount: "1000",
+        idempotencyKey: "same-key",
+        linesJson: JSON.stringify([{ shape: "ROUND", sizeLabel: "1.00MM", pieces: 1, carat: "0.100", rateBasis: "FIXED_TOTAL", rate: "1000" }]),
+      })
+    );
+    expect(result).toEqual({ success: true, code: "ZL-PP-2026-000010" });
+  });
 });

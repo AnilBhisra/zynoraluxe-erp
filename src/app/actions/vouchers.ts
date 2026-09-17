@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { prisma } from "@/lib/db/prisma";
-import { Prisma } from "@/generated/prisma/client";
+import { isIdempotencyConflict } from "@/lib/db/uniqueConflict";
 import { requireOwner, requireUser } from "@/lib/auth/dal";
 import { getCompanyFySettings } from "@/lib/accounting/company";
 import { checkVoucherDateAllowed, parseDateOnly } from "@/lib/accounting/financialYear";
@@ -20,15 +20,6 @@ import {
 export type VoucherFormState =
   | { error?: string; success?: boolean; voucherNumber?: string }
   | undefined;
-
-function isIdempotencyConflict(error: unknown): boolean {
-  return (
-    error instanceof Prisma.PrismaClientKnownRequestError &&
-    error.code === "P2002" &&
-    Array.isArray(error.meta?.target) &&
-    (error.meta.target as string[]).includes("idempotencyKey")
-  );
-}
 
 async function findExistingByIdempotencyKey(idempotencyKey: string | undefined) {
   if (!idempotencyKey) return null;

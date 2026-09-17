@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { prisma } from "@/lib/db/prisma";
-import { Prisma } from "@/generated/prisma/client";
+import { isIdempotencyConflict } from "@/lib/db/uniqueConflict";
 import { requireOwner } from "@/lib/auth/dal";
 import { getCompanyFySettings } from "@/lib/accounting/company";
 import { parseDateOnly } from "@/lib/accounting/financialYear";
@@ -28,15 +28,6 @@ import {
 // any Phase 3/4/5 row is ever read or written.
 
 export type CostingFormState = { error?: string; success?: boolean; id?: string; costingNumber?: string } | undefined;
-
-function isIdempotencyConflict(error: unknown): boolean {
-  return (
-    error instanceof Prisma.PrismaClientKnownRequestError &&
-    error.code === "P2002" &&
-    Array.isArray(error.meta?.target) &&
-    (error.meta.target as string[]).includes("idempotencyKey")
-  );
-}
 
 function safeParseDateOnly(value: string): Date | null {
   try {

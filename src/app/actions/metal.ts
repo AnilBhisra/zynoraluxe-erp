@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { prisma } from "@/lib/db/prisma";
+import { isIdempotencyConflict } from "@/lib/db/uniqueConflict";
 import { Prisma } from "@/generated/prisma/client";
 import { requireOwner, requireUser } from "@/lib/auth/dal";
 import { getCompanyFySettings } from "@/lib/accounting/company";
@@ -16,15 +17,6 @@ import {
 } from "@/lib/validation/jewellery";
 
 export type MetalFormState = { error?: string; success?: boolean; code?: string } | undefined;
-
-function isIdempotencyConflict(error: unknown): boolean {
-  return (
-    error instanceof Prisma.PrismaClientKnownRequestError &&
-    error.code === "P2002" &&
-    Array.isArray(error.meta?.target) &&
-    (error.meta.target as string[]).includes("idempotencyKey")
-  );
-}
 
 function safeParseDateOnly(value: string): Date | null {
   try {
