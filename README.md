@@ -51,8 +51,8 @@ recording this Owner-approved Phase 6 addition). This build implements
 `PHASE_2_VERIFICATION.md`, `PHASE_3_VERIFICATION.md`,
 `PHASE_4_VERIFICATION.md`, `PHASE_5_VERIFICATION.md`,
 `PHASE_6_VERIFICATION.md` and `PHASE_7_VERIFICATION.md` for the detailed
-verification reports (Phase 7's real-database and browser checks are still
-pending — see "Known Phase 7 limitations").
+verification reports (Phase 7 passed its real-database, concurrency and
+Owner/Staff desktop/mobile browser acceptance on an isolated test database).
 
 ## Stack
 
@@ -918,7 +918,10 @@ stay `PolishedDiamond` rows, unchanged.
   `Party / Supplier`, packet lines (Shape, Size, Pieces, Carat, Quality,
   Colour, certificate/Lab, rate basis and rate), supplier amount, GST,
   payment, and `Dalal / Broker`. Each line becomes one packet with provenance
-  `PURCHASED` — never a fabricated parent Rough ID.
+  `PURCHASED` — never a fabricated parent Rough ID. The landed cost is shared
+  across lines by each line's rate value (rate × carat, rate × pieces, or
+  the fixed amount), falling back to carat only when a line has no value;
+  Owner-entered per-line costs take priority when they add up exactly.
 - **Dalal / Broker** is a Party type. Brokerage is per carat, percentage of
   the supplier amount, or fixed; the broker's name, method, rate and amount
   are snapshotted. Treatment decides the posting, exactly once:
@@ -932,7 +935,8 @@ stay `PolishedDiamond` rows, unchanged.
   destructively, and purchased and manufactured stones are never grouped.
 - Packets can be issued to **Jewellery Jobs** by pieces and carat
   (Dr 1320 / Cr 1220) and resolved at receipt as set, returned or
-  damaged/lost (Owner). Anything not entered stays pending with the Karigar;
+  damaged/lost (Owner). Packet stones set into a piece count in Finished
+  Stock's stone totals. Anything not entered stays pending with the Karigar;
   a job completes only when every packet piece and carat is resolved.
 - **Owner cancellation** of a purchase is allowed only while every packet is
   exactly as bought. **Owner count adjustments** post their own voucher
@@ -1482,13 +1486,21 @@ test-data cleanup proof.
 
 ## Known Phase 7 limitations
 
-- **Not yet verified against a real database or in a real browser.** Every
-  engine, action and serializer is covered by automated tests that run the
-  real posting code against in-memory transaction fixtures, and
-  `next build` passes, but applying the five migrations to an isolated
-  database, the seed idempotency proof, the reconciliation scripts on real
-  data and the Owner/Staff desktop/mobile browser E2E are still pending an
-  isolated test database. See `PHASE_7_VERIFICATION.md`.
+- **Verified on a real database and in a real browser** (see
+  `PHASE_7_VERIFICATION.md`): migrations from empty and on top of
+  pre-Phase-7 data, seed idempotency, reconciliation, real concurrent
+  double-submits, and Owner/Staff desktop/mobile E2E. It found four real bugs,
+  all fixed with regression tests.
+- **Staff can still see voucher totals in Accounting › Transactions** (the
+  Phase 2 design). For a polished purchase with brokerage added to diamond
+  cost and no GST, that bill total equals the landed cost. The Phase 7 pages
+  themselves never send cost to Staff. Hiding it would be an Owner decision.
+- Existing behaviour, not changed: the Jewellery Jobs list's "pending"
+  figure includes recognised process loss (the job detail page shows the
+  correct reconciliation), and Polished Diamond stock shows the raw status
+  `SET_IN_JEWELLERY`.
+- A closed Job Manufacturer packet line refuses further receipts; there is
+  no Owner correction/reversal workflow for closed lines yet.
 - Past postings are **reported, not rewritten** (Owner decision). The
   corrected metal balances are the true ones; the metal reconciliation script
   shows the difference.
