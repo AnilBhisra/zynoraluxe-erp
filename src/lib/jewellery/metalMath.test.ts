@@ -91,9 +91,16 @@ describe("METAL_POOL_EFFECT", () => {
 
   it("keeps scrap out of issuable stock", () => {
     expect(METAL_POOL_EFFECT.SCRAP_RETURN_IN).toEqual({ usable: 0, scrap: 1 });
+    // Only the three scrap-side types touch the scrap pool, and none of them
+    // touches issuable stock — a transfer moves value through its own paired
+    // usable-side movement, never by making one movement do both.
+    const SCRAP_TYPES = ["SCRAP_RETURN_IN", "SCRAP_ADJUSTMENT_IN", "SCRAP_ADJUSTMENT_OUT"];
     for (const [type, effect] of Object.entries(METAL_POOL_EFFECT)) {
-      if (type !== "SCRAP_RETURN_IN") expect(effect.scrap).toBe(0);
+      if (SCRAP_TYPES.includes(type)) expect(effect.usable).toBe(0);
+      else expect(effect.scrap).toBe(0);
     }
+    expect(METAL_POOL_EFFECT.SCRAP_ADJUSTMENT_IN).toEqual({ usable: 0, scrap: 1 });
+    expect(METAL_POOL_EFFECT.SCRAP_ADJUSTMENT_OUT).toEqual({ usable: 0, scrap: -1 });
   });
 
   it("treats every other _IN as usable-in and every other _OUT as usable-out", () => {

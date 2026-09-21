@@ -13,8 +13,9 @@ R1 nor R2 has been posted to production.**
 
 | Area | Files |
 |---|---|
-| Schema | `Correction`, `CorrectionImpact`, `MetalRevaluation`, `CorrectionBatch` + 6 enums; `MetalStockMovement.voucherId` and `.idempotencyKey`; `VoucherType.OPENING_STOCK` and `.CORRECTION` |
-| Migrations | `20260921090000_phase8_correction_framework`, `20260921120000_phase8_correction_batch` |
+| Schema | `Correction`, `CorrectionImpact`, `MetalRevaluation`, `CorrectionBatch` + 7 enums; `MetalStockMovement.voucherId` and `.idempotencyKey`; `Correction.reversedByCorrectionId`; `VoucherType.OPENING_STOCK` and `.CORRECTION`; `CorrectionState.REVERSED`; `MetalStockMovementType.SCRAP_ADJUSTMENT_IN/OUT` |
+| Migrations | `20260921090000_phase8_correction_framework`, `20260921120000_phase8_correction_batch`, `20260921150000_phase8_adjustments_and_reversal` |
+| Adjustments | `src/lib/jewellery/posting.ts` (`adjustMetalStock`, `reverseMetalStockAdjustment`), `src/app/actions/metal.ts`, `MetalStockTab.tsx`, `validation/jewellery.ts`, `prisma/phase8Masters.ts`, `scripts/seedPhase8Masters.ts` |
 | Replay engine | `src/lib/corrections/metalReplay.ts` (pure; no I/O) |
 | Correction engine | `src/lib/corrections/engine.ts`, `types.ts`, `verify.ts` |
 | Opening-stock corrections | `src/lib/corrections/openingStockCorrection.ts` (R1 + R2 + re-plan) |
@@ -83,9 +84,9 @@ load, or outputs whose fine weight does not match the consumed fine weight.
 
 | Gate | Result |
 |---|---|
-| Vitest | **825 passed / 825**, 63 files (was 762 at `6cb6c07`) |
-| New tests | 63 — 14 replay, 29 real-database flow and batch, 14 action/permission, 6 history view |
-| Prisma | schema valid; both migrations applied to the test database; status clean at 15 |
+| Vitest | **840 passed / 840**, 63 files (was 762 at `6cb6c07`) |
+| New tests | 78 — 16 replay, 32 real-database flow, batch and rollback, 16 action/permission, 6 history view, 8 adjustment/reversal |
+| Prisma | schema valid; all three migrations applied to the test database; status clean at 16 |
 | TypeScript | `tsc --noEmit` clean |
 | ESLint | clean, 0 errors 0 warnings |
 | Production build | succeeds; `/corrections` routed |
@@ -102,66 +103,105 @@ nullable columns, no data change.
 
 ---
 
-## Authorized Metal Stock Adjustment — blocked, and the proposed fix
+## Authorized Metal Stock Adjustment — IMPLEMENTED
 
-### Blocked now
+`adjustMetalStock` used to change Metal Stock and post **no journal entry** —
+the same defect class as D-2. It now writes its stock movement(s) and a
+balanced `STOCK_ADJUSTMENT` voucher in one transaction, keyed by a unique
+idempotency key.
 
-`adjustMetalStock` changes Metal Stock and posts **no journal entry** — the same
-defect class as D-2. Until its accounting is implemented it refuses to write
-anything (`PostingError`, with the reason shown in the form), so production can
-no longer create a stock movement without a balanced voucher. Existing stock
-and history are untouched. The refusal is proven by `posting.test.ts`.
+### Accounts
 
-### Current input fields
+Two new system accounts, created only if missing by `npm run db:seed-phase8-masters`
+(and included in `db:seed`). **Opening Balance Equity is never used**: an
+adjustment is this period's gain or loss, not opening capital.
 
-| Field | Rules today |
-|---|---|
-| `metalType` | GOLD / SILVER / PLATINUM / ALLOY |
-| `purityId` | must exist; fineness snapshot taken from it |
-| `direction` | `IN` or `OUT` |
-| `grossWeight` | required, > 0 (so a value-only change is impossible) |
-| `costValue` | optional, defaults to **0** — this is how unvalued stock got created |
-| `reason` | 3–300 characters |
+| Code | Name | Type |
+|---|---|---|
+| 4200 | Inventory Adjustment Gain | INCOME |
+| 5500 | Inventory Adjustment Loss | EXPENSE |
 
-Not captured today: date, a scrap-pool option, a value-only mode, any link to
-the adjustment being reversed, and an idempotency key.
+### Rules as built
 
-### Proposed accounts
+| Case | Valuation | Entry |
+|---|---|---|
+| **IN, explicit value** | the Owner's value, but only after confirming it | Dr 1300 / Cr 4200 |
+| **IN, quantity only** | the pool's carrying weighted average per gross gram, so the average is unchanged | Dr 1300 / Cr 4200 |
+| **IN, quantity only, empty pool** | refused — there is no rate to use, so an explicit positive cost is required | — |
+| **OUT** | **always** the pool's carrying weighted average; a user-entered OUT value is refused outright | Dr 5500 / Cr 1300 |
+| **USABLE_TO_SCRAP** | the usable pool's carrying cost | Dr 1310 / Cr 1300 |
+| **SCRAP_TO_USABLE** | the scrap pool's carrying cost | Dr 1300 / Cr 1310 |
+| **Reversal** | the original movement's **exact** weight and value | mirror entries via `cancelVoucher`, plus an opposite movement linked by `reversalOfMovementId` |
 
-Two new system accounts, because **Opening Balance Equity must not carry
-operational adjustments** — an adjustment is this period's gain or loss, not
-opening capital:
+Confirmation is not a checkbox in isolation: the engine refuses an IN carrying
+its own value unless `confirmedValue` is set, and the message it refuses with
+states the quantity, the total and the implied per-gross-gram rate. The form
+shows the same three figures live before the Owner submits.
 
-| Code | Name | Type | Free? |
-|---|---|---|---|
-| **4200** | Inventory Adjustment Gain | INCOME | yes — 4000 and 4100 are the only 4xxx in use |
-| **5500** | Inventory Adjustment Loss | EXPENSE | yes — 5000–5400 are in use, 5500 is free |
+A transfer posts two movements — one leaving a pool, one entering the other —
+so value moves between pools and is never created or destroyed. The new
+`SCRAP_ADJUSTMENT_IN` / `SCRAP_ADJUSTMENT_OUT` types exist because scrap could
+previously only ever go in.
 
-Both seeded `isSystem: true`, like every other posting account.
+A posted adjustment cannot be edited or deleted. `reverseMetalStockAdjustment`
+is the only way back, it refuses to run twice, and it refuses anything that is
+not an authorized adjustment (an opening entry must go through the correction
+framework instead).
 
-### Proposed debit/credit rules
+Value-only revaluation is deliberately **not** in this form. It goes through the
+correction framework, where it gets an impact preview, an Owner approval, an
+audit row and stale-preview protection.
 
-Every case posts one balanced voucher of type `STOCK_ADJUSTMENT` (`ADJ/<FY>/NNNN`,
-already Owner-only), in the same transaction as its stock movement.
+Staff cannot post an adjustment at all: `requireOwner` guards the action.
 
-| # | Case | Movement | Entry |
-|---|---|---|---|
-| 1 | **Positive quantity/value** (stock found) | `ADJUSTMENT_IN`, weight > 0, value V | **Dr 1300** V / **Cr 4200** V |
-| 2 | **Negative quantity/value** (stock missing) | `ADJUSTMENT_OUT`, weight > 0 | **Dr 5500** V / **Cr 1300** V |
-| 3 | **Quantity-only correction** (no value entered) | as 1 or 2 | V = weight × the pool's current average per gross gram, so the average is unchanged. Then as 1 or 2. An IN against an empty pool is refused — there is no rate to use |
-| 4 | **Value-only revaluation** (no weight change) | **no stock movement**; a `MetalRevaluation` row | increase: **Dr 1300** / **Cr 4200**; decrease: **Dr 5500** / **Cr 1300**. Routed through the Phase 8 correction framework as a `METAL_ADJUSTMENT` / `REVALUE` correction, so it gets an impact preview, a reason, a downstream check and an audit row |
-| 5 | **Scrap adjustment** | `ADJUSTMENT_IN` / `ADJUSTMENT_OUT` against the scrap pool | found: **Dr 1310** / **Cr 4200**; written off: **Dr 5500** / **Cr 1310**. Reclassifying scrap into usable metal is not a gain or loss: **Dr 1300 / Cr 1310** at the scrap pool's own average, as one transaction with one voucher |
-| 6 | **Reversal of an adjustment** | new opposite movement linked by `reversalOfMovementId` (column already exists); the original is never edited or deleted | the existing `cancelVoucher` flow mirrors the original's lines into a `REVERSAL` voucher. The reversal uses the **original's** value, not today's average, so stock and ledger both net to exactly zero |
+### Proven by tests
 
-Additional rules proposed with the fix: Owner-only (unchanged), a required
-reason (unchanged), a new required idempotency key, no GST on adjustments
-(consistent with labour and job-work charges today), and OUT never allowed to
-drive a pool negative (unchanged).
+`posting.test.ts` covers each valuation rule, the empty-pool refusal, the
+confirmation message, the refusal of a user-entered OUT value, both transfer
+directions, reversal netting to exactly zero, double-reversal refusal, and the
+refusal to reverse a non-adjustment. `metal.test.ts` covers the action layer:
+Owner-only, schema refusal of an unknown mode, and the mode and confirmation
+flag reaching the engine. `metalReplay.test.ts` proves a revalued pool carries
+correctly through both transfer directions.
 
-**This needs your approval before I implement it** — particularly rule 3
-(valuing an unvalued quantity correction at the pool average) and rule 4
-(sending value-only changes through the correction framework instead of the
-adjustment form).
+---
+
+## Rolling back a correction batch
+
+Rollback is an audited operation, not a deletion.
+
+`reverseCorrection` mirrors a correction's entries into a `REVERSAL` voucher
+through the same `cancelVoucher` flow the rest of the app uses, records a
+reversing `Correction` of its own with its reason and approver, and marks the
+original **`REVERSED`** with `reversedByCorrectionId` pointing at it.
+`reverseCorrectionBatch` does this for every posted step, newest first, and the
+batch drops back to `OPEN`.
+
+Because current values count only **POSTED** revaluations, marking the original
+REVERSED is what restores the derived figures — there is no second set of
+counter-entries to keep in step.
+
+The rollback test runs against a fixture that reproduces production exactly:
+both jobs, both receipts, both finished pieces, the seven 24K movements and the
+five vouchers that produced production's trial balance (1300 at −₹57,342.60).
+After R1 and R2 it asserts the approved figures, and after rollback it asserts
+the **exact** pre-correction values:
+
+| Value | Before | After R1+R2 | After rollback |
+|---|---:|---:|---:|
+| Usable 24K pool | ₹1,02,657.40 | ₹1,93,361.21 | **₹1,02,657.40** |
+| Job 68 WIP | ₹42,425.96 | ₹93,248.01 | **₹42,425.96** |
+| ZL-FJ-2026-000086 metal | ₹30,298.01 | ₹66,592.00 | **₹30,298.01** |
+| ZL-FJ-2026-000087 metal | ₹15,668.63 | ₹29,512.78 | **₹15,668.63** |
+| 1300 / 1320 / 1330 | −57,342.60 / 42,425.96 / 86,594.68 | 193,361.21 / 93,248.01 / 136,732.82 | **back to before** |
+
+It also asserts that nothing is deleted and nothing looks active when it is not:
+both originals read `REVERSED` with a link to a `POSTED` reversing correction,
+two `REVERSAL` vouchers exist, the two `CORRECTION` vouchers are `CANCELLED`
+rather than removed, the opening movement is untouched, every voucher still
+balances, `verifyCorrectionBatch` now reports the batch as no longer intact, and
+a second reversal of the same correction is refused. Staff cannot reverse a
+batch.
 
 ---
 
@@ -181,16 +221,19 @@ Read-only, saved to a timestamped evidence folder outside the repo:
 - `metalStockValue()` and `reconcileVoucherBalances()` output
 - the migration list and the deployed commit
 
-### Step 2 — deploy the additive migration and the tested commit
+### Step 2 — deploy the additive migrations, the tested commit and the masters
 
-Push the accepted commit to `main`; Vercel builds Production. Apply both Phase 8
-migrations with `prisma migrate deploy` (never `migrate dev`, never
-`migrate reset`).
+Push the accepted commit to `main`; Vercel builds Production. Apply all three
+Phase 8 migrations with `prisma migrate deploy` (never `migrate dev`, never
+`migrate reset`), then run `npm run db:seed-phase8-masters` to create accounts
+4200 and 5500. That seed creates only those two accounts and never touches the
+Owner password — unlike `db:seed`, which must not be run on production.
 
 ### Step 3 — verify the live commit and migration status
 
 Confirm the Vercel Production deployment is the accepted commit and that
-`migrate status` reports 15 migrations applied with none failed or rolled back.
+`migrate status` reports **16 migrations** applied with none failed or rolled
+back, and that accounts 4200 and 5500 exist.
 
 ### Step 4 — preview R1 and R2 again against unchanged preconditions
 
@@ -244,12 +287,14 @@ numbers, so the undo path is known-good before the session closes.
   written. Re-run after fixing the cause.
 - **R1 posted, R2 not:** the books are already better off (1300 is no longer
   negative) and the batch simply stays `OPEN`. Continue or stop; no undo needed.
-- **Both posted and the Owner wants them undone:** cancel the two `CORRECTION`
-  vouchers newest-first through the existing `cancelVoucher` flow. This is
-  exercised as a test, not just described: it returns 1300, 1320, 1330 and 3000
-  to their prior balances, leaves every voucher balanced, and preserves both
-  Correction rows and the original movement. Re-running afterwards needs fresh
-  idempotency keys.
+- **Both posted and the Owner wants them undone:** run `reverseCorrectionBatch`.
+  It reverses each step newest-first, posting an audited reversing correction
+  and a REVERSAL voucher for each, and marks both originals `REVERSED` with a
+  link to what reversed them. This is exercised as a test against a fixture
+  that reproduces production exactly, and it restores the usable pool, job 68's
+  WIP, both finished pieces' metal costs and 1300/1320/1330/3000 to their exact
+  pre-correction values. Nothing is deleted. Re-running the corrections
+  afterwards needs fresh idempotency keys.
 - **No `migrate reset`, no deletes, no edits to any original record**, ever.
 
 ---
@@ -258,7 +303,7 @@ numbers, so the undo path is known-good before the session closes.
 
 | Item | Status |
 |---|---|
-| Adjustment accounting (the six rules above) | **Awaiting Owner approval**; the adjustment is blocked until then |
+| Adjustment accounting | Implemented and tested to the approved rules; accounts 4200/5500 must be seeded on production before an adjustment is posted there |
 | Tiers 8B–8E | Not started; 8A is the foundation they call |
 | Correction coverage | Only `METAL_OPENING_STOCK` has a planner. Other entity types are defined and refused with a clear message until their tier lands |
 | Staff-facing correction UI | Staff can prepare drafts through the action layer; the history page is Owner-only, so 8E adds the per-module Staff surface |

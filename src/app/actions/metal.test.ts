@@ -241,9 +241,8 @@ describe("Owner-only stock operations", () => {
         formData({
           metalType: "GOLD",
           purityId: "purity-1",
-          direction: "IN",
+          mode: "IN",
           grossWeight: "5",
-          costValue: "0",
           reason: "Physical count correction",
         })
       )
@@ -251,10 +250,41 @@ describe("Owner-only stock operations", () => {
     expect(mocks.adjustMetalStock).not.toHaveBeenCalled();
   });
 
+  it("adjustMetalStockAction refuses an unknown mode at the schema layer", async () => {
+    const result = await adjustMetalStockAction(
+      undefined,
+      formData({ metalType: "GOLD", purityId: "purity-1", mode: "SIDEWAYS", grossWeight: "5", reason: "Physical count correction" })
+    );
+    expect(result?.error).toBeTruthy();
+    expect(mocks.adjustMetalStock).not.toHaveBeenCalled();
+  });
+
+  it("adjustMetalStockAction passes the mode and confirmation flag through to the posting engine", async () => {
+    mocks.getCompanyFySettings.mockResolvedValue({ fyStartMonth: 4, fyStartDay: 1 });
+    mocks.transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => fn({}));
+
+    await adjustMetalStockAction(
+      undefined,
+      formData({
+        metalType: "GOLD",
+        purityId: "purity-1",
+        mode: "USABLE_TO_SCRAP",
+        grossWeight: "3",
+        reason: "Bent stock moved to scrap",
+        confirmValue: "false",
+      })
+    );
+
+    expect(mocks.adjustMetalStock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ mode: "USABLE_TO_SCRAP", confirmedValue: false, costValue: null })
+    );
+  });
+
   it("adjustMetalStockAction rejects a reason under 3 characters at the schema layer", async () => {
     const result = await adjustMetalStockAction(
       undefined,
-      formData({ metalType: "GOLD", purityId: "purity-1", direction: "IN", grossWeight: "5", costValue: "0", reason: "x" })
+      formData({ metalType: "GOLD", purityId: "purity-1", mode: "IN", grossWeight: "5", reason: "x" })
     );
     expect(result?.error).toBeTruthy();
     expect(mocks.adjustMetalStock).not.toHaveBeenCalled();

@@ -47,6 +47,11 @@ export const SYSTEM_ACCOUNT_CODES = {
   SALES_RETURNS: "4100",
   FINISHED_JEWELLERY_COGS: "5200",
   DAMAGED_JEWELLERY_LOSS: "5300",
+  // Phase 8 — an Owner-authorized stock adjustment is this period's gain or
+  // loss, never opening capital, so it must NOT post to OPENING_BALANCE_EQUITY
+  // (which stays reserved for opening balances and opening-stock corrections).
+  INVENTORY_ADJUSTMENT_GAIN: "4200",
+  INVENTORY_ADJUSTMENT_LOSS: "5500",
 } as const;
 
 /**

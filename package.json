@@ -18,6 +18,7 @@
     "db:cleanup-login-rate-limits": "tsx scripts/cleanupLoginRateLimits.ts",
     "db:backfill-finished-jewellery-stock": "tsx scripts/backfillFinishedJewelleryStock.ts",
     "db:seed-phase7-masters": "tsx scripts/seedPhase7Masters.ts",
+    "db:seed-phase8-masters": "tsx scripts/seedPhase8Masters.ts",
     "db:phase7-metal-reconciliation": "tsx scripts/phase7MetalStockReconciliation.ts",
     "db:phase7-diamond-reconciliation": "tsx scripts/phase7DiamondReconciliation.ts"
   },

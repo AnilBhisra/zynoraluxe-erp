@@ -330,3 +330,70 @@ export async function planCorrectionBatchRollback(tx: Tx, batchId: string): Prom
       : `${cancellable.length} of ${steps.length} step vouchers can still be cancelled`,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Carrying values — what a record is worth right now
+// ---------------------------------------------------------------------------
+
+/**
+ * A correction never rewrites the record it corrects, so a current value is
+ * always the stored base figure plus every POSTED revaluation of it. A
+ * REVERSED correction's revaluations stop counting automatically, which is
+ * what makes an undo restore the exact pre-correction figure.
+ */
+async function revaluationDelta(
+  tx: Tx,
+  where: { target: "USABLE_POOL" | "SCRAP_POOL" | "JOB_WIP" | "FINISHED_JEWELLERY"; jewelleryJobId?: string; finishedJewelleryId?: string }
+): Promise<Decimal> {
+  const rows = await tx.metalRevaluation.findMany({
+    where: { correction: { state: "POSTED" }, ...where },
+    select: { deltaCostValue: true },
+  });
+  return round2(rows.reduce((sum, r) => sum.plus(new Decimal(r.deltaCostValue)), ZERO));
+}
+
+/** Metal value still with a Karigar on this job. */
+export async function jobWipCarryingValue(tx: Tx, jobId: string): Promise<Decimal> {
+  const job = await tx.jewelleryJob.findUnique({ where: { id: jobId }, select: { remainingWipCost: true } });
+  if (!job) throw new CorrectionError("Jewellery job not found.");
+  const delta = await revaluationDelta(tx, { target: "JOB_WIP", jewelleryJobId: jobId });
+  return round2(new Decimal(job.remainingWipCost).plus(delta));
+}
+
+/** Metal cost carried by this finished piece. */
+export async function finishedPieceMetalCost(tx: Tx, finishedJewelleryId: string): Promise<Decimal> {
+  const piece = await tx.finishedJewellery.findUnique({
+    where: { id: finishedJewelleryId },
+    select: { metalCost: true },
+  });
+  if (!piece) throw new CorrectionError("Finished jewellery not found.");
+  const delta = await revaluationDelta(tx, { target: "FINISHED_JEWELLERY", finishedJewelleryId });
+  return round2(new Decimal(piece.metalCost).plus(delta));
+}
+
+export type CarryingValues = {
+  usablePool: string;
+  scrapPool: string;
+  jobWip: Record<string, string>;
+  finishedPieces: Record<string, string>;
+};
+
+/** One snapshot of every value a metal correction can move. */
+export async function carryingValues(
+  tx: Tx,
+  scope: { jobIds?: string[]; finishedJewelleryIds?: string[] } = {}
+): Promise<CarryingValues> {
+  const stock = await metalStockValue(tx);
+  const jobWip: Record<string, string> = {};
+  for (const jobId of scope.jobIds ?? []) jobWip[jobId] = (await jobWipCarryingValue(tx, jobId)).toFixed(2);
+  const finishedPieces: Record<string, string> = {};
+  for (const id of scope.finishedJewelleryIds ?? []) {
+    finishedPieces[id] = (await finishedPieceMetalCost(tx, id)).toFixed(2);
+  }
+  return {
+    usablePool: stock.usable.toFixed(2),
+    scrapPool: stock.scrap.toFixed(2),
+    jobWip,
+    finishedPieces,
+  };
+}

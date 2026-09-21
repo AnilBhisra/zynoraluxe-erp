@@ -89,10 +89,18 @@ export type OpeningMetalStockInput = z.infer<typeof openingMetalStockSchema>;
 export const metalStockAdjustmentSchema = z.object({
   metalType: METAL_TYPE_ENUM,
   purityId: z.string().trim().min(1, "Choose a purity."),
-  direction: z.enum(["IN", "OUT"]),
+  /**
+   * Phase 8: IN/OUT of the usable pool, or a transfer between the usable and
+   * scrap pools. Only IN may carry its own value — everything else moves at
+   * the carrying weighted average.
+   */
+  mode: z.enum(["IN", "OUT", "USABLE_TO_SCRAP", "SCRAP_TO_USABLE"]),
   grossWeight: z.coerce.number().positive("Adjustment weight must be greater than zero."),
-  costValue: z.coerce.number().min(0, "Cost cannot be negative.").default(0),
+  costValue: z.coerce.number().min(0, "Cost cannot be negative.").optional(),
   reason: z.string().trim().min(3, "Give a short reason.").max(300),
+  // booleanFlag, never z.coerce.boolean(): the string "false" would coerce to true.
+  confirmValue: booleanFlag,
+  idempotencyKey: z.string().trim().max(100).optional(),
 });
 export type MetalStockAdjustmentInput = z.infer<typeof metalStockAdjustmentSchema>;
 

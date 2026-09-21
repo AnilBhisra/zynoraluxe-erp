@@ -31,7 +31,9 @@ export type ReplayMovementType =
   | "RETURN_IN"
   | "SCRAP_RETURN_IN"
   | "CONSUMED_OUT"
-  | "ISSUE_CANCEL_IN";
+  | "ISSUE_CANCEL_IN"
+  | "SCRAP_ADJUSTMENT_IN"
+  | "SCRAP_ADJUSTMENT_OUT";
 
 export type ReplayMovement = {
   id: string;
@@ -144,6 +146,12 @@ export function replayMetalValues(input: ReplayInput): ReplayResult {
   }
   const receiptHandledAt = new Set<string>();
 
+  // An Owner transfer between the pools posts two movements sharing one
+  // source document: the value that leaves one pool is exactly the value that
+  // enters the other, so the receiving side takes the restated figure rather
+  // than its own recorded one.
+  const transferValue = new Map<string, Decimal>();
+
   for (const m of movements) {
     const isTarget = m.id === input.targetMovementId;
     const gross = d(m.grossWeight);
@@ -153,7 +161,11 @@ export function replayMetalValues(input: ReplayInput): ReplayResult {
       case "OPENING_IN":
       case "PURCHASE_IN":
       case "ADJUSTMENT_IN": {
-        const newValue = isTarget ? round2(input.targetNewCostValue) : d(m.costValue);
+        const newValue = isTarget
+          ? round2(input.targetNewCostValue)
+          : // The usable side of a scrap-to-usable transfer takes the value
+            // that actually left the scrap pool.
+            (m.type === "ADJUSTMENT_IN" ? transferValue.get(m.sourceDocument) : undefined) ?? d(m.costValue);
         pool.gross = pool.gross.plus(gross);
         pool.value = round2(pool.value.plus(newValue));
         oldPool.gross = oldPool.gross.plus(gross);
@@ -169,6 +181,28 @@ export function replayMetalValues(input: ReplayInput): ReplayResult {
         pool.value = round2(pool.value.minus(newValue));
         oldPool.gross = oldPool.gross.minus(gross);
         oldPool.value = round2(oldPool.value.minus(d(m.costValue)));
+        transferValue.set(m.sourceDocument, newValue);
+        record(m.id, m.costValue, newValue);
+        break;
+      }
+
+      case "SCRAP_ADJUSTMENT_IN": {
+        const newValue = transferValue.get(m.sourceDocument) ?? d(m.costValue);
+        scrap.gross = scrap.gross.plus(gross);
+        scrap.value = round2(scrap.value.plus(newValue));
+        oldScrap.gross = oldScrap.gross.plus(gross);
+        oldScrap.value = round2(oldScrap.value.plus(d(m.costValue)));
+        record(m.id, m.costValue, newValue);
+        break;
+      }
+
+      case "SCRAP_ADJUSTMENT_OUT": {
+        const newValue = poolShare(scrap, gross);
+        scrap.gross = scrap.gross.minus(gross);
+        scrap.value = round2(scrap.value.minus(newValue));
+        oldScrap.gross = oldScrap.gross.minus(gross);
+        oldScrap.value = round2(oldScrap.value.minus(d(m.costValue)));
+        transferValue.set(m.sourceDocument, newValue);
         record(m.id, m.costValue, newValue);
         break;
       }

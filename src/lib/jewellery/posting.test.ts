@@ -4,6 +4,8 @@ import { createFakeJewelleryTx } from "../../../test/fixtures/fakeJewelleryTx";
 import { SYSTEM_ACCOUNT_CODES } from "@/lib/accounting/accounts";
 import {
   adjustMetalStock,
+  reverseMetalStockAdjustment,
+  getScrapMetalBalanceInTx,
   cancelJewelleryJob,
   createJewelleryJob,
   createMetalPurchase,
@@ -245,10 +247,42 @@ describe("postOpeningMetalStock", () => {
 });
 
 describe("adjustMetalStock", () => {
-  // Phase 8: the adjustment is blocked until it posts a balanced voucher,
-  // because changing stock with no journal entry is what left production's
-  // 1300 Metal Inventory negative.
-  it("refuses to change stock while it still posts no journal entry", async () => {
+  const FY = { fyStartMonth: 4, fyStartDay: 1 };
+
+  async function seedPool(fixture: ReturnType<typeof createFakeJewelleryTx>, purityId: string) {
+    // 10g worth 50,000 -> a carrying average of 5,000 per gross gram.
+    await postOpeningMetalStock(fixture.tx as never, {
+      metalType: "GOLD",
+      purityId,
+      grossWeight: 10,
+      costValue: 50000,
+      ...FY,
+      createdByUserId: "owner-1",
+    });
+  }
+
+  it("values a quantity-only IN at the pool's carrying average, leaving the average unchanged", async () => {
+    const fixture = createFakeJewelleryTx();
+    const purity = seedGold22k(fixture);
+    await seedPool(fixture, purity.id as string);
+
+    const movement = await adjustMetalStock(fixture.tx as never, {
+      metalType: "GOLD",
+      purityId: purity.id as string,
+      mode: "IN",
+      grossWeight: 2,
+      reason: "Physical count found extra stock",
+      ...FY,
+      createdByUserId: "owner-1",
+    });
+
+    expect(movement.costValue).toBe("10000.00");
+    const balance = await getMetalStockBalanceInTx(fixture.tx as never, "GOLD", purity.id as string);
+    expect(balance.grossWeight.toFixed(3)).toBe("12.000");
+    expect(balance.costValue.dividedBy(balance.grossWeight).toFixed(4)).toBe("5000.0000");
+  });
+
+  it("requires an explicit positive cost for an IN against an empty pool", async () => {
     const fixture = createFakeJewelleryTx();
     const purity = seedGold22k(fixture);
 
@@ -256,53 +290,154 @@ describe("adjustMetalStock", () => {
       adjustMetalStock(fixture.tx as never, {
         metalType: "GOLD",
         purityId: purity.id as string,
-        direction: "IN",
-        grossWeight: 10,
-        costValue: 50000,
-        reason: "Physical count found extra stock",
+        mode: "IN",
+        grossWeight: 5,
+        reason: "Found stock, no rate available",
+        ...FY,
         createdByUserId: "owner-1",
       })
-    ).rejects.toThrow(/temporarily unavailable/);
-
-    const balance = await getMetalStockBalanceInTx(fixture.tx as never, "GOLD", purity.id as string);
-    expect(balance.grossWeight.toFixed(3)).toBe("0.000");
+    ).rejects.toThrow(/needs an explicit cost value/);
   });
 
-  it("posts an authorized ADJUSTMENT_IN once its balanced voucher is in place", async () => {
+  it("makes an IN with its own value state the quantity, total and per-gram rate before it posts", async () => {
     const fixture = createFakeJewelleryTx();
     const purity = seedGold22k(fixture);
+    await seedPool(fixture, purity.id as string);
+
+    await expect(
+      adjustMetalStock(fixture.tx as never, {
+        metalType: "GOLD",
+        purityId: purity.id as string,
+        mode: "IN",
+        grossWeight: 2,
+        costValue: 13000,
+        reason: "Found stock bought at a different rate",
+        ...FY,
+        createdByUserId: "owner-1",
+      })
+    ).rejects.toThrow(/2\.000g at 13000\.00 total, which is 6500\.0000 per gross gram/);
+  });
+
+  it("accepts an IN with its own value once the Owner has confirmed it", async () => {
+    const fixture = createFakeJewelleryTx();
+    const purity = seedGold22k(fixture);
+    await seedPool(fixture, purity.id as string);
+
+    const movement = await adjustMetalStock(fixture.tx as never, {
+      metalType: "GOLD",
+      purityId: purity.id as string,
+      mode: "IN",
+      grossWeight: 2,
+      costValue: 13000,
+      confirmedValue: true,
+      reason: "Found stock bought at a different rate",
+      ...FY,
+      createdByUserId: "owner-1",
+    });
+
+    expect(movement.costValue).toBe("13000.00");
+  });
+
+  it("values an OUT at the carrying average and refuses a user-entered OUT value", async () => {
+    const fixture = createFakeJewelleryTx();
+    const purity = seedGold22k(fixture);
+    await seedPool(fixture, purity.id as string);
+
+    await expect(
+      adjustMetalStock(fixture.tx as never, {
+        metalType: "GOLD",
+        purityId: purity.id as string,
+        mode: "OUT",
+        grossWeight: 2,
+        costValue: 1,
+        reason: "Trying to price the metal leaving",
+        ...FY,
+        createdByUserId: "owner-1",
+      })
+    ).rejects.toThrow(/Only an IN adjustment may carry its own value/);
+
+    const movement = await adjustMetalStock(fixture.tx as never, {
+      metalType: "GOLD",
+      purityId: purity.id as string,
+      mode: "OUT",
+      grossWeight: 2,
+      reason: "Physical count found stock missing",
+      ...FY,
+      createdByUserId: "owner-1",
+    });
+    expect(movement.costValue).toBe("10000.00");
+  });
+
+  it("prevents an OUT that would drive stock negative", async () => {
+    const fixture = createFakeJewelleryTx();
+    const purity = seedGold22k(fixture);
+
+    await expect(
+      adjustMetalStock(fixture.tx as never, {
+        metalType: "GOLD",
+        purityId: purity.id as string,
+        mode: "OUT",
+        grossWeight: 5,
+        reason: "Correcting a count error",
+        ...FY,
+        createdByUserId: "owner-1",
+      })
+    ).rejects.toThrow(PostingError);
+  });
+
+  it("moves usable metal to scrap at carrying cost, with no gain or loss", async () => {
+    const fixture = createFakeJewelleryTx();
+    const purity = seedGold22k(fixture);
+    await seedPool(fixture, purity.id as string);
 
     await adjustMetalStock(fixture.tx as never, {
       metalType: "GOLD",
       purityId: purity.id as string,
-      direction: "IN",
-      grossWeight: 10,
-      costValue: 50000,
-      reason: "Physical count found extra stock",
+      mode: "USABLE_TO_SCRAP",
+      grossWeight: 3,
+      reason: "Bent stock moved to the scrap pool",
+      ...FY,
       createdByUserId: "owner-1",
-      postsBalancedVoucher: true,
     });
 
-    const balance = await getMetalStockBalanceInTx(fixture.tx as never, "GOLD", purity.id as string);
-    expect(balance.grossWeight.toFixed(3)).toBe("10.000");
+    const usable = await getMetalStockBalanceInTx(fixture.tx as never, "GOLD", purity.id as string);
+    const scrap = await getScrapMetalBalanceInTx(fixture.tx as never, "GOLD", purity.id as string);
+    expect(usable.grossWeight.toFixed(3)).toBe("7.000");
+    expect(usable.costValue.toFixed(2)).toBe("35000.00");
+    expect(scrap.grossWeight.toFixed(3)).toBe("3.000");
+    expect(scrap.costValue.toFixed(2)).toBe("15000.00");
   });
 
-  it("prevents an ADJUSTMENT_OUT that would drive stock negative", async () => {
+  it("moves scrap back to usable at the scrap pool's own average", async () => {
     const fixture = createFakeJewelleryTx();
     const purity = seedGold22k(fixture);
+    await seedPool(fixture, purity.id as string);
+    await adjustMetalStock(fixture.tx as never, {
+      metalType: "GOLD",
+      purityId: purity.id as string,
+      mode: "USABLE_TO_SCRAP",
+      grossWeight: 4,
+      reason: "Bent stock moved to the scrap pool",
+      ...FY,
+      createdByUserId: "owner-1",
+    });
 
-    await expect(
-      adjustMetalStock(fixture.tx as never, {
-        metalType: "GOLD",
-        purityId: purity.id as string,
-        direction: "OUT",
-        grossWeight: 5,
-        costValue: 0,
-        reason: "Correcting a count error",
-        createdByUserId: "owner-1",
-        postsBalancedVoucher: true,
-      })
-    ).rejects.toThrow(PostingError);
+    await adjustMetalStock(fixture.tx as never, {
+      metalType: "GOLD",
+      purityId: purity.id as string,
+      mode: "SCRAP_TO_USABLE",
+      grossWeight: 1,
+      reason: "Recovered and returned to usable stock",
+      ...FY,
+      createdByUserId: "owner-1",
+    });
+
+    const usable = await getMetalStockBalanceInTx(fixture.tx as never, "GOLD", purity.id as string);
+    const scrap = await getScrapMetalBalanceInTx(fixture.tx as never, "GOLD", purity.id as string);
+    expect(usable.grossWeight.toFixed(3)).toBe("7.000");
+    expect(usable.costValue.toFixed(2)).toBe("35000.00");
+    expect(scrap.grossWeight.toFixed(3)).toBe("3.000");
+    expect(scrap.costValue.toFixed(2)).toBe("15000.00");
   });
 
   it("requires a reason", async () => {
@@ -312,14 +447,115 @@ describe("adjustMetalStock", () => {
       adjustMetalStock(fixture.tx as never, {
         metalType: "GOLD",
         purityId: purity.id as string,
-        direction: "IN",
+        mode: "IN",
         grossWeight: 5,
-        costValue: 0,
+        costValue: 1000,
         reason: "",
+        ...FY,
         createdByUserId: "owner-1",
-        postsBalancedVoucher: true,
       })
     ).rejects.toThrow(PostingError);
+  });
+});
+
+describe("reverseMetalStockAdjustment", () => {
+  const FY = { fyStartMonth: 4, fyStartDay: 1 };
+
+  it("nets an adjustment to exactly zero using the original's own weight and value", async () => {
+    const fixture = createFakeJewelleryTx();
+    const purity = seedGold22k(fixture);
+    await postOpeningMetalStock(fixture.tx as never, {
+      metalType: "GOLD",
+      purityId: purity.id as string,
+      grossWeight: 10,
+      costValue: 50000,
+      ...FY,
+      createdByUserId: "owner-1",
+    });
+    const adjustment = await adjustMetalStock(fixture.tx as never, {
+      metalType: "GOLD",
+      purityId: purity.id as string,
+      mode: "IN",
+      grossWeight: 2,
+      reason: "Physical count found extra stock",
+      ...FY,
+      createdByUserId: "owner-1",
+    });
+
+    const reversal = await reverseMetalStockAdjustment(fixture.tx as never, {
+      movementId: adjustment.id as string,
+      reason: "Recount showed the original was wrong",
+      ...FY,
+      createdByUserId: "owner-1",
+    });
+
+    expect(reversal.type).toBe("ADJUSTMENT_OUT");
+    expect(reversal.grossWeight).toBe(adjustment.grossWeight);
+    expect(reversal.costValue).toBe(adjustment.costValue);
+    expect(reversal.reversalOfMovementId).toBe(adjustment.id);
+
+    const balance = await getMetalStockBalanceInTx(fixture.tx as never, "GOLD", purity.id as string);
+    expect(balance.grossWeight.toFixed(3)).toBe("10.000");
+    expect(balance.costValue.toFixed(2)).toBe("50000.00");
+  });
+
+  it("refuses to reverse the same adjustment twice", async () => {
+    const fixture = createFakeJewelleryTx();
+    const purity = seedGold22k(fixture);
+    await postOpeningMetalStock(fixture.tx as never, {
+      metalType: "GOLD",
+      purityId: purity.id as string,
+      grossWeight: 10,
+      costValue: 50000,
+      ...FY,
+      createdByUserId: "owner-1",
+    });
+    const adjustment = await adjustMetalStock(fixture.tx as never, {
+      metalType: "GOLD",
+      purityId: purity.id as string,
+      mode: "IN",
+      grossWeight: 2,
+      reason: "Physical count found extra stock",
+      ...FY,
+      createdByUserId: "owner-1",
+    });
+    await reverseMetalStockAdjustment(fixture.tx as never, {
+      movementId: adjustment.id as string,
+      reason: "Recount showed the original was wrong",
+      ...FY,
+      createdByUserId: "owner-1",
+    });
+
+    await expect(
+      reverseMetalStockAdjustment(fixture.tx as never, {
+        movementId: adjustment.id as string,
+        reason: "Trying again",
+        ...FY,
+        createdByUserId: "owner-1",
+      })
+    ).rejects.toThrow(/already been reversed/);
+  });
+
+  it("refuses to reverse anything that is not an authorized adjustment", async () => {
+    const fixture = createFakeJewelleryTx();
+    const purity = seedGold22k(fixture);
+    const opening = await postOpeningMetalStock(fixture.tx as never, {
+      metalType: "GOLD",
+      purityId: purity.id as string,
+      grossWeight: 10,
+      costValue: 50000,
+      ...FY,
+      createdByUserId: "owner-1",
+    });
+
+    await expect(
+      reverseMetalStockAdjustment(fixture.tx as never, {
+        movementId: opening.id as string,
+        reason: "Opening stock is corrected, never reversed like this",
+        ...FY,
+        createdByUserId: "owner-1",
+      })
+    ).rejects.toThrow(/Only an authorized stock adjustment/);
   });
 });
 

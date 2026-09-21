@@ -107,7 +107,15 @@ function MetalAdjustmentForm({ purities, onDone }: { purities: MetalPurityOption
   const [state, formAction, pending] = useActionState(adjustMetalStockAction, undefined);
   const [metalType, setMetalType] = useState(purities[0]?.metalType ?? "GOLD");
   const [purityId, setPurityId] = useState(purities[0]?.id ?? "");
+  const [mode, setMode] = useState("IN");
+  const [weight, setWeight] = useState("");
+  const [value, setValue] = useState("");
+  const [idempotencyKey] = useState(() => crypto.randomUUID());
   const purityOptions = purities.filter((p) => p.metalType === metalType);
+  // Shown before saving so an entered value is never a surprise: quantity,
+  // total and the rate it implies.
+  const impliedRate =
+    Number(weight) > 0 && Number(value) > 0 ? (Number(value) / Number(weight)).toFixed(4) : null;
 
   useEffect(() => {
     if (state?.success) onDone?.();
@@ -120,7 +128,11 @@ function MetalAdjustmentForm({ purities, onDone }: { purities: MetalPurityOption
         const formData = new FormData(e.currentTarget);
         const reason = formData.get("reason");
         if (!reason || String(reason).trim().length < 3) return;
-        if (!window.confirm("Save this authorized stock adjustment? This directly changes Metal Stock and cannot be undone.")) {
+        if (
+          !window.confirm(
+            "Save this authorized stock adjustment? It changes Metal Stock and posts an accounting entry. It cannot be edited afterwards — only reversed."
+          )
+        ) {
           e.preventDefault();
         }
       }}
@@ -131,14 +143,7 @@ function MetalAdjustmentForm({ purities, onDone }: { purities: MetalPurityOption
       <p className="text-xs text-zinc-500 dark:text-zinc-400">
         Owner only — use this only to correct a genuine stock-count error, with a reason for the audit trail.
       </p>
-      <p
-        data-testid="adjustment-unavailable"
-        className="rounded-lg border border-amber-300 bg-amber-100 px-3 py-2 text-sm font-medium text-amber-900 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-200"
-      >
-        Temporarily unavailable: an adjustment does not yet post an accounting entry, so it would change Metal Stock
-        without changing Metal Inventory. It returns once the Inventory Adjustment Gain/Loss posting is in place. /
-        હાલ પૂરતું બંધ — Accounting entry વગર stock બદલાય નહીં.
-      </p>
+
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <select
           aria-label="Metal"
@@ -168,21 +173,52 @@ function MetalAdjustmentForm({ purities, onDone }: { purities: MetalPurityOption
           ))}
         </select>
         <select
-          aria-label="Direction"
-          name="direction"
-          defaultValue="IN"
+          aria-label="Adjustment type"
+          name="mode"
+          value={mode}
+          onChange={(e) => setMode(e.target.value)}
           className="h-10 rounded-lg border border-zinc-300 bg-white px-2 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
         >
           <option value="IN">Add to stock</option>
           <option value="OUT">Remove from stock</option>
+          <option value="USABLE_TO_SCRAP">Move stock to scrap</option>
+          <option value="SCRAP_TO_USABLE">Move scrap back to stock</option>
         </select>
       </div>
       <input type="hidden" name="metalType" value={metalType} />
       <input type="hidden" name="purityId" value={purityId} />
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <Field label="Weight (g)" name="grossWeight" type="number" step="0.001" min={0} required />
-        <Field label="Cost value (₹, optional)" name="costValue" type="number" step="0.01" min={0} />
+        <Field
+          label="Weight (g)"
+          name="grossWeight"
+          type="number"
+          step="0.001"
+          min={0}
+          required
+          value={weight}
+          onChange={(e) => setWeight(e.target.value)}
+        />
+        {mode === "IN" ? (
+          <Field
+            label="Cost value (₹, optional)"
+            name="costValue"
+            type="number"
+            step="0.01"
+            min={0}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+          />
+        ) : null}
       </div>
+      <p className="text-xs text-zinc-600 dark:text-zinc-400" data-testid="adjustment-valuation-note">
+        {mode === "IN"
+          ? impliedRate
+            ? `Adds ${weight}g valued ₹${value} — ₹${impliedRate} per gross gram. Confirm before saving. / ખાતરી કરો.`
+            : "Leave the value blank to use the current average cost per gram, so the average does not change. / ખાલી રાખો તો હાલનો સરેરાશ ભાવ વપરાશે."
+          : "Metal leaving a pool always moves at that pool's carrying average — no value is entered. / જે ભાવે સ્ટોક છે એ જ ભાવે જશે."}
+      </p>
+      <input type="hidden" name="idempotencyKey" value={idempotencyKey} />
+      <input type="hidden" name="confirmValue" value={mode === "IN" && impliedRate ? "true" : "false"} />
       <Field label="Reason (required)" name="reason" required />
       <Button type="submit" variant="danger" size="md" disabled={pending} className="self-start">
         {pending ? "Saving…" : "Save adjustment"}

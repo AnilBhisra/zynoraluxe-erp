@@ -77,6 +77,17 @@ const SYSTEM_ACCOUNTS: AccountSeed[] = [
     name: "Damaged Jewellery Loss",
     type: "EXPENSE",
   },
+  // Phase 8 — authorized stock adjustments post here, never to equity.
+  {
+    code: SYSTEM_ACCOUNT_CODES.INVENTORY_ADJUSTMENT_GAIN,
+    name: "Inventory Adjustment Gain",
+    type: "INCOME",
+  },
+  {
+    code: SYSTEM_ACCOUNT_CODES.INVENTORY_ADJUSTMENT_LOSS,
+    name: "Inventory Adjustment Loss",
+    type: "EXPENSE",
+  },
 ];
 
 // Starter Metal/Purity master — standard, widely-known fineness

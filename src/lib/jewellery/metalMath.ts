@@ -25,7 +25,9 @@ export type MetalStockMovementKind =
   | "SCRAP_RETURN_IN"
   | "CONSUMED_OUT"
   | "ADJUSTMENT_IN"
-  | "ADJUSTMENT_OUT";
+  | "ADJUSTMENT_OUT"
+  | "SCRAP_ADJUSTMENT_IN"
+  | "SCRAP_ADJUSTMENT_OUT";
 
 /**
  * How each immutable MetalStockMovement type affects the two stock pools
@@ -46,6 +48,11 @@ export const METAL_POOL_EFFECT: Record<MetalStockMovementKind, { usable: -1 | 0 
   CONSUMED_OUT: { usable: 0, scrap: 0 },
   ADJUSTMENT_IN: { usable: 1, scrap: 0 },
   ADJUSTMENT_OUT: { usable: -1, scrap: 0 },
+  // Phase 8 — the scrap side of an Owner-authorized pool transfer. Each pairs
+  // with an ADJUSTMENT_OUT/IN on the usable side in the same transaction, so
+  // value moves between pools and never appears or vanishes.
+  SCRAP_ADJUSTMENT_IN: { usable: 0, scrap: 1 },
+  SCRAP_ADJUSTMENT_OUT: { usable: 0, scrap: -1 },
 };
 
 const ZERO = BigInt(0);

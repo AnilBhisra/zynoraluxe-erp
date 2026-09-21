@@ -1094,6 +1094,11 @@ enum MetalStockMovementType {
   CONSUMED_OUT
   ADJUSTMENT_IN
   ADJUSTMENT_OUT
+  // Phase 8 — Owner-authorized transfer between the usable and scrap pools.
+  // Scrap could previously only ever go IN (SCRAP_RETURN_IN from a job);
+  // moving it back out needs its own type so the two pools stay auditable.
+  SCRAP_ADJUSTMENT_IN
+  SCRAP_ADJUSTMENT_OUT
 }
 
 // Immutable, weight-based audit ledger — metal is fungible (unlike
@@ -2853,6 +2858,8 @@ enum CorrectionEntityType {
 }
 
 enum CorrectionMode {
+  /// Undoes a posted correction: mirrors its entries and marks it REVERSED.
+  REVERSAL
   /// Nothing is posted yet, so the record itself may be edited in place.
   EDIT_DRAFT
   /// Posted but unused downstream — reverse it in full and repost correctly.
@@ -2867,6 +2874,9 @@ enum CorrectionState {
   AWAITING_APPROVAL
   POSTED
   REJECTED
+  /// Posted, then undone by a linked reversing correction. The record and its
+  /// entries are kept; it simply stops counting towards any current value.
+  REVERSED
 }
 
 enum CorrectionImpactKind {
@@ -2934,6 +2944,12 @@ model Correction {
   batch   CorrectionBatch? @relation(fields: [batchId], references: [id])
   /// 1-based position in the batch; steps are applied in order.
   batchStep Int?
+
+  /// Set when this correction has been undone. The reversing correction is a
+  /// real, audited correction of its own, so history keeps both.
+  reversedByCorrectionId String?     @unique
+  reversedBy             Correction? @relation("CorrectionReversal", fields: [reversedByCorrectionId], references: [id])
+  reverses               Correction? @relation("CorrectionReversal")
 
   idempotencyKey String? @unique
 

@@ -291,31 +291,88 @@ export async function adjustMetalStockAction(
   const parsed = metalStockAdjustmentSchema.safeParse({
     metalType: formData.get("metalType"),
     purityId: formData.get("purityId"),
-    direction: formData.get("direction"),
+    mode: formData.get("mode"),
     grossWeight: formData.get("grossWeight"),
-    costValue: formData.get("costValue") || "0",
+    costValue: formData.get("costValue") || undefined,
     reason: formData.get("reason"),
+    confirmValue: formData.get("confirmValue") || "false",
+    idempotencyKey: formData.get("idempotencyKey") || undefined,
   });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
   }
+  const { idempotencyKey } = parsed.data;
+
+  // The movement and its voucher are written together, so one unique key
+  // protects both against a retry or a double submit.
+  if (idempotencyKey) {
+    const existing = await prisma.metalStockMovement.findUnique({ where: { idempotencyKey } });
+    if (existing) return { success: true };
+  }
+
+  const fy = await getCompanyFySettings();
 
   try {
     await prisma.$transaction((tx) =>
       jewelleryPosting.adjustMetalStock(tx, {
         metalType: parsed.data.metalType,
         purityId: parsed.data.purityId,
-        direction: parsed.data.direction,
+        mode: parsed.data.mode,
         grossWeight: parsed.data.grossWeight,
-        costValue: parsed.data.costValue,
+        costValue: parsed.data.costValue ?? null,
         reason: parsed.data.reason,
+        confirmedValue: parsed.data.confirmValue,
+        fyStartMonth: fy.fyStartMonth,
+        fyStartDay: fy.fyStartDay,
+        idempotencyKey: idempotencyKey || null,
+        createdByUserId: owner.id,
+      })
+    );
+  } catch (error) {
+    if (isIdempotencyConflict(error) && idempotencyKey) {
+      const existing = await prisma.metalStockMovement.findUnique({ where: { idempotencyKey } });
+      if (existing) return { success: true };
+    }
+    if (error instanceof jewelleryPosting.PostingError) return { error: error.message };
+    console.error("adjustMetalStockAction failed:", error);
+    return { error: "Could not save this adjustment. Please try again." };
+  }
+
+  revalidateJewellery();
+  return { success: true };
+}
+
+/**
+ * Reverses a posted adjustment. Owner-only, and the only way back: a posted
+ * adjustment is never edited or deleted.
+ */
+export async function reverseMetalStockAdjustmentAction(
+  _prevState: MetalFormState,
+  formData: FormData
+): Promise<MetalFormState> {
+  const owner = await requireOwner();
+  const movementId = formData.get("movementId");
+  const reason = formData.get("reason");
+  if (typeof movementId !== "string" || !movementId) return { error: "Adjustment not found." };
+  if (typeof reason !== "string" || reason.trim().length < 3) {
+    return { error: "Give a short reason for reversing this adjustment." };
+  }
+
+  const fy = await getCompanyFySettings();
+  try {
+    await prisma.$transaction((tx) =>
+      jewelleryPosting.reverseMetalStockAdjustment(tx, {
+        movementId,
+        reason,
+        fyStartMonth: fy.fyStartMonth,
+        fyStartDay: fy.fyStartDay,
         createdByUserId: owner.id,
       })
     );
   } catch (error) {
     if (error instanceof jewelleryPosting.PostingError) return { error: error.message };
-    console.error("adjustMetalStockAction failed:", error);
-    return { error: "Could not save this adjustment. Please try again." };
+    console.error("reverseMetalStockAdjustmentAction failed:", error);
+    return { error: "Could not reverse this adjustment. Please try again." };
   }
 
   revalidateJewellery();

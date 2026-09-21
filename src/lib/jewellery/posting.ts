@@ -390,63 +390,261 @@ export async function postOpeningMetalStock(
 // Authorized Metal Stock Adjustment/Reversal (Owner-only)
 // ---------------------------------------------------------------------------
 
+export type MetalAdjustmentMode = "IN" | "OUT" | "USABLE_TO_SCRAP" | "SCRAP_TO_USABLE";
+
+/**
+ * Owner-authorized metal stock adjustment (Phase 8).
+ *
+ * Every mode writes its stock movement(s) AND a balanced STOCK_ADJUSTMENT
+ * voucher in the same transaction, keyed by a unique idempotency key, so a
+ * retry can never create stock the ledger does not see — the defect this
+ * function used to have.
+ *
+ * Valuation rules (approved by the Owner, 2026-09-21):
+ *  - IN with an explicit positive value: that value is used, and the caller
+ *    must confirm it after seeing quantity, total and the implied per-gram
+ *    rate. Dr 1300 / Cr 4200 Inventory Adjustment Gain.
+ *  - IN with no value: valued at the pool's current weighted-average cost per
+ *    gross gram, so the average is unchanged. Against an EMPTY pool there is
+ *    no average to use, so an explicit positive cost is required.
+ *  - OUT: ALWAYS the pool's carrying weighted average. A user-entered OUT
+ *    value is refused outright — it would silently reprice what remains.
+ *    Dr 5500 Inventory Adjustment Loss / Cr 1300.
+ *  - USABLE_TO_SCRAP: Dr 1310 / Cr 1300 at the usable pool's carrying cost.
+ *  - SCRAP_TO_USABLE: Dr 1300 / Cr 1310 at the scrap pool's carrying cost.
+ *    Neither is a gain or a loss — value only changes pool.
+ *
+ * A posted adjustment is never edited or deleted; `reverseMetalStockAdjustment`
+ * is the only way back, and it reuses the original's exact weight and value.
+ */
 export async function adjustMetalStock(
   tx: Tx,
   input: {
     metalType: MetalType;
     purityId: string;
-    direction: "IN" | "OUT";
+    mode: MetalAdjustmentMode;
     grossWeight: DecimalInput;
-    costValue: DecimalInput;
+    /** Only ever read for mode "IN"; refused for every other mode. */
+    costValue?: DecimalInput | null;
     reason: string;
+    fyStartMonth: number;
+    fyStartDay: number;
+    idempotencyKey?: string | null;
+    date?: Date;
+    /** The Owner saw the quantity, total value and implied per-gram rate. */
+    confirmedValue?: boolean;
     createdByUserId: string;
-    /**
-     * Set only by the Phase 8 tier that gives this function its balanced
-     * voucher. Until then every caller leaves it unset and the adjustment is
-     * refused rather than writing stock the ledger never sees.
-     */
-    postsBalancedVoucher?: boolean;
   }
 ) {
-  // Phase 8 guard: this function changes Metal Stock but posts NO journal
-  // entry, exactly the defect that left production's 1300 Metal Inventory
-  // negative (see PHASE_8_VERIFICATION.md). Rather than keep writing
-  // unbalanced stock, the adjustment is blocked until its Dr/Cr rules are
-  // implemented and tested. Existing stock and history are untouched.
-  if (!input.postsBalancedVoucher) {
-    throw new PostingError(
-      "Authorized Metal Stock Adjustment is temporarily unavailable: it does not yet post a balanced voucher, and an adjustment that changes stock without an accounting entry would leave Metal Inventory wrong. It returns once the Inventory Adjustment Gain/Loss posting is in place."
-    );
-  }
   if (!input.reason || input.reason.trim().length < 3) {
     throw new PostingError("Give a short reason for this stock adjustment.");
   }
   const grossWeight = round3(input.grossWeight);
   if (!grossWeight.greaterThan(0)) throw new PostingError("Adjustment weight must be greater than zero.");
-  const costValue = round2(input.costValue);
 
   const purity = await tx.metalPurity.findUnique({ where: { id: input.purityId } });
   if (!purity) throw new PostingError("Selected metal purity was not found.");
   const fineWeight = round3(grossWeight.times(purity.finenessPercent).dividedBy(100));
 
-  if (input.direction === "OUT") {
-    const balance = await getMetalStockBalanceInTx(tx, input.metalType, input.purityId);
-    if (grossWeight.greaterThan(balance.grossWeight)) {
+  const usable = await getMetalStockBalanceInTx(tx, input.metalType, input.purityId);
+  const scrap = await getScrapMetalBalanceInTx(tx, input.metalType, input.purityId);
+  const averageOf = (pool: { grossWeight: Decimal; costValue: Decimal }) =>
+    pool.grossWeight.greaterThan(0) ? pool.costValue.dividedBy(pool.grossWeight) : null;
+
+  const enteredValue =
+    input.costValue === undefined || input.costValue === null ? null : round2(input.costValue);
+  if (enteredValue !== null && enteredValue.isNegative()) {
+    throw new PostingError("An adjustment value cannot be negative.");
+  }
+  if (input.mode !== "IN" && enteredValue !== null && enteredValue.greaterThan(0)) {
+    throw new PostingError(
+      "Only an IN adjustment may carry its own value. Metal leaving a pool always moves at that pool's carrying cost."
+    );
+  }
+
+  const carryingShare = (pool: { grossWeight: Decimal; costValue: Decimal }, label: string) => {
+    if (grossWeight.greaterThan(pool.grossWeight)) {
       throw new PostingError(
-        `Cannot reduce stock by ${grossWeight.toFixed(3)}g — only ${balance.grossWeight.toFixed(3)}g available.`
+        `Cannot move ${grossWeight.toFixed(3)}g out of ${label} — only ${pool.grossWeight.toFixed(3)}g available.`
       );
     }
+    const average = averageOf(pool);
+    return average === null ? ZERO : round2(grossWeight.times(average));
+  };
+
+  let value: Decimal;
+  let lines: JournalLineInput[];
+  const description = `Adjustment ${purity.displayName} ${grossWeight.toFixed(3)}g — ${input.reason.trim()}`;
+
+  switch (input.mode) {
+    case "IN": {
+      if (enteredValue !== null && enteredValue.greaterThan(0)) {
+        if (!input.confirmedValue) {
+          throw new PostingError(
+            `Confirm this adjustment: ${grossWeight.toFixed(3)}g at ${enteredValue.toFixed(2)} total, which is ${enteredValue
+              .dividedBy(grossWeight)
+              .toFixed(4)} per gross gram.`
+          );
+        }
+        value = enteredValue;
+      } else {
+        const average = averageOf(usable);
+        if (average === null) {
+          throw new PostingError(
+            "There is no stock of this metal and purity to take a rate from, so this adjustment needs an explicit cost value."
+          );
+        }
+        value = round2(grossWeight.times(average));
+      }
+      lines = [
+        { accountCode: SYSTEM_ACCOUNT_CODES.METAL_INVENTORY, debit: value, description },
+        { accountCode: SYSTEM_ACCOUNT_CODES.INVENTORY_ADJUSTMENT_GAIN, credit: value, description },
+      ];
+      break;
+    }
+    case "OUT": {
+      value = carryingShare(usable, "stock");
+      lines = [
+        { accountCode: SYSTEM_ACCOUNT_CODES.INVENTORY_ADJUSTMENT_LOSS, debit: value, description },
+        { accountCode: SYSTEM_ACCOUNT_CODES.METAL_INVENTORY, credit: value, description },
+      ];
+      break;
+    }
+    case "USABLE_TO_SCRAP": {
+      value = carryingShare(usable, "stock");
+      lines = [
+        { accountCode: SYSTEM_ACCOUNT_CODES.SCRAP_METAL_INVENTORY, debit: value, description },
+        { accountCode: SYSTEM_ACCOUNT_CODES.METAL_INVENTORY, credit: value, description },
+      ];
+      break;
+    }
+    case "SCRAP_TO_USABLE": {
+      value = carryingShare(scrap, "scrap");
+      lines = [
+        { accountCode: SYSTEM_ACCOUNT_CODES.METAL_INVENTORY, debit: value, description },
+        { accountCode: SYSTEM_ACCOUNT_CODES.SCRAP_METAL_INVENTORY, credit: value, description },
+      ];
+      break;
+    }
+    default: {
+      const exhaustive: never = input.mode;
+      throw new PostingError(`Unknown adjustment mode: ${String(exhaustive)}`);
+    }
+  }
+
+  const voucher = await createVoucherHeader(
+    tx,
+    {
+      date: input.date ?? new Date(),
+      fyStartMonth: input.fyStartMonth,
+      fyStartDay: input.fyStartDay,
+      currencyCode: "INR",
+      exchangeRate: 1,
+      note: description,
+      idempotencyKey: input.idempotencyKey ?? null,
+      createdByUserId: input.createdByUserId,
+    },
+    "STOCK_ADJUSTMENT",
+    { amount: value }
+  );
+  // A zero-valued transfer still records the weight move; there is simply
+  // nothing to post, and insertBalancedJournalLines rejects all-zero lines.
+  if (value.greaterThan(0)) {
+    await insertBalancedJournalLines(tx, voucher.id, lines);
+  }
+
+  const sourceDocument = `Adjustment: ${input.reason.trim()}`;
+  const common = {
+    metalType: input.metalType,
+    purityId: input.purityId,
+    grossWeight: grossWeight.toFixed(3),
+    fineWeight: fineWeight.toFixed(3),
+    costValue: value.toFixed(2),
+    sourceDocument,
+    createdByUserId: input.createdByUserId,
+  };
+
+  // A transfer is two movements — one out of a pool, one into the other —
+  // written together so the pools can never disagree with the voucher.
+  if (input.mode === "USABLE_TO_SCRAP" || input.mode === "SCRAP_TO_USABLE") {
+    const outType = input.mode === "USABLE_TO_SCRAP" ? "ADJUSTMENT_OUT" : "SCRAP_ADJUSTMENT_OUT";
+    const inType = input.mode === "USABLE_TO_SCRAP" ? "SCRAP_ADJUSTMENT_IN" : "ADJUSTMENT_IN";
+    const out = await tx.metalStockMovement.create({
+      data: {
+        ...common,
+        type: outType,
+        voucherId: voucher.id,
+        idempotencyKey: input.idempotencyKey ?? null,
+      },
+    });
+    await tx.metalStockMovement.create({ data: { ...common, type: inType } });
+    return out;
   }
 
   return tx.metalStockMovement.create({
     data: {
-      type: input.direction === "IN" ? "ADJUSTMENT_IN" : "ADJUSTMENT_OUT",
-      metalType: input.metalType,
-      purityId: input.purityId,
-      grossWeight: grossWeight.toFixed(3),
-      fineWeight: fineWeight.toFixed(3),
-      costValue: costValue.toFixed(2),
-      sourceDocument: `Adjustment: ${input.reason.trim()}`,
+      ...common,
+      type: input.mode === "IN" ? "ADJUSTMENT_IN" : "ADJUSTMENT_OUT",
+      voucherId: voucher.id,
+      idempotencyKey: input.idempotencyKey ?? null,
+    },
+  });
+}
+
+/**
+ * Undoes a posted adjustment. The original movement and its voucher are never
+ * edited or deleted: this writes an equal-and-opposite movement linked by
+ * `reversalOfMovementId`, and cancels the original voucher through the normal
+ * REVERSAL flow, using the ORIGINAL's exact weight and value so stock and
+ * ledger both net to exactly zero.
+ */
+export async function reverseMetalStockAdjustment(
+  tx: Tx,
+  input: {
+    movementId: string;
+    reason: string;
+    fyStartMonth: number;
+    fyStartDay: number;
+    createdByUserId: string;
+  }
+) {
+  const original = await tx.metalStockMovement.findUnique({ where: { id: input.movementId } });
+  if (!original) throw new PostingError("Adjustment not found.");
+  const OPPOSITE = {
+    ADJUSTMENT_IN: "ADJUSTMENT_OUT",
+    ADJUSTMENT_OUT: "ADJUSTMENT_IN",
+    SCRAP_ADJUSTMENT_IN: "SCRAP_ADJUSTMENT_OUT",
+    SCRAP_ADJUSTMENT_OUT: "SCRAP_ADJUSTMENT_IN",
+  } as const;
+  const opposite = OPPOSITE[original.type as keyof typeof OPPOSITE];
+  if (!opposite) throw new PostingError("Only an authorized stock adjustment can be reversed this way.");
+  if (!input.reason || input.reason.trim().length < 3) {
+    throw new PostingError("Give a short reason for reversing this adjustment.");
+  }
+  const existing = await tx.metalStockMovement.findFirst({ where: { reversalOfMovementId: original.id } });
+  if (existing) throw new PostingError("This adjustment has already been reversed.");
+
+  if (original.voucherId) {
+    await cancelVoucher(tx, {
+      voucherId: original.voucherId,
+      cancelledByUserId: input.createdByUserId,
+      cancellationReason: input.reason.trim(),
+      fyStartMonth: input.fyStartMonth,
+      fyStartDay: input.fyStartDay,
+    });
+  }
+
+  return tx.metalStockMovement.create({
+    data: {
+      type: opposite,
+      metalType: original.metalType,
+      purityId: original.purityId,
+      // Exactly the original figures, so the pair nets to zero in both pools.
+      grossWeight: round3(original.grossWeight).toFixed(3),
+      fineWeight: round3(original.fineWeight).toFixed(3),
+      costValue: round2(original.costValue).toFixed(2),
+      sourceDocument: `Reversal of ${original.sourceDocument} — ${input.reason.trim()}`,
+      reversalOfMovementId: original.id,
       createdByUserId: input.createdByUserId,
     },
   });

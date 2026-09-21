@@ -16,7 +16,7 @@ import type { Prisma } from "@/generated/prisma/client";
 import type { CorrectionState, UserRole } from "@/generated/prisma/enums";
 import { Decimal, round2, ZERO } from "@/lib/accounting/money";
 import { SYSTEM_ACCOUNT_CODES } from "@/lib/accounting/accounts";
-import { createVoucherHeader, insertBalancedJournalLines } from "@/lib/accounting/posting";
+import { cancelVoucher, createVoucherHeader, insertBalancedJournalLines } from "@/lib/accounting/posting";
 import {
   CorrectionError,
   fingerprintPlan,
@@ -394,4 +394,144 @@ async function refreshBatchState(tx: Tx, batchId: string) {
     where: { id: batchId },
     data: { state: complete ? "COMPLETE" : "OPEN", completedAt: complete ? new Date() : null },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Reversing a posted correction
+// ---------------------------------------------------------------------------
+
+/**
+ * Undoes a posted correction, audited.
+ *
+ * Nothing is deleted and nothing is edited: the original correction's entries
+ * are mirrored into a REVERSAL voucher through the same `cancelVoucher` flow
+ * every other module uses, a reversing Correction is recorded with its own
+ * reason and approver, and the original is marked `REVERSED` with a link to
+ * it — so it can never sit in history looking as though it still applies.
+ *
+ * The reversing correction carries no revaluation rows of its own. Current
+ * values count only POSTED revaluations, so marking the original REVERSED is
+ * what returns the pool, a job's WIP and a finished piece's metal cost to
+ * exactly their pre-correction figures.
+ */
+export async function reverseCorrection(
+  tx: Tx,
+  input: {
+    correctionId: string;
+    reason: string;
+    approverRole: UserRole;
+    approvedByUserId: string;
+    fyStartMonth: number;
+    fyStartDay: number;
+  }
+) {
+  if (input.approverRole !== "OWNER") {
+    throw new CorrectionError("Only the Owner can reverse a correction.");
+  }
+  if (!input.reason.trim()) throw new CorrectionError("Give the reason for reversing this correction.");
+
+  const original = await tx.correction.findUnique({
+    where: { id: input.correctionId },
+    include: { correctionVoucher: true },
+  });
+  if (!original) throw new CorrectionError("Correction not found.");
+  if (original.state === "REVERSED" || original.reversedByCorrectionId) {
+    throw new CorrectionError("This correction has already been reversed.");
+  }
+  if (original.state !== "POSTED") {
+    throw new CorrectionError("Only a posted correction can be reversed.");
+  }
+  if (!original.correctionVoucherId) {
+    throw new CorrectionError("This correction posted no voucher, so there is nothing to reverse.");
+  }
+
+  const reversalVoucher = await cancelVoucher(tx, {
+    voucherId: original.correctionVoucherId,
+    cancelledByUserId: input.approvedByUserId,
+    cancellationReason: input.reason.trim(),
+    fyStartMonth: input.fyStartMonth,
+    fyStartDay: input.fyStartDay,
+  });
+
+  const reversal = await tx.correction.create({
+    data: {
+      correctionCode: reversalVoucher.voucherNumber,
+      entityType: original.entityType,
+      entityId: original.entityId,
+      entityLabel: original.entityLabel,
+      mode: "REVERSAL",
+      state: "POSTED",
+      reason: input.reason.trim(),
+      originalSnapshot: {
+        reversedCorrectionCode: original.correctionCode,
+        reversedVoucher: original.correctionVoucher?.voucherNumber ?? null,
+        amount: original.correctionVoucher?.amount.toFixed(2) ?? null,
+      } as Prisma.InputJsonValue,
+      correctedSnapshot: {
+        note: "Mirror entries posted; the original correction is marked REVERSED and no longer counts.",
+      } as Prisma.InputJsonValue,
+      impactPreview: {
+        mode: "REVERSAL",
+        reversedCorrectionId: original.id,
+        reversedCorrectionCode: original.correctionCode,
+      } as Prisma.InputJsonValue,
+      preparedByUserId: input.approvedByUserId,
+      approvedByUserId: input.approvedByUserId,
+      postedAt: new Date(),
+      correctionVoucherId: reversalVoucher.id,
+    },
+  });
+
+  await tx.correction.update({
+    where: { id: original.id },
+    data: { state: "REVERSED", reversedByCorrectionId: reversal.id },
+  });
+
+  // A batch that loses a step is no longer complete.
+  if (original.batchId) await refreshBatchState(tx, original.batchId);
+
+  return reversal;
+}
+
+/**
+ * Reverses every posted step of a batch, newest step first, so each undo lands
+ * on the balance the next one expects.
+ */
+export async function reverseCorrectionBatch(
+  tx: Tx,
+  input: {
+    batchId: string;
+    reason: string;
+    approverRole: UserRole;
+    approvedByUserId: string;
+    fyStartMonth: number;
+    fyStartDay: number;
+  }
+) {
+  if (input.approverRole !== "OWNER") {
+    throw new CorrectionError("Only the Owner can reverse a correction batch.");
+  }
+  const batch = await tx.correctionBatch.findUnique({
+    where: { id: input.batchId },
+    include: { corrections: { where: { state: "POSTED" }, orderBy: { batchStep: "desc" } } },
+  });
+  if (!batch) throw new CorrectionError("Correction batch not found.");
+  if (batch.corrections.length === 0) {
+    throw new CorrectionError("This batch has no posted step left to reverse.");
+  }
+
+  const reversals = [];
+  for (const step of batch.corrections) {
+    reversals.push(
+      await reverseCorrection(tx, {
+        correctionId: step.id,
+        reason: `${input.reason.trim()} (batch ${batch.batchCode} step ${step.batchStep})`,
+        approverRole: input.approverRole,
+        approvedByUserId: input.approvedByUserId,
+        fyStartMonth: input.fyStartMonth,
+        fyStartDay: input.fyStartDay,
+      })
+    );
+  }
+  return reversals;
 }

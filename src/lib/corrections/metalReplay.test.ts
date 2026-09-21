@@ -264,6 +264,118 @@ describe("replayMetalValues — scrap and multi-output shapes", () => {
     expect(result.finishedPieces.get("p1")?.newValue.toFixed(2)).toBe("6000.00");
   });
 
+  it("carries a revalued pool through a usable-to-scrap transfer", () => {
+    const result = replayMetalValues({
+      targetMovementId: "open",
+      targetNewCostValue: "20000.00",
+      movements: [
+        {
+          id: "open",
+          type: "OPENING_IN",
+          createdAt: t(1),
+          grossWeight: "10.000",
+          fineWeight: "10.000",
+          costValue: "10000.00",
+          sourceDocument: "Opening stock",
+          jewelleryJobId: null,
+        },
+        {
+          id: "xfer-out",
+          type: "ADJUSTMENT_OUT",
+          createdAt: t(2),
+          grossWeight: "2.000",
+          fineWeight: "2.000",
+          costValue: "2000.00",
+          sourceDocument: "Adjustment: bent stock to scrap",
+          jewelleryJobId: null,
+        },
+        {
+          id: "xfer-in",
+          type: "SCRAP_ADJUSTMENT_IN",
+          createdAt: t(3),
+          grossWeight: "2.000",
+          fineWeight: "2.000",
+          costValue: "2000.00",
+          sourceDocument: "Adjustment: bent stock to scrap",
+          jewelleryJobId: null,
+        },
+      ],
+      receipts: [],
+    });
+    // Opening doubled, so the 2g transferred is worth 4,000 in BOTH pools —
+    // value moves between pools, it is never created or destroyed.
+    expect(result.usablePool.newValue.toFixed(2)).toBe("16000.00");
+    expect(result.scrapPool.newValue.toFixed(2)).toBe("4000.00");
+    expect(result.movements.get("xfer-in")?.newValue.toFixed(2)).toBe("4000.00");
+    expect(
+      result.usablePool.newValue.plus(result.scrapPool.newValue).toFixed(2)
+    ).toBe("20000.00");
+  });
+
+  it("carries it back through a scrap-to-usable transfer", () => {
+    const result = replayMetalValues({
+      targetMovementId: "open",
+      targetNewCostValue: "20000.00",
+      movements: [
+        {
+          id: "open",
+          type: "OPENING_IN",
+          createdAt: t(1),
+          grossWeight: "10.000",
+          fineWeight: "10.000",
+          costValue: "10000.00",
+          sourceDocument: "Opening stock",
+          jewelleryJobId: null,
+        },
+        {
+          id: "to-scrap-out",
+          type: "ADJUSTMENT_OUT",
+          createdAt: t(2),
+          grossWeight: "4.000",
+          fineWeight: "4.000",
+          costValue: "4000.00",
+          sourceDocument: "Adjustment: bent stock to scrap",
+          jewelleryJobId: null,
+        },
+        {
+          id: "to-scrap-in",
+          type: "SCRAP_ADJUSTMENT_IN",
+          createdAt: t(3),
+          grossWeight: "4.000",
+          fineWeight: "4.000",
+          costValue: "4000.00",
+          sourceDocument: "Adjustment: bent stock to scrap",
+          jewelleryJobId: null,
+        },
+        {
+          id: "back-out",
+          type: "SCRAP_ADJUSTMENT_OUT",
+          createdAt: t(4),
+          grossWeight: "1.000",
+          fineWeight: "1.000",
+          costValue: "1000.00",
+          sourceDocument: "Adjustment: recovered from scrap",
+          jewelleryJobId: null,
+        },
+        {
+          id: "back-in",
+          type: "ADJUSTMENT_IN",
+          createdAt: t(5),
+          grossWeight: "1.000",
+          fineWeight: "1.000",
+          costValue: "1000.00",
+          sourceDocument: "Adjustment: recovered from scrap",
+          jewelleryJobId: null,
+        },
+      ],
+      receipts: [],
+    });
+    expect(result.usablePool.grossWeight.toFixed(3)).toBe("7.000");
+    expect(result.usablePool.newValue.toFixed(2)).toBe("14000.00");
+    expect(result.scrapPool.grossWeight.toFixed(3)).toBe("3.000");
+    expect(result.scrapPool.newValue.toFixed(2)).toBe("6000.00");
+  });
+
   it("splits a receipt's finished portion across several outputs by fine weight", () => {
     const result = replayMetalValues({
       targetMovementId: "open",

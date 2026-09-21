@@ -189,6 +189,15 @@ export function createFakeJewelleryTx() {
         if (!where) return rows;
         return rows.filter((r) => matchesWhere(r, where));
       },
+      findUnique: async ({ where }: { where: Row }) => {
+        const rows = [...metalStockMovements.values()];
+        return rows.find((r) => matchesWhere(r, where)) ?? null;
+      },
+      findFirst: async ({ where }: { where?: Row } = {}) => {
+        const rows = [...metalStockMovements.values()];
+        if (!where) return rows[0] ?? null;
+        return rows.find((r) => matchesWhere(r, where)) ?? null;
+      },
     },
     jewelleryJob: {
       create: async ({ data }: { data: Row }) => {
