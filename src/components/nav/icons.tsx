@@ -97,12 +97,21 @@ export function LogoutIcon({ className }: IconProps) {
   );
 }
 
+export function CorrectionsIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} {...strokeProps} aria-hidden="true">
+      <path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5" />
+    </svg>
+  );
+}
+
 export const NAV_ICONS: Record<string, (props: IconProps) => React.ReactElement> = {
   "/dashboard": DashboardIcon,
   "/accounting": AccountingIcon,
   "/diamond": DiamondIcon,
   "/jewellery-jobs": JewelleryJobIcon,
   "/costing": CostingIcon,
+  "/corrections": CorrectionsIcon,
   "/settings": SettingsIcon,
   "/help": HelpIcon,
 };

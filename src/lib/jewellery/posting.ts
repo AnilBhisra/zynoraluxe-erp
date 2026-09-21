@@ -296,6 +296,18 @@ export async function createMetalPurchase(
 // Opening Metal Stock (Owner-only, enforced by the caller)
 // ---------------------------------------------------------------------------
 
+/**
+ * Phase 8: opening metal stock now posts a balanced voucher of its own
+ * (Dr 1300 Metal Inventory / Cr 3000 Opening Balance Equity) in the SAME
+ * transaction as its stock movement. Before Phase 8 it wrote the movement
+ * only, so every opening entry left Metal Inventory understated by its whole
+ * value while the issues drawing on it still credited the account.
+ *
+ * Movement and voucher are created together and the movement carries the
+ * unique `idempotencyKey`, so a retried or double-submitted form can never
+ * produce a second movement OR a second voucher: the conflict aborts the one
+ * transaction that would have written both.
+ */
 export async function postOpeningMetalStock(
   tx: Tx,
   input: {
@@ -304,6 +316,11 @@ export async function postOpeningMetalStock(
     grossWeight: DecimalInput;
     costValue: DecimalInput;
     note?: string | null;
+    /** Posting date for the voucher; the stock movement itself is untimed. */
+    date?: Date;
+    fyStartMonth: number;
+    fyStartDay: number;
+    idempotencyKey?: string | null;
     createdByUserId: string;
   }
 ) {
@@ -316,6 +333,43 @@ export async function postOpeningMetalStock(
   if (!purity || !purity.isActive) throw new PostingError("Selected metal purity was not found or is inactive.");
   const fineWeight = round3(grossWeight.times(purity.finenessPercent).dividedBy(100));
 
+  const noteText = input.note?.trim() ? `Opening stock: ${input.note.trim()}` : "Opening stock";
+  const date = input.date ?? new Date();
+
+  // A zero-valued opening entry (weight recorded, value unknown) posts no
+  // voucher — there is nothing to debit — but still records the stock.
+  let voucherId: string | null = null;
+  if (costValue.greaterThan(0)) {
+    const voucher = await createVoucherHeader(
+      tx,
+      {
+        date,
+        fyStartMonth: input.fyStartMonth,
+        fyStartDay: input.fyStartDay,
+        currencyCode: "INR",
+        exchangeRate: 1,
+        note: `${noteText} — ${purity.displayName} ${grossWeight.toFixed(3)}g`,
+        idempotencyKey: input.idempotencyKey ?? null,
+        createdByUserId: input.createdByUserId,
+      },
+      "OPENING_STOCK",
+      { amount: costValue }
+    );
+    await insertBalancedJournalLines(tx, voucher.id, [
+      {
+        accountCode: SYSTEM_ACCOUNT_CODES.METAL_INVENTORY,
+        debit: costValue,
+        description: `Opening metal stock ${purity.displayName}`,
+      },
+      {
+        accountCode: SYSTEM_ACCOUNT_CODES.OPENING_BALANCE_EQUITY,
+        credit: costValue,
+        description: `Opening metal stock ${purity.displayName}`,
+      },
+    ]);
+    voucherId = voucher.id;
+  }
+
   return tx.metalStockMovement.create({
     data: {
       type: "OPENING_IN",
@@ -324,7 +378,9 @@ export async function postOpeningMetalStock(
       grossWeight: grossWeight.toFixed(3),
       fineWeight: fineWeight.toFixed(3),
       costValue: costValue.toFixed(2),
-      sourceDocument: input.note?.trim() ? `Opening stock: ${input.note.trim()}` : "Opening stock",
+      sourceDocument: noteText,
+      voucherId,
+      idempotencyKey: input.idempotencyKey ?? null,
       createdByUserId: input.createdByUserId,
     },
   });

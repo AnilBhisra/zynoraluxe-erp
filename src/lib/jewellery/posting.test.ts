@@ -217,6 +217,8 @@ describe("postOpeningMetalStock", () => {
       purityId: purity.id as string,
       grossWeight: 50,
       costValue: 250000,
+      fyStartMonth: 4,
+      fyStartDay: 1,
       createdByUserId: "owner-1",
     });
 
@@ -234,6 +236,8 @@ describe("postOpeningMetalStock", () => {
         purityId: purity.id as string,
         grossWeight: 0,
         costValue: 0,
+        fyStartMonth: 4,
+        fyStartDay: 1,
         createdByUserId: "owner-1",
       })
     ).rejects.toThrow(PostingError);

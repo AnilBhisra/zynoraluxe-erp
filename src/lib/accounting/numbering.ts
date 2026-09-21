@@ -16,6 +16,8 @@ const PREFIX_BY_TYPE: Record<VoucherType, string> = {
   SALE_RETURN: "SAL-RET",
   CUSTOMER_REFUND: "REFUND",
   STOCK_ADJUSTMENT: "ADJ",
+  OPENING_STOCK: "OPEN-STK",
+  CORRECTION: "CORR",
 };
 
 /**

@@ -21,6 +21,9 @@ const EXPECTED_STAFF_VISIBLE: Record<VoucherType, boolean | "follows reversed vo
   JEWELLERY_ISSUE: false,
   JEWELLERY_RECEIPT: false,
   STOCK_ADJUSTMENT: false,
+  // Phase 8 — both carry cost figures, so both stay Owner-only.
+  OPENING_STOCK: false,
+  CORRECTION: false,
 };
 
 type Where = Record<string, unknown>;

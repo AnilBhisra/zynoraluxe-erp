@@ -82,6 +82,7 @@ export const openingMetalStockSchema = z.object({
   grossWeight: z.coerce.number().positive("Gross weight must be greater than zero."),
   costValue: z.coerce.number().min(0, "Cost cannot be negative."),
   note: optionalString(300),
+  idempotencyKey: z.string().trim().max(100).optional(),
 });
 export type OpeningMetalStockInput = z.infer<typeof openingMetalStockSchema>;
 

@@ -9,11 +9,13 @@ describe("getVisibleNavItems", () => {
     expect(items.some((item) => item.label === "Settings")).toBe(true);
   });
 
-  it("hides Settings and Costing from Staff but keeps every other item", () => {
+  it("hides Settings, Costing and Corrections from Staff but keeps every other item", () => {
     const items = getVisibleNavItems("STAFF");
     expect(items.some((item) => item.label === "Settings")).toBe(false);
     expect(items.some((item) => item.label === "Costing")).toBe(false);
-    expect(items).toHaveLength(NAV_ITEMS.length - 2);
+    // Phase 8 — corrections carry original and corrected cost values.
+    expect(items.some((item) => item.label === "Corrections")).toBe(false);
+    expect(items).toHaveLength(NAV_ITEMS.length - 3);
     expect(items.map((item) => item.label)).toEqual([
       "Dashboard",
       "Accounting",

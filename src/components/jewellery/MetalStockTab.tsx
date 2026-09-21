@@ -45,6 +45,7 @@ function OpeningMetalStockForm({ purities, onDone }: { purities: MetalPurityOpti
   const [state, formAction, pending] = useActionState(createOpeningMetalStock, undefined);
   const [metalType, setMetalType] = useState(purities[0]?.metalType ?? "GOLD");
   const [purityId, setPurityId] = useState(purities[0]?.id ?? "");
+  const [idempotencyKey] = useState(() => crypto.randomUUID());
   const purityOptions = purities.filter((p) => p.metalType === metalType);
 
   useEffect(() => {
@@ -87,6 +88,7 @@ function OpeningMetalStockForm({ purities, onDone }: { purities: MetalPurityOpti
           ))}
         </select>
       </div>
+      <input type="hidden" name="idempotencyKey" value={idempotencyKey} />
       <input type="hidden" name="metalType" value={metalType} />
       <input type="hidden" name="purityId" value={purityId} />
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

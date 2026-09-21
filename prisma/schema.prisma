@@ -107,6 +107,11 @@ model User {
   packetProcessReceiptsCreated   PacketProcessReceipt[]   @relation("PacketProcessReceiptCreatedBy")
   packetProcessJobLinesClosed    PacketProcessJobLine[]   @relation("PacketProcessJobLineClosedBy")
 
+  // Phase 8 — a correction is PREPARED by anyone with access to the module
+  // (Staff included) but may only be APPROVED/POSTED by an Owner.
+  correctionsPrepared Correction[] @relation("CorrectionPreparedBy")
+  correctionsApproved Correction[] @relation("CorrectionApprovedBy")
+
   @@map("users")
 }
 
@@ -311,6 +316,16 @@ enum VoucherType {
   // together with its packet ledger movement; never cancelled through the
   // generic voucher flow (an opposite adjustment is the correction).
   STOCK_ADJUSTMENT
+  // Phase 8 — opening metal stock brought on to the books (Dr Metal
+  // Inventory / Cr Opening Balance Equity). Before Phase 8 this posted no
+  // journal entry at all, which left 1300 understated by every opening
+  // entry ever made. Deliberately its own type, not the party-facing
+  // OPENING: it carries a cost figure and so stays Owner-only.
+  OPENING_STOCK
+  // Phase 8 — an Owner correction or revaluation. Never a mirror of the
+  // original (that is REVERSAL); this is a compensating entry that leaves
+  // the original voucher, movement and snapshot completely untouched.
+  CORRECTION
 }
 
 // Concurrency-safe voucher numbering: one row per (type, financial year),
@@ -397,6 +412,11 @@ model Voucher {
   metalPurchase        MetalPurchase?
   jewelleryJobIssue    JewelleryJob?
   jewelleryReceiptPost JewelleryReceipt? @relation("JewelleryReceiptPosting")
+
+  // Phase 8 — an opening metal stock movement's own voucher, and a posted
+  // Owner correction's compensating voucher.
+  metalStockMovement MetalStockMovement?
+  correction         Correction?
 
   // Phase 6 — a Finished Jewellery Sale's own SALE voucher, its (optional)
   // full-cancellation REVERSAL voucher, and a return's SALE_RETURN
@@ -1000,6 +1020,7 @@ model MetalPurity {
   metalIssueLines     JewelleryMetalIssueLine[]
   finishedJewellery   FinishedJewellery[]
   costSheetMetalLines CostSheetMetalLine[]
+  metalRevaluations   MetalRevaluation[]
 
   @@unique([metalType, displayName])
   @@map("metal_purities")
@@ -1100,6 +1121,17 @@ model MetalStockMovement {
   reversalOfMovementId String?             @unique
   reversalOfMovement   MetalStockMovement? @relation("MetalMovementReversal", fields: [reversalOfMovementId], references: [id])
   reversedByMovement   MetalStockMovement? @relation("MetalMovementReversal")
+
+  // Phase 8 — the balanced voucher this movement posted, when it posts one
+  // of its own (OPENING_IN). Issue/return/consumed movements stay null:
+  // their accounting lives on the job's issue/receipt voucher.
+  voucherId String?  @unique
+  voucher   Voucher? @relation(fields: [voucherId], references: [id])
+
+  /// Idempotency for retried or double-submitted opening entries. Unique, so
+  /// a duplicate submission can never create a second movement OR voucher —
+  /// both are written in one transaction that aborts on conflict.
+  idempotencyKey String? @unique
 
   createdByUserId String
   createdBy       User   @relation("MetalStockMovementCreatedBy", fields: [createdByUserId], references: [id])
@@ -1230,6 +1262,7 @@ model JewelleryJob {
   finishedJewellery         FinishedJewellery[]
   metalStockMovements       MetalStockMovement[]
   stockMovements            StockMovement[]
+  metalRevaluations         MetalRevaluation[]
 
   @@index([karigarId])
   @@index([customerId])
@@ -1477,6 +1510,7 @@ model FinishedJewellery {
   costSheets        CostSheet[]
   stockMovements    FinishedJewelleryStockMovement[]
   saleLines         FinishedJewellerySaleLine[]
+  metalRevaluations MetalRevaluation[]
 
   @@index([jobId])
   @@index([receiptId])
@@ -2786,4 +2820,176 @@ model PacketProcessReceiptLine {
   @@index([receiptId])
   @@index([jobLineId])
   @@map("packet_process_receipt_lines")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8 — Owner Correction and Revaluation framework
+//
+// A correction NEVER edits or deletes the record it corrects. It stores the
+// original snapshot, the corrected snapshot, the Owner's reason, and a full
+// impact list; posting it writes only compensating records (a balanced
+// CORRECTION voucher, and for metal a MetalRevaluation per affected pool,
+// job or finished piece). The original movement, voucher, journal entry and
+// fineness snapshot stay byte-identical forever.
+// ---------------------------------------------------------------------------
+
+enum CorrectionEntityType {
+  VOUCHER
+  PARTY_OPENING_BALANCE
+  METAL_OPENING_STOCK
+  METAL_PURCHASE
+  METAL_ADJUSTMENT
+  ROUGH_LOT
+  POLISHED_PURCHASE
+  POLISHED_PACKET
+  DIAMOND_JOB
+  PACKET_PROCESS_JOB
+  JEWELLERY_JOB
+  JEWELLERY_RECEIPT
+  FINISHED_JEWELLERY
+  FINISHED_JEWELLERY_SALE
+  MASTER_SETTING
+}
+
+enum CorrectionMode {
+  /// Nothing is posted yet, so the record itself may be edited in place.
+  EDIT_DRAFT
+  /// Posted but unused downstream — reverse it in full and repost correctly.
+  REVERSE_REPOST
+  /// Posted AND used downstream — the original stands; a compensating
+  /// revaluation restates value everywhere the original value travelled.
+  REVALUE
+}
+
+enum CorrectionState {
+  DRAFT
+  AWAITING_APPROVAL
+  POSTED
+  REJECTED
+}
+
+enum CorrectionImpactKind {
+  STOCK
+  WIP
+  FINISHED
+  PARTY
+  LEDGER
+  CUSTODY
+}
+
+/// What a single MetalRevaluation row restates.
+enum MetalRevaluationTarget {
+  USABLE_POOL
+  SCRAP_POOL
+  JOB_WIP
+  FINISHED_JEWELLERY
+}
+
+model Correction {
+  id             String               @id @default(cuid())
+  correctionCode String               @unique
+  entityType     CorrectionEntityType
+  /// Primary key of the corrected record, in its own table. Deliberately a
+  /// plain string rather than a FK per entity type: a correction must be
+  /// able to outlive schema churn in any one module, and the table is
+  /// named by CorrectionImpact rows.
+  entityId       String
+  entityLabel    String
+  mode           CorrectionMode
+  state          CorrectionState      @default(DRAFT)
+
+  reason String
+
+  originalSnapshot  Json
+  correctedSnapshot Json
+  /// The preview shown to the Owner before confirmation, stored verbatim so
+  /// what was approved can always be compared with what was posted.
+  impactPreview     Json
+
+  preparedByUserId String
+  preparedBy       User   @relation("CorrectionPreparedBy", fields: [preparedByUserId], references: [id])
+
+  approvedByUserId String?
+  approvedBy       User?   @relation("CorrectionApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  rejectionReason  String?
+
+  postedAt DateTime?
+
+  correctionVoucherId String?  @unique
+  correctionVoucher   Voucher? @relation(fields: [correctionVoucherId], references: [id])
+
+  /// R1 -> R2 style chains: a correction that continues or replaces another.
+  supersedesCorrectionId String?     @unique
+  supersedes             Correction? @relation("CorrectionChain", fields: [supersedesCorrectionId], references: [id])
+  supersededBy           Correction? @relation("CorrectionChain")
+
+  idempotencyKey String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  impacts      CorrectionImpact[]
+  revaluations MetalRevaluation[]
+
+  @@index([entityType, entityId])
+  @@index([state])
+  @@map("corrections")
+}
+
+/// One immutable row per affected record+field. Written at post time from the
+/// approved preview, so the audit trail records what actually changed.
+model CorrectionImpact {
+  id           String     @id @default(cuid())
+  correctionId String
+  correction   Correction @relation(fields: [correctionId], references: [id], onDelete: Cascade)
+
+  kind        CorrectionImpactKind
+  tableName   String
+  recordId    String
+  recordLabel String
+  field       String
+  oldValue    String
+  newValue    String
+
+  createdAt DateTime @default(now())
+
+  @@index([correctionId])
+  @@index([tableName, recordId])
+  @@map("correction_impacts")
+}
+
+/// A compensating metal value restatement. Weight is carried for evidence but
+/// is NEVER changed by a revaluation — only value moves.
+model MetalRevaluation {
+  id           String     @id @default(cuid())
+  correctionId String
+  correction   Correction @relation(fields: [correctionId], references: [id], onDelete: Cascade)
+
+  target    MetalRevaluationTarget
+  metalType MetalType
+  purityId  String
+  purity    MetalPurity @relation(fields: [purityId], references: [id])
+
+  grossWeight Decimal @db.Decimal(10, 3)
+  fineWeight  Decimal @db.Decimal(10, 3)
+
+  oldCostValue   Decimal @db.Decimal(14, 2)
+  newCostValue   Decimal @db.Decimal(14, 2)
+  deltaCostValue Decimal @db.Decimal(14, 2)
+
+  jewelleryJobId String?
+  jewelleryJob   JewelleryJob? @relation(fields: [jewelleryJobId], references: [id])
+
+  finishedJewelleryId String?
+  finishedJewellery   FinishedJewellery? @relation(fields: [finishedJewelleryId], references: [id])
+
+  /// The original movement whose value this restates. Read-only reference —
+  /// the movement itself is never updated.
+  sourceMovementId String?
+
+  createdAt DateTime @default(now())
+
+  @@index([correctionId])
+  @@index([metalType, purityId])
+  @@map("metal_revaluations")
 }

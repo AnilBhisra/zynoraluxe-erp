@@ -234,10 +234,21 @@ export async function createOpeningMetalStock(
     grossWeight: formData.get("grossWeight"),
     costValue: formData.get("costValue"),
     note: formData.get("note") || "",
+    idempotencyKey: formData.get("idempotencyKey") || undefined,
   });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
   }
+  const { idempotencyKey } = parsed.data;
+
+  // Phase 8: the entry now posts a voucher too, so a retry must not be able
+  // to create a second movement or a second voucher.
+  if (idempotencyKey) {
+    const existing = await prisma.metalStockMovement.findUnique({ where: { idempotencyKey } });
+    if (existing) return { success: true };
+  }
+
+  const fy = await getCompanyFySettings();
 
   try {
     await prisma.$transaction((tx) =>
@@ -247,10 +258,17 @@ export async function createOpeningMetalStock(
         grossWeight: parsed.data.grossWeight,
         costValue: parsed.data.costValue,
         note: parsed.data.note || null,
+        fyStartMonth: fy.fyStartMonth,
+        fyStartDay: fy.fyStartDay,
+        idempotencyKey: idempotencyKey || null,
         createdByUserId: owner.id,
       })
     );
   } catch (error) {
+    if (isIdempotencyConflict(error) && idempotencyKey) {
+      const existing = await prisma.metalStockMovement.findUnique({ where: { idempotencyKey } });
+      if (existing) return { success: true };
+    }
     if (error instanceof jewelleryPosting.PostingError) return { error: error.message };
     console.error("createOpeningMetalStock failed:", error);
     return { error: "Could not save opening stock. Please try again." };

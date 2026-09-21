@@ -10,6 +10,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Diamond", href: "/diamond" },
   { label: "Jewellery Job", href: "/jewellery-jobs" },
   { label: "Costing", href: "/costing", ownerOnly: true },
+  { label: "Corrections", href: "/corrections", ownerOnly: true },
   { label: "Settings", href: "/settings", ownerOnly: true },
   { label: "Help / મદદ", href: "/help" },
 ];
