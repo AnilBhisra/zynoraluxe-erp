@@ -400,8 +400,24 @@ export async function adjustMetalStock(
     costValue: DecimalInput;
     reason: string;
     createdByUserId: string;
+    /**
+     * Set only by the Phase 8 tier that gives this function its balanced
+     * voucher. Until then every caller leaves it unset and the adjustment is
+     * refused rather than writing stock the ledger never sees.
+     */
+    postsBalancedVoucher?: boolean;
   }
 ) {
+  // Phase 8 guard: this function changes Metal Stock but posts NO journal
+  // entry, exactly the defect that left production's 1300 Metal Inventory
+  // negative (see PHASE_8_VERIFICATION.md). Rather than keep writing
+  // unbalanced stock, the adjustment is blocked until its Dr/Cr rules are
+  // implemented and tested. Existing stock and history are untouched.
+  if (!input.postsBalancedVoucher) {
+    throw new PostingError(
+      "Authorized Metal Stock Adjustment is temporarily unavailable: it does not yet post a balanced voucher, and an adjustment that changes stock without an accounting entry would leave Metal Inventory wrong. It returns once the Inventory Adjustment Gain/Loss posting is in place."
+    );
+  }
   if (!input.reason || input.reason.trim().length < 3) {
     throw new PostingError("Give a short reason for this stock adjustment.");
   }

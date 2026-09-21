@@ -109,8 +109,9 @@ model User {
 
   // Phase 8 — a correction is PREPARED by anyone with access to the module
   // (Staff included) but may only be APPROVED/POSTED by an Owner.
-  correctionsPrepared Correction[] @relation("CorrectionPreparedBy")
-  correctionsApproved Correction[] @relation("CorrectionApprovedBy")
+  correctionsPrepared Correction[]      @relation("CorrectionPreparedBy")
+  correctionsApproved Correction[]      @relation("CorrectionApprovedBy")
+  correctionBatches   CorrectionBatch[] @relation("CorrectionBatchCreatedBy")
 
   @@map("users")
 }
@@ -2918,10 +2919,21 @@ model Correction {
   correctionVoucherId String?  @unique
   correctionVoucher   Voucher? @relation(fields: [correctionVoucherId], references: [id])
 
-  /// R1 -> R2 style chains: a correction that continues or replaces another.
+  /// REPLACEMENT, not continuation: the superseded correction is closed and
+  /// stops being the live one (approveCorrectionDraft sets its state to
+  /// REJECTED). Never use this to link cumulative steps — that is what
+  /// CorrectionBatch is for.
   supersedesCorrectionId String?     @unique
   supersedes             Correction? @relation("CorrectionChain", fields: [supersedesCorrectionId], references: [id])
   supersededBy           Correction? @relation("CorrectionChain")
+
+  /// CUMULATIVE membership: several corrections that are each required and
+  /// each stay posted and active. Both the ledger backfill (R1) and the
+  /// revaluation (R2) of one opening entry belong to one batch.
+  batchId String?
+  batch   CorrectionBatch? @relation(fields: [batchId], references: [id])
+  /// 1-based position in the batch; steps are applied in order.
+  batchStep Int?
 
   idempotencyKey String? @unique
 
@@ -2931,6 +2943,7 @@ model Correction {
   impacts      CorrectionImpact[]
   revaluations MetalRevaluation[]
 
+  @@unique([batchId, batchStep])
   @@index([entityType, entityId])
   @@index([state])
   @@map("corrections")
@@ -2992,4 +3005,40 @@ model MetalRevaluation {
   @@index([correctionId])
   @@index([metalType, purityId])
   @@map("metal_revaluations")
+}
+
+/// Several corrections that together make ONE production correction, where
+/// every step is required and every step stays posted and active once it is.
+///
+/// Deliberately distinct from `Correction.supersedesCorrectionId`, which means
+/// "this one replaces that one" and closes the earlier record. A batch means
+/// "these are cumulative": R1 brings an opening entry on to the books and R2
+/// then revalues it, and BOTH must remain posted for the books to be right.
+model CorrectionBatch {
+  id        String @id @default(cuid())
+  batchCode String @unique
+  purpose   String
+
+  /// How many corrections must be POSTED before this batch is complete.
+  requiredSteps Int
+
+  state       CorrectionBatchState @default(OPEN)
+  completedAt DateTime?
+
+  createdByUserId String
+  createdBy       User   @relation("CorrectionBatchCreatedBy", fields: [createdByUserId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  corrections Correction[]
+
+  @@map("correction_batches")
+}
+
+enum CorrectionBatchState {
+  /// At least one required step is not posted yet.
+  OPEN
+  /// Every required step is posted; all of them remain active.
+  COMPLETE
 }

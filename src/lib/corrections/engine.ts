@@ -34,8 +34,13 @@ export type PostCorrectionInput = {
   fyStartMonth: number;
   fyStartDay: number;
   idempotencyKey?: string | null;
-  /** Links this correction to the one it continues (R1 -> R2). */
+  /**
+   * REPLACEMENT link: the named correction is closed by this one. Never use
+   * it for cumulative steps — pass `batch` instead.
+   */
   supersedesCorrectionId?: string | null;
+  /** CUMULATIVE link: this correction is one required step of a batch. */
+  batch?: { batchId: string; step: number } | null;
 };
 
 function assertBalanced(plan: CorrectionPlan): Decimal {
@@ -142,6 +147,12 @@ export async function postCorrection(tx: Tx, input: PostCorrectionInput) {
   }
   const total = assertBalanced(plan);
   assertRevaluationsTieToLedger(plan);
+  if (input.batch && input.supersedesCorrectionId) {
+    throw new CorrectionError(
+      "A correction cannot both replace another correction and be a cumulative step of a batch."
+    );
+  }
+  if (input.batch) await assertBatchStepAvailable(tx, input.batch);
 
   const date = input.date ?? new Date();
   let correctionVoucherId: string | null = null;
@@ -185,6 +196,8 @@ export async function postCorrection(tx: Tx, input: PostCorrectionInput) {
       postedAt: date,
       correctionVoucherId,
       supersedesCorrectionId: input.supersedesCorrectionId ?? null,
+      batchId: input.batch?.batchId ?? null,
+      batchStep: input.batch?.step ?? null,
       idempotencyKey: input.idempotencyKey ?? null,
     },
   });
@@ -222,6 +235,8 @@ export async function postCorrection(tx: Tx, input: PostCorrectionInput) {
       },
     });
   }
+
+  if (input.batch) await refreshBatchState(tx, input.batch.batchId);
 
   return correction;
 }
@@ -302,5 +317,81 @@ export async function rejectCorrectionDraft(
       rejectionReason: input.reason,
       approvedByUserId: input.approvedByUserId,
     },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Correction batches — several cumulative, each-required corrections
+// ---------------------------------------------------------------------------
+
+/**
+ * Opens a batch. Every step in it is required and, once posted, every step
+ * stays POSTED and active: a batch is explicitly NOT a supersede chain, where
+ * the earlier record would be closed.
+ */
+export async function createCorrectionBatch(
+  tx: Tx,
+  input: { batchCode: string; purpose: string; requiredSteps: number; createdByUserId: string }
+) {
+  if (input.requiredSteps < 1) throw new CorrectionError("A batch needs at least one step.");
+  if (!input.batchCode.trim()) throw new CorrectionError("A batch needs a code.");
+  return tx.correctionBatch.create({
+    data: {
+      batchCode: input.batchCode.trim(),
+      purpose: input.purpose.trim(),
+      requiredSteps: input.requiredSteps,
+      createdByUserId: input.createdByUserId,
+    },
+  });
+}
+
+/** Finds an open batch by code, or opens it. Safe to call on a retry. */
+export async function ensureCorrectionBatch(
+  tx: Tx,
+  input: { batchCode: string; purpose: string; requiredSteps: number; createdByUserId: string }
+) {
+  const existing = await tx.correctionBatch.findUnique({ where: { batchCode: input.batchCode.trim() } });
+  if (existing) {
+    if (existing.requiredSteps !== input.requiredSteps) {
+      throw new CorrectionError(
+        `Batch ${existing.batchCode} already exists with ${existing.requiredSteps} required steps, not ${input.requiredSteps}.`
+      );
+    }
+    return existing;
+  }
+  return createCorrectionBatch(tx, input);
+}
+
+async function assertBatchStepAvailable(tx: Tx, batch: { batchId: string; step: number }) {
+  const record = await tx.correctionBatch.findUnique({ where: { id: batch.batchId } });
+  if (!record) throw new CorrectionError("Correction batch not found.");
+  if (batch.step < 1 || batch.step > record.requiredSteps) {
+    throw new CorrectionError(
+      `Step ${batch.step} is outside batch ${record.batchCode}, which has ${record.requiredSteps} steps.`
+    );
+  }
+  const taken = await tx.correction.findFirst({
+    where: { batchId: batch.batchId, batchStep: batch.step },
+  });
+  if (taken) {
+    throw new CorrectionError(
+      `Step ${batch.step} of batch ${record.batchCode} was already posted as ${taken.correctionCode}.`
+    );
+  }
+}
+
+/** A batch is COMPLETE once every required step is posted — and stays so. */
+async function refreshBatchState(tx: Tx, batchId: string) {
+  const batch = await tx.correctionBatch.findUnique({
+    where: { id: batchId },
+    include: { corrections: { select: { state: true } } },
+  });
+  if (!batch) return;
+  const posted = batch.corrections.filter((c) => c.state === "POSTED").length;
+  const complete = posted >= batch.requiredSteps;
+  if (complete === (batch.state === "COMPLETE")) return;
+  await tx.correctionBatch.update({
+    where: { id: batchId },
+    data: { state: complete ? "COMPLETE" : "OPEN", completedAt: complete ? new Date() : null },
   });
 }

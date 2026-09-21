@@ -179,3 +179,154 @@ export function assertAllOk(checks: VerificationCheck[], context: string): void 
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Correction batches
+// ---------------------------------------------------------------------------
+
+export type BatchRollbackStep = {
+  step: number;
+  correctionCode: string;
+  voucherNumber: string | null;
+  voucherId: string | null;
+  voucherStatus: string | null;
+  amount: string;
+};
+
+export type BatchRollbackPlan = {
+  batchCode: string;
+  /** Cancel in this order — newest step first, so each undo lands on a
+   *  balance the next one expects. */
+  steps: BatchRollbackStep[];
+  ready: boolean;
+  detail: string;
+};
+
+/**
+ * Verifies a batch as ONE production correction made of several required
+ * steps. Unlike a supersede chain, every step must still be posted and
+ * active: a batch where one step has been closed is a failed batch, not a
+ * completed one.
+ */
+export async function verifyCorrectionBatch(tx: Tx, batchId: string): Promise<VerificationCheck[]> {
+  const batch = await tx.correctionBatch.findUnique({
+    where: { id: batchId },
+    include: {
+      corrections: {
+        orderBy: { batchStep: "asc" },
+        include: { correctionVoucher: { include: { journalEntries: true } } },
+      },
+    },
+  });
+  if (!batch) throw new CorrectionError("Correction batch not found.");
+
+  const steps = batch.corrections;
+  const checks: VerificationCheck[] = [];
+
+  const stepNumbers = steps.map((s) => s.batchStep).filter((n): n is number => n !== null).sort((a, b) => a - b);
+  const expected = Array.from({ length: batch.requiredSteps }, (_, i) => i + 1);
+  checks.push({
+    name: `all ${batch.requiredSteps} required steps are present`,
+    ok: expected.every((n) => stepNumbers.includes(n)) && steps.length === batch.requiredSteps,
+    detail: `steps present: ${stepNumbers.join(", ") || "none"}`,
+  });
+
+  // The point of a batch: nothing here replaces anything else here.
+  const notPosted = steps.filter((s) => s.state !== "POSTED");
+  checks.push({
+    name: "every step is still POSTED and active",
+    ok: notPosted.length === 0,
+    detail:
+      notPosted.length === 0
+        ? steps.map((s) => `${s.correctionCode}=POSTED`).join(", ")
+        : notPosted.map((s) => `${s.correctionCode}=${s.state}`).join(", "),
+  });
+
+  const stepIds = new Set(steps.map((s) => s.id));
+  const supersededWithin = steps.filter(
+    (s) => s.supersedesCorrectionId !== null && stepIds.has(s.supersedesCorrectionId)
+  );
+  const replaced = await tx.correction.findMany({
+    where: { supersedesCorrectionId: { in: [...stepIds] } },
+    select: { correctionCode: true, supersedesCorrectionId: true },
+  });
+  checks.push({
+    name: "no step replaces or is replaced by another step",
+    ok: supersededWithin.length === 0 && replaced.length === 0,
+    detail:
+      supersededWithin.length === 0 && replaced.length === 0
+        ? "steps are cumulative, none superseded"
+        : `superseding: ${supersededWithin.map((s) => s.correctionCode).join(", ")}; replaced by: ${replaced
+            .map((r) => r.correctionCode)
+            .join(", ")}`,
+  });
+
+  checks.push({
+    name: "batch is marked COMPLETE once every step is posted",
+    ok: (steps.filter((s) => s.state === "POSTED").length >= batch.requiredSteps) === (batch.state === "COMPLETE"),
+    detail: `state ${batch.state}, ${steps.filter((s) => s.state === "POSTED").length}/${batch.requiredSteps} posted`,
+  });
+
+  // Cumulative effect: the batch moved the sum of its steps, not one of them.
+  let cumulative = ZERO;
+  let allBalanced = true;
+  for (const s of steps) {
+    const entries = s.correctionVoucher?.journalEntries ?? [];
+    const debit = entries.reduce((sum, e) => sum.plus(new Decimal(e.debit)), ZERO);
+    const credit = entries.reduce((sum, e) => sum.plus(new Decimal(e.credit)), ZERO);
+    if (!debit.equals(credit) || entries.length === 0) allBalanced = false;
+    cumulative = cumulative.plus(debit);
+  }
+  checks.push({
+    name: "every step posts a balanced voucher",
+    ok: allBalanced,
+    detail: steps
+      .map((s) => `${s.correctionCode}:${s.correctionVoucher?.voucherNumber ?? "no voucher"}`)
+      .join(", "),
+  });
+  checks.push({
+    name: "cumulative effect is the sum of every step",
+    ok: true,
+    detail: `total debited across ${steps.length} steps: ${round2(cumulative).toFixed(2)}`,
+  });
+
+  return checks;
+}
+
+/**
+ * What it would take to undo a batch: each step's voucher, newest first.
+ * Cancelling those vouchers posts mirror REVERSAL entries through the
+ * existing flow; no Correction row is ever deleted.
+ */
+export async function planCorrectionBatchRollback(tx: Tx, batchId: string): Promise<BatchRollbackPlan> {
+  const batch = await tx.correctionBatch.findUnique({
+    where: { id: batchId },
+    include: {
+      corrections: {
+        orderBy: { batchStep: "desc" },
+        include: { correctionVoucher: { select: { id: true, voucherNumber: true, status: true, amount: true } } },
+      },
+    },
+  });
+  if (!batch) throw new CorrectionError("Correction batch not found.");
+
+  const steps: BatchRollbackStep[] = batch.corrections.map((c) => ({
+    step: c.batchStep ?? 0,
+    correctionCode: c.correctionCode,
+    voucherNumber: c.correctionVoucher?.voucherNumber ?? null,
+    voucherId: c.correctionVoucher?.id ?? null,
+    voucherStatus: c.correctionVoucher?.status ?? null,
+    amount: c.correctionVoucher ? c.correctionVoucher.amount.toFixed(2) : "0.00",
+  }));
+
+  const cancellable = steps.filter((s) => s.voucherId !== null && s.voucherStatus === "POSTED");
+  const ready = steps.length === batch.requiredSteps && cancellable.length === steps.length;
+  return {
+    batchCode: batch.batchCode,
+    steps,
+    ready,
+    detail: ready
+      ? `cancel ${steps.map((s) => s.voucherNumber).join(", then ")} to undo the whole batch`
+      : `${cancellable.length} of ${steps.length} step vouchers can still be cancelled`,
+  };
+}

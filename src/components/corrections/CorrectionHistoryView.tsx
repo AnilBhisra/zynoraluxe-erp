@@ -76,6 +76,15 @@ export function CorrectionHistoryView({ rows }: { rows: CorrectionHistoryRow[] }
               <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
                 {MODE_LABELS[row.mode] ?? row.mode}
               </span>
+              {row.batchCode ? (
+                <span
+                  data-testid={`batch-${row.batchCode}-${row.batchStep}`}
+                  className="rounded-full bg-sky-100 px-2.5 py-1 text-xs font-medium text-sky-900 dark:bg-sky-900/50 dark:text-sky-100"
+                >
+                  {row.batchCode} · step {row.batchStep} of {row.batchRequiredSteps}
+                  {row.batchState === "COMPLETE" ? " · complete" : " · in progress"}
+                </span>
+              ) : null}
             </div>
           </div>
 

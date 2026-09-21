@@ -9,6 +9,7 @@ import { prisma } from "@/lib/db/prisma";
 import { isIdempotencyConflict } from "@/lib/db/uniqueConflict";
 import {
   approveCorrectionDraft,
+  ensureCorrectionBatch,
   postCorrection,
   rejectCorrectionDraft,
   saveCorrectionDraft,
@@ -68,8 +69,15 @@ const openingStockCorrectionSchema = z.object({
   newCostValue: z.coerce.number().min(0, "A corrected value cannot be negative.").optional(),
   reason: z.string().trim().min(5, "Give the reason for this correction.").max(500),
   idempotencyKey: z.string().trim().max(100).optional(),
-  /** Links this correction to the one it continues, e.g. R2 after R1. */
-  supersedesCorrectionId: z.string().trim().max(50).optional(),
+  /**
+   * Cumulative batch membership: R1 and R2 of one opening entry are two
+   * required steps of one batch, and both stay posted and active. This is
+   * deliberately NOT a supersede link, which would close the earlier one.
+   */
+  batchCode: z.string().trim().max(60).optional(),
+  batchPurpose: z.string().trim().max(300).optional(),
+  batchStep: z.coerce.number().int().min(1).max(20).optional(),
+  batchRequiredSteps: z.coerce.number().int().min(1).max(20).optional(),
 });
 
 async function buildPlan(
@@ -151,7 +159,10 @@ export async function postOpeningStockCorrection(
     newCostValue: formData.get("newCostValue") || undefined,
     reason: formData.get("reason"),
     idempotencyKey: formData.get("idempotencyKey") || undefined,
-    supersedesCorrectionId: formData.get("supersedesCorrectionId") || undefined,
+    batchCode: formData.get("batchCode") || undefined,
+    batchPurpose: formData.get("batchPurpose") || undefined,
+    batchStep: formData.get("batchStep") || undefined,
+    batchRequiredSteps: formData.get("batchRequiredSteps") || undefined,
   });
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
   const { idempotencyKey } = parsed.data;
@@ -161,10 +172,23 @@ export async function postOpeningStockCorrection(
     if (existing) return { success: true, code: existing.correctionCode };
   }
 
+  const { batchCode, batchStep, batchRequiredSteps } = parsed.data;
+  if ((batchCode || batchStep) && !(batchCode && batchStep && batchRequiredSteps)) {
+    return { error: "A batch step needs the batch code, the step number and the number of required steps." };
+  }
+
   const fy = await getCompanyFySettings();
   try {
     const correction = await prisma.$transaction(async (tx) => {
       const plan = await buildPlan(tx, parsed.data);
+      const batch = batchCode
+        ? await ensureCorrectionBatch(tx, {
+            batchCode,
+            purpose: parsed.data.batchPurpose ?? plan.entityLabel,
+            requiredSteps: batchRequiredSteps!,
+            createdByUserId: owner.id,
+          })
+        : null;
       return postCorrection(tx, {
         plan,
         preparedByUserId: owner.id,
@@ -173,7 +197,7 @@ export async function postOpeningStockCorrection(
         fyStartMonth: fy.fyStartMonth,
         fyStartDay: fy.fyStartDay,
         idempotencyKey: idempotencyKey || null,
-        supersedesCorrectionId: parsed.data.supersedesCorrectionId || null,
+        batch: batch ? { batchId: batch.id, step: batchStep! } : null,
       });
     });
     revalidateCorrections();

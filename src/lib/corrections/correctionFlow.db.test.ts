@@ -9,15 +9,28 @@ import "dotenv/config";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { cancelVoucher } from "@/lib/accounting/posting";
 import { prisma } from "@/lib/db/prisma";
 import { postOpeningMetalStock } from "@/lib/jewellery/posting";
-import { postCorrection, saveCorrectionDraft, approveCorrectionDraft } from "./engine";
+import {
+  approveCorrectionDraft,
+  ensureCorrectionBatch,
+  postCorrection,
+  saveCorrectionDraft,
+} from "./engine";
+import { listCorrections } from "./history";
 import {
   planOpeningStockLedgerBackfill,
   planOpeningStockRevaluation,
 } from "./openingStockCorrection";
 import { CorrectionError } from "./types";
-import { reconcileMetalInventory, reconcileVoucherBalances, verifyCorrection } from "./verify";
+import {
+  planCorrectionBatchRollback,
+  reconcileMetalInventory,
+  reconcileVoucherBalances,
+  verifyCorrection,
+  verifyCorrectionBatch,
+} from "./verify";
 
 const FY = { fyStartMonth: 4, fyStartDay: 1 };
 
@@ -28,6 +41,7 @@ async function clearBusinessData() {
   await prisma.correctionImpact.deleteMany();
   await prisma.metalRevaluation.deleteMany();
   await prisma.correction.deleteMany();
+  await prisma.correctionBatch.deleteMany();
   await prisma.journalEntry.deleteMany();
   await prisma.metalStockMovement.deleteMany();
   await prisma.voucher.deleteMany();
@@ -365,4 +379,299 @@ describe("permissions and approval safety", () => {
       )
     ).rejects.toThrow(/changed after this correction was prepared/);
   }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// R1 + R2 as ONE cumulative correction batch
+// ---------------------------------------------------------------------------
+
+// One suite, so its setup runs after the suites above have finished with
+// the shared test database rather than before all of them.
+describe("R1 and R2 as one cumulative production correction batch", () => {
+  const BATCH_CODE = "TEST-OPENING-BATCH";
+
+  let purity24kId: string;
+  let batchMovementId: string;
+  let batchId: string;
+  let r1Id: string;
+  let r2Id: string;
+
+  async function accountBalance(code: string): Promise<string> {
+    const account = await prisma.account.findUniqueOrThrow({ where: { code } });
+    const totals = await prisma.journalEntry.aggregate({
+      where: { accountId: account.id },
+      _sum: { debit: true, credit: true },
+    });
+    const debit = Number(totals._sum.debit ?? 0);
+    const credit = Number(totals._sum.credit ?? 0);
+    return (debit - credit).toFixed(2);
+  }
+
+  beforeAll(async () => {
+    // Starts from a clean ledger so the batch's account balances are its own.
+    await clearBusinessData();
+    purity24kId = (await prisma.metalPurity.findFirstOrThrow({ where: { displayName: "24K" } })).id;
+
+    // A pre-Phase-8 opening entry: stock recorded, nothing posted to the ledger.
+    const legacy = await prisma.metalStockMovement.create({
+      data: {
+        type: "OPENING_IN",
+        metalType: "GOLD",
+        purityId: purity24kId,
+        grossWeight: "22.001",
+        fineWeight: "21.979",
+        costValue: "160000.00",
+        sourceDocument: "Opening stock",
+        createdByUserId: ownerId,
+      },
+    });
+    batchMovementId = legacy.id;
+  }, 60_000);
+
+  describe("posting R1 and R2 as one cumulative batch", () => {
+    it("starts with the ledger short of the stock, exactly as production is", async () => {
+      expect(await accountBalance("1300")).toBe("0.00");
+      const checks = await reconcileMetalInventory(prisma);
+      expect(checks[0].ok).toBe(false);
+    }, 30_000);
+
+    it("posts R1 as step 1 and leaves the batch open", async () => {
+      const result = await prisma.$transaction(async (tx) => {
+        const batch = await ensureCorrectionBatch(tx, {
+          batchCode: BATCH_CODE,
+          purpose: "Opening gold: post to the ledger, then revalue.",
+          requiredSteps: 2,
+          createdByUserId: ownerId,
+        });
+        const plan = await planOpeningStockLedgerBackfill(tx, {
+          movementId: batchMovementId,
+          reason: "Opening metal stock was never posted to the ledger (defect D-2).",
+        });
+        const correction = await postCorrection(tx, {
+          plan,
+          preparedByUserId: ownerId,
+          approvedByUserId: ownerId,
+          approverRole: "OWNER",
+          idempotencyKey: "test-batch-r1",
+          batch: { batchId: batch.id, step: 1 },
+          ...FY,
+        });
+        return { batchId: batch.id, correctionId: correction.id };
+      });
+      batchId = result.batchId;
+      r1Id = result.correctionId;
+
+      const batch = await prisma.correctionBatch.findUniqueOrThrow({ where: { id: batchId } });
+      expect(batch.state).toBe("OPEN");
+      expect(batch.completedAt).toBeNull();
+      expect(await accountBalance("1300")).toBe("160000.00");
+    }, 30_000);
+
+    it("posts R2 as step 2 and completes the batch", async () => {
+      const correction = await prisma.$transaction(async (tx) => {
+        const plan = await planOpeningStockRevaluation(tx, {
+          movementId: batchMovementId,
+          newCostValue: "351664.00",
+          reason: "Opening gold was valued at half the actual purchase rate.",
+        });
+        return postCorrection(tx, {
+          plan,
+          preparedByUserId: ownerId,
+          approvedByUserId: ownerId,
+          approverRole: "OWNER",
+          idempotencyKey: "test-batch-r2",
+          batch: { batchId, step: 2 },
+          ...FY,
+        });
+      });
+      r2Id = correction.id;
+
+      const batch = await prisma.correctionBatch.findUniqueOrThrow({ where: { id: batchId } });
+      expect(batch.state).toBe("COMPLETE");
+      expect(batch.completedAt).not.toBeNull();
+    }, 30_000);
+
+    it("keeps BOTH corrections posted and active — neither replaces the other", async () => {
+      const [r1, r2] = await Promise.all([
+        prisma.correction.findUniqueOrThrow({ where: { id: r1Id } }),
+        prisma.correction.findUniqueOrThrow({ where: { id: r2Id } }),
+      ]);
+
+      expect(r1.state).toBe("POSTED");
+      expect(r2.state).toBe("POSTED");
+      // The supersede link is what would mark R1 replaced; a batch must not use it.
+      expect(r1.supersedesCorrectionId).toBeNull();
+      expect(r2.supersedesCorrectionId).toBeNull();
+      expect(await prisma.correction.count({ where: { supersedesCorrectionId: r1Id } })).toBe(0);
+      expect(r1.rejectionReason).toBeNull();
+      expect(r1.batchStep).toBe(1);
+      expect(r2.batchStep).toBe(2);
+    });
+
+    it("is cumulative: the ledger carries R1 plus R2, not one of them", async () => {
+      // This fixture has no jobs, so all 22.001g is still in stock and the whole
+      // uplift lands there: 160,000 (R1) + 191,664 (R2) = 351,664 into 1300.
+      // Production's split across stock/WIP/finished is locked separately by
+      // metalReplay.test.ts against the real ledger.
+      expect(await accountBalance("1300")).toBe("351664.00");
+      expect(await accountBalance("3000")).toBe("-351664.00");
+      // Neither step alone would produce this: R1 gives 160,000, R2 gives 191,664.
+      expect(await accountBalance("1300")).not.toBe("160000.00");
+      expect(await accountBalance("1300")).not.toBe("191664.00");
+    }, 30_000);
+
+    it("verifies the batch as one correction made of two required steps", async () => {
+      const checks = await verifyCorrectionBatch(prisma, batchId);
+      const failed = checks.filter((c) => !c.ok);
+      expect(failed.map((f) => `${f.name}: ${f.detail}`)).toEqual([]);
+    }, 30_000);
+
+    it("verifies each step on its own and reconciles the metal ledger", async () => {
+      for (const id of [r1Id, r2Id]) {
+        const checks = await verifyCorrection(prisma, id);
+        expect(checks.filter((c) => !c.ok)).toEqual([]);
+      }
+      const reconciliation = await reconcileMetalInventory(prisma);
+      expect(reconciliation.every((c) => c.ok)).toBe(true);
+      expect((await reconcileVoucherBalances(prisma)).ok).toBe(true);
+    }, 30_000);
+
+    it("refuses a second posting into a step that is already taken", async () => {
+      await expect(
+        prisma.$transaction(async (tx) => {
+          const plan = await planOpeningStockRevaluation(tx, {
+            movementId: batchMovementId,
+            newCostValue: "400000.00",
+            reason: "Trying to reuse step 2.",
+          });
+          return postCorrection(tx, {
+            plan,
+            preparedByUserId: ownerId,
+            approvedByUserId: ownerId,
+            approverRole: "OWNER",
+            batch: { batchId, step: 2 },
+            ...FY,
+          });
+        })
+      ).rejects.toThrow(/already posted/);
+    }, 30_000);
+
+    it("refuses to mix a batch step with a supersede link", async () => {
+      await expect(
+        prisma.$transaction(async (tx) => {
+          const plan = await planOpeningStockRevaluation(tx, {
+            movementId: batchMovementId,
+            newCostValue: "400000.00",
+            reason: "Trying both link kinds at once.",
+          });
+          return postCorrection(tx, {
+            plan,
+            preparedByUserId: ownerId,
+            approvedByUserId: ownerId,
+            approverRole: "OWNER",
+            batch: { batchId, step: 1 },
+            supersedesCorrectionId: r1Id,
+            ...FY,
+          });
+        })
+      ).rejects.toThrow(/cannot both replace another correction and be a cumulative step/);
+    }, 30_000);
+
+    it("refuses a step outside the batch", async () => {
+      await expect(
+        prisma.$transaction(async (tx) => {
+          const plan = await planOpeningStockRevaluation(tx, {
+            movementId: batchMovementId,
+            newCostValue: "400000.00",
+            reason: "Step three of a two-step batch.",
+          });
+          return postCorrection(tx, {
+            plan,
+            preparedByUserId: ownerId,
+            approvedByUserId: ownerId,
+            approverRole: "OWNER",
+            batch: { batchId, step: 3 },
+            ...FY,
+          });
+        })
+      ).rejects.toThrow(/outside batch/);
+    }, 30_000);
+
+    it("refuses to reopen the same batch code with a different number of steps", async () => {
+      await expect(
+        prisma.$transaction((tx) =>
+          ensureCorrectionBatch(tx, {
+            batchCode: BATCH_CODE,
+            purpose: "same code, different shape",
+            requiredSteps: 3,
+            createdByUserId: ownerId,
+          })
+        )
+      ).rejects.toThrow(CorrectionError);
+    }, 30_000);
+  });
+
+  describe("history shows both steps as required parts of one batch", () => {
+    it("lists R1 and R2 as POSTED, each naming its batch and step", async () => {
+      const rows = await listCorrections();
+      const r1 = rows.find((r) => r.id === r1Id);
+      const r2 = rows.find((r) => r.id === r2Id);
+
+      for (const row of [r1, r2]) {
+        expect(row?.state).toBe("POSTED");
+        expect(row?.batchCode).toBe(BATCH_CODE);
+        expect(row?.batchRequiredSteps).toBe(2);
+        expect(row?.batchState).toBe("COMPLETE");
+        expect(row?.rejectionReason).toBeNull();
+      }
+      expect(r1?.batchStep).toBe(1);
+      expect(r2?.batchStep).toBe(2);
+      expect(r1?.originalValue).toBe("160000.00");
+      expect(r2?.correctedValue).toBe("351664.00");
+    }, 30_000);
+  });
+
+  describe("rollback readiness and simulation", () => {
+    it("reports both steps as cancellable, newest first", async () => {
+      const plan = await planCorrectionBatchRollback(prisma, batchId);
+      expect(plan.ready).toBe(true);
+      expect(plan.steps.map((s) => s.step)).toEqual([2, 1]);
+      expect(plan.steps.every((s) => s.voucherStatus === "POSTED")).toBe(true);
+      expect(plan.steps[0].amount).toBe("191664.00");
+      expect(plan.steps[1].amount).toBe("160000.00");
+    }, 30_000);
+
+    it("undoing the whole batch returns every balance to where it started", async () => {
+      const plan = await planCorrectionBatchRollback(prisma, batchId);
+      for (const step of plan.steps) {
+        await prisma.$transaction((tx) =>
+          cancelVoucher(tx, {
+            voucherId: step.voucherId!,
+            cancelledByUserId: ownerId,
+            cancellationReason: `Rollback of batch ${plan.batchCode}`,
+            ...FY,
+          })
+        );
+      }
+
+      expect(await accountBalance("1300")).toBe("0.00");
+      expect(await accountBalance("1320")).toBe("0.00");
+      expect(await accountBalance("1330")).toBe("0.00");
+      expect(await accountBalance("3000")).toBe("0.00");
+      expect((await reconcileVoucherBalances(prisma)).ok).toBe(true);
+
+      // The audit trail survives the rollback: nothing is deleted.
+      const rows = await listCorrections();
+      expect(rows.filter((r) => r.batchCode === BATCH_CODE)).toHaveLength(2);
+      const movement = await prisma.metalStockMovement.findUniqueOrThrow({ where: { id: batchMovementId } });
+      expect(movement.costValue.toFixed(2)).toBe("160000.00");
+      expect(movement.fineWeight.toFixed(3)).toBe("21.979");
+    }, 60_000);
+
+    it("reports the batch as no longer rollback-ready once its vouchers are cancelled", async () => {
+      const plan = await planCorrectionBatchRollback(prisma, batchId);
+      expect(plan.ready).toBe(false);
+      expect(plan.detail).toContain("0 of 2");
+    }, 30_000);
+  });
 });

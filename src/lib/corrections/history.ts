@@ -27,13 +27,22 @@ export type CorrectionHistoryRow = {
   rejectionReason: string | null;
   originalValue: string | null;
   correctedValue: string | null;
+  /** Set when this correction is one required step of a cumulative batch. */
+  batchCode: string | null;
+  batchStep: number | null;
+  batchRequiredSteps: number | null;
+  batchState: string | null;
   impacts: CorrectionHistoryImpact[];
 };
 
 function snapshotValue(snapshot: unknown): string | null {
   if (!snapshot || typeof snapshot !== "object") return null;
   const value = (snapshot as { costValue?: unknown }).costValue;
-  return typeof value === "string" ? value : null;
+  if (typeof value !== "string") return null;
+  // Snapshots may carry either "160000" or "160000.00" depending on which
+  // planner wrote them; history always shows money at 2 dp.
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(2) : value;
 }
 
 /**
@@ -49,6 +58,7 @@ export async function listCorrections(limit = 100): Promise<CorrectionHistoryRow
       impacts: { orderBy: { createdAt: "asc" } },
       preparedBy: { select: { name: true } },
       approvedBy: { select: { name: true } },
+      batch: { select: { batchCode: true, requiredSteps: true, state: true } },
       correctionVoucher: { select: { voucherNumber: true, amount: true } },
     },
   });
@@ -70,6 +80,10 @@ export async function listCorrections(limit = 100): Promise<CorrectionHistoryRow
     rejectionReason: c.rejectionReason,
     originalValue: snapshotValue(c.originalSnapshot),
     correctedValue: snapshotValue(c.correctedSnapshot),
+    batchCode: c.batch?.batchCode ?? null,
+    batchStep: c.batchStep,
+    batchRequiredSteps: c.batch?.requiredSteps ?? null,
+    batchState: c.batch?.state ?? null,
     impacts: c.impacts.map((i) => ({
       kind: i.kind,
       recordLabel: i.recordLabel,

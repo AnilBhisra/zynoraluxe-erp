@@ -245,7 +245,30 @@ describe("postOpeningMetalStock", () => {
 });
 
 describe("adjustMetalStock", () => {
-  it("posts an authorized ADJUSTMENT_IN freely", async () => {
+  // Phase 8: the adjustment is blocked until it posts a balanced voucher,
+  // because changing stock with no journal entry is what left production's
+  // 1300 Metal Inventory negative.
+  it("refuses to change stock while it still posts no journal entry", async () => {
+    const fixture = createFakeJewelleryTx();
+    const purity = seedGold22k(fixture);
+
+    await expect(
+      adjustMetalStock(fixture.tx as never, {
+        metalType: "GOLD",
+        purityId: purity.id as string,
+        direction: "IN",
+        grossWeight: 10,
+        costValue: 50000,
+        reason: "Physical count found extra stock",
+        createdByUserId: "owner-1",
+      })
+    ).rejects.toThrow(/temporarily unavailable/);
+
+    const balance = await getMetalStockBalanceInTx(fixture.tx as never, "GOLD", purity.id as string);
+    expect(balance.grossWeight.toFixed(3)).toBe("0.000");
+  });
+
+  it("posts an authorized ADJUSTMENT_IN once its balanced voucher is in place", async () => {
     const fixture = createFakeJewelleryTx();
     const purity = seedGold22k(fixture);
 
@@ -257,6 +280,7 @@ describe("adjustMetalStock", () => {
       costValue: 50000,
       reason: "Physical count found extra stock",
       createdByUserId: "owner-1",
+      postsBalancedVoucher: true,
     });
 
     const balance = await getMetalStockBalanceInTx(fixture.tx as never, "GOLD", purity.id as string);
@@ -276,6 +300,7 @@ describe("adjustMetalStock", () => {
         costValue: 0,
         reason: "Correcting a count error",
         createdByUserId: "owner-1",
+        postsBalancedVoucher: true,
       })
     ).rejects.toThrow(PostingError);
   });
@@ -292,6 +317,7 @@ describe("adjustMetalStock", () => {
         costValue: 0,
         reason: "",
         createdByUserId: "owner-1",
+        postsBalancedVoucher: true,
       })
     ).rejects.toThrow(PostingError);
   });

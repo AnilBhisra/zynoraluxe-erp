@@ -131,6 +131,14 @@ function MetalAdjustmentForm({ purities, onDone }: { purities: MetalPurityOption
       <p className="text-xs text-zinc-500 dark:text-zinc-400">
         Owner only — use this only to correct a genuine stock-count error, with a reason for the audit trail.
       </p>
+      <p
+        data-testid="adjustment-unavailable"
+        className="rounded-lg border border-amber-300 bg-amber-100 px-3 py-2 text-sm font-medium text-amber-900 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-200"
+      >
+        Temporarily unavailable: an adjustment does not yet post an accounting entry, so it would change Metal Stock
+        without changing Metal Inventory. It returns once the Inventory Adjustment Gain/Loss posting is in place. /
+        હાલ પૂરતું બંધ — Accounting entry વગર stock બદલાય નહીં.
+      </p>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <select
           aria-label="Metal"

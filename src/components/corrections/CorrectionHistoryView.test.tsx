@@ -21,6 +21,10 @@ const posted: CorrectionHistoryRow = {
   rejectionReason: null,
   originalValue: "160000.00",
   correctedValue: "351664.00",
+  batchCode: "PROD-OPENING-2026-09-21",
+  batchStep: 2,
+  batchRequiredSteps: 2,
+  batchState: "COMPLETE",
   impacts: [
     {
       kind: "STOCK",
@@ -85,6 +89,15 @@ describe("CorrectionHistoryView", () => {
     );
     expect(screen.getByText("Waiting for Owner")).toBeTruthy();
     expect(screen.getByText(/not yet approved/)).toBeTruthy();
+  });
+
+  it("shows that a correction is one required step of a cumulative batch", () => {
+    render(<CorrectionHistoryView rows={[posted]} />);
+    const badge = screen.getByTestId("batch-PROD-OPENING-2026-09-21-2");
+    expect(badge.textContent).toContain("step 2 of 2");
+    expect(badge.textContent).toContain("complete");
+    // A batch step is never shown as replaced or closed.
+    expect(screen.queryByText("Closed")).toBeNull();
   });
 
   it("explains the page rather than showing an empty list", () => {
