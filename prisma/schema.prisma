@@ -1139,6 +1139,11 @@ model MetalStockMovement {
   /// both are written in one transaction that aborts on conflict.
   idempotencyKey String? @unique
 
+  /// Phase 8 — the two legs of one Owner pool transfer (usable <-> scrap)
+  /// share this id. They are created together and must be reversed together,
+  /// or one pool would keep value the other has already given back.
+  transferPairId String?
+
   createdByUserId String
   createdBy       User   @relation("MetalStockMovementCreatedBy", fields: [createdByUserId], references: [id])
 
@@ -1147,6 +1152,7 @@ model MetalStockMovement {
   @@index([metalType, purityId])
   @@index([jewelleryJobId])
   @@index([type])
+  @@index([transferPairId])
   @@map("metal_stock_movements")
 }
 

@@ -53,6 +53,16 @@ export async function getMetalStockSummary(): Promise<MetalStockBucket[]> {
     select: { type: true, metalType: true, purityId: true, grossWeight: true, fineWeight: true, costValue: true },
   });
 
+  // Posted revaluations move a pool's value without moving its weight.
+  const revaluations = await prisma.metalRevaluation.groupBy({
+    by: ["purityId", "target"],
+    where: { correction: { state: "POSTED" }, target: { in: ["USABLE_POOL", "SCRAP_POOL"] } },
+    _sum: { deltaCostValue: true },
+  });
+  const revaluationByKey = new Map(
+    revaluations.map((r) => [`${r.purityId}|${r.target}`, new Decimal(r._sum.deltaCostValue ?? 0)])
+  );
+
   const movementsByPurity = new Map<string, typeof movements>();
   for (const m of movements) {
     const list = movementsByPurity.get(m.purityId) ?? [];
@@ -72,10 +82,10 @@ export async function getMetalStockSummary(): Promise<MetalStockBucket[]> {
         finenessPercent: new Decimal(p.finenessPercent),
         grossWeight: usable.grossWeight,
         fineWeight: usable.fineWeight,
-        costValue: usable.costValue,
+        costValue: usable.costValue.plus(revaluationByKey.get(`${p.id}|USABLE_POOL`) ?? 0),
         scrapGrossWeight: scrap.grossWeight,
         scrapFineWeight: scrap.fineWeight,
-        scrapCostValue: scrap.costValue,
+        scrapCostValue: scrap.costValue.plus(revaluationByKey.get(`${p.id}|SCRAP_POOL`) ?? 0),
       };
     })
     .filter((b) => !b.grossWeight.isZero() || !b.costValue.isZero() || !b.scrapGrossWeight.isZero());

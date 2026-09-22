@@ -178,6 +178,12 @@ export function createFakeJewelleryTx() {
         return [...metalPurchases.values()].find((r) => r.idempotencyKey === where.idempotencyKey) ?? null;
       },
     },
+    // Phase 8: a pool's value is its movements plus every posted revaluation.
+    // These fixtures post no corrections, so the list is always empty.
+    metalRevaluation: {
+      findMany: async () => [],
+      create: async ({ data }: { data: Row }) => ({ id: nextId("reval"), ...data }),
+    },
     metalStockMovement: {
       create: async ({ data }: { data: Row }) => {
         const row = { id: nextId("mmov"), ...data };

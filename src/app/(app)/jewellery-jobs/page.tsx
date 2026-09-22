@@ -27,6 +27,7 @@ import type { PurityOption } from "@/components/jewellery/CreateJobForm";
 import type { AvailablePacketOption, AvailablePolishedDiamondOption } from "@/components/jewellery/IssueMaterialsForm";
 import type { PendingPacketOption } from "@/components/jewellery/ReceiveFinishedForm";
 import { listJobPacketLines, listPolishedPackets } from "@/lib/diamond/packetReports";
+import { listMetalAdjustments } from "@/lib/jewellery/adjustmentHistory";
 import { shapeLabel } from "@/lib/diamond/shapes";
 import type { MetalPurityOption } from "@/components/jewellery/ReceiveFinishedForm";
 import type { FinishedJewelleryStockStatus, JewelleryJobStatus } from "@/generated/prisma/enums";
@@ -417,6 +418,7 @@ async function MetalTabContent({ search, isOwner }: { search: string; isOwner: b
       gstRates={gstRates.map((g) => ({ id: g.id, label: g.label, ratePercent: g.ratePercent.toString() }))}
       isOwner={isOwner}
       search={search}
+      adjustments={await listMetalAdjustments(isOwner)}
     />
   );
 }

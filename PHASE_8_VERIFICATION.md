@@ -14,7 +14,9 @@ R1 nor R2 has been posted to production.**
 | Area | Files |
 |---|---|
 | Schema | `Correction`, `CorrectionImpact`, `MetalRevaluation`, `CorrectionBatch` + 7 enums; `MetalStockMovement.voucherId` and `.idempotencyKey`; `Correction.reversedByCorrectionId`; `VoucherType.OPENING_STOCK` and `.CORRECTION`; `CorrectionState.REVERSED`; `MetalStockMovementType.SCRAP_ADJUSTMENT_IN/OUT` |
-| Migrations | `20260921090000_phase8_correction_framework`, `20260921120000_phase8_correction_batch`, `20260921150000_phase8_adjustments_and_reversal` |
+| Migrations | `20260921090000_phase8_correction_framework`, `20260921120000_phase8_correction_batch`, `20260921150000_phase8_adjustments_and_reversal`, `20260922090000_phase8_transfer_pair` |
+| Correction UI | `src/components/corrections/CorrectionWorkbench.tsx` (impact preview, post, approve, reject), adjustment history with reversal in `MetalStockTab.tsx`, `src/lib/jewellery/adjustmentHistory.ts` |
+| Operations | `scripts/reverseCorrectionBatch.ts` (Owner batch rollback, dry run by default) |
 | Adjustments | `src/lib/jewellery/posting.ts` (`adjustMetalStock`, `reverseMetalStockAdjustment`), `src/app/actions/metal.ts`, `MetalStockTab.tsx`, `validation/jewellery.ts`, `prisma/phase8Masters.ts`, `scripts/seedPhase8Masters.ts` |
 | Replay engine | `src/lib/corrections/metalReplay.ts` (pure; no I/O) |
 | Correction engine | `src/lib/corrections/engine.ts`, `types.ts`, `verify.ts` |
@@ -84,9 +86,9 @@ load, or outputs whose fine weight does not match the consumed fine weight.
 
 | Gate | Result |
 |---|---|
-| Vitest | **840 passed / 840**, 63 files (was 762 at `6cb6c07`) |
-| New tests | 78 — 16 replay, 32 real-database flow, batch and rollback, 16 action/permission, 6 history view, 8 adjustment/reversal |
-| Prisma | schema valid; all three migrations applied to the test database; status clean at 16 |
+| Vitest | **843 passed / 843**, 63 files (was 762 at `6cb6c07`) |
+| New tests | 81 — 16 replay, 33 real-database flow, batch and rollback, 16 action/permission, 6 history view, 10 adjustment/reversal |
+| Prisma | schema valid; all four migrations applied to the test database; status clean at 17 |
 | TypeScript | `tsc --noEmit` clean |
 | ESLint | clean, 0 errors 0 warnings |
 | Production build | succeeds; `/corrections` routed |
@@ -205,6 +207,97 @@ batch.
 
 ---
 
+## Final acceptance on `zynoraluxe_phase7_test`
+
+### 1. Migration audit — additive only
+
+Every statement in the four Phase 8 migrations, counted:
+
+| Statement | Count |
+|---|---:|
+| `CREATE TYPE` | 6 |
+| `CREATE TABLE` | 4 |
+| `CREATE INDEX` / `CREATE UNIQUE INDEX` | 16 |
+| `ALTER TYPE … ADD VALUE` | 6 |
+| `ALTER TABLE … ADD COLUMN` (all nullable) | 4 |
+| `ALTER TABLE … ADD CONSTRAINT … FOREIGN KEY` | 13 |
+| **`DROP` / `DELETE` / `TRUNCATE` / `UPDATE` / `RENAME` / `SET NOT NULL`** | **0** |
+
+There is **no DML at all**, so no Phase 1–7 row can be read, changed or removed
+by these migrations. Exactly one pre-existing table is touched,
+`metal_stock_movements`, and only to gain three nullable columns
+(`voucherId`, `idempotencyKey`, `transferPairId`). Every `NOT NULL` in the SQL
+is inside a `CREATE TABLE` for a new table.
+
+### 2. Browser acceptance — Chromium, Owner and Staff, desktop and mobile
+
+Installed Chrome driven against the app running on the isolated test database.
+**32 steps, all passing, with 0 console errors, 0 page errors, 0 failed
+requests, 0 CSP violations, 0 HTTP 5xx and no sideways scrolling on a 390px
+screen.**
+
+Owner (20 steps): the corrections page and workbench render; the R1 preview
+shows Dr 1300 / Cr 3000 at ₹1,60,000 **and writes nothing**; R1 posts as batch
+step 1 leaving the batch `OPEN`; a **double submit** of R2 saves one correction
+and one voucher; the batch completes with 1300 at ₹3,51,664 and 3000 at
+−₹3,51,664; history shows both steps with their batch and step numbers; a
+**stale preview is refused** at approval after the pool moves, with the draft
+untouched; a **quantity-only IN** takes the carrying average (₹15,984.00 for
+1.000g); an **IN with its own value** shows the implied ₹20,000.0000 per gross
+gram and is **refused until the Owner confirms**, then posts at ₹40,000; an
+**IN against an empty pool** is refused and demands an explicit cost; an **OUT**
+offers no value field at all and posts at the carrying average; **usable→scrap
+and scrap→usable** each post equal value on both legs; an **adjustment reverses**
+at the original's exact weight and value with the original kept; reversing a
+transfer whose scrap has since moved on is **refused**; every voucher balances
+and 1300 equals the stock carrying value.
+
+Staff (12 steps): no Corrections link in the navigation; `/corrections`
+redirects to `/unauthorized` with **no correction data anywhere in the
+payload**; no Opening Stock, Adjustment, preview or post control is offered;
+metal weights are visible but **no ₹ figure appears at all**; ordinary
+accounting work still reachable; the same restrictions hold on mobile.
+
+Rollback (in the same run): `scripts/reverseCorrectionBatch.ts` reverses both
+steps, the ledger gives back exactly ₹3,51,664 on 1300 and 3000, the Owner sees
+**both corrections marked Reversed** each linked to its audited reversing
+correction, both remain in history, and all 10 vouchers still balance.
+
+### 3. Three defects found by this acceptance run, and fixed
+
+| # | Found by | Defect | Fix |
+|---|---|---|---|
+| 1 | Browser: a quantity-only IN came out at the **old** rate | `getMetalStockBalanceInTx` valued a pool from movements alone, ignoring posted revaluations — so a correction moved the ledger and the reports but **not the rate the next issue or adjustment would use**, recreating the very defect the phase exists to fix | pool value is now movements **plus** posted revaluations, in the posting engine and in the stock report; a database test asserts the next adjustment uses ₹15,918.4334 |
+| 2 | Reconciliation: 1310 disagreed with scrap stock | reversing a pool transfer undid only its **usable** leg, leaving the scrap pool holding value the usable pool had already taken back | both legs now share a `transferPairId`, are created together and are **reversed together**, cancelling their shared voucher once |
+| 3 | Reconciliation: a negative scrap pool | a reversal could drive a pool negative when the metal had since been moved on | a reversal that would leave either pool below zero is refused, naming the weight it would go to |
+
+### 4. Re-run gates
+
+| Gate | Result |
+|---|---|
+| Vitest | 843 passed / 843, 63 files |
+| Prisma validate | schema valid |
+| Migration status | 17 applied, none failed or rolled back |
+| TypeScript | `tsc --noEmit` clean |
+| ESLint | clean, 0 errors 0 warnings |
+| Production build | compiles; `/corrections` routed |
+| Reconciliation | 7/7 — every voucher debit = credit, the whole ledger nets to zero, 1300 and 1310 equal their stock carrying values, no negative pool, every reversed correction links to what reversed it, **no corrected original was edited** |
+| Secret scans | 0 matches in tracked source, 0 in `.next/static`, no `.env` change, no test credential or database name in shipped code |
+
+The reconciliation names the ₹1,60,000 of opening stock still off the ledger
+rather than hiding it: that is the pre-Phase-8 defect itself, and closing it is
+exactly what R1 does.
+
+### 5. A deliberate limitation
+
+The corrections UI is **Owner-only**. The only entity a correction planner
+exists for today is Opening Metal Stock, whose whole subject is a cost figure,
+and Phase 7 established that Staff never see cost. Staff can therefore prepare
+a draft through the action layer (proven by test) but have no screen to do it
+from. The per-module Staff surface for non-cost entities belongs to 8E.
+
+---
+
 ## Production execution plan for R1 and R2 — NOT YET RUN
 
 Figures are exactly those approved in `PHASE_8_REVALUATION_PREVIEW.md`. R1 and
@@ -223,7 +316,7 @@ Read-only, saved to a timestamped evidence folder outside the repo:
 
 ### Step 2 — deploy the additive migrations, the tested commit and the masters
 
-Push the accepted commit to `main`; Vercel builds Production. Apply all three
+Push the accepted commit to `main`; Vercel builds Production. Apply all four
 Phase 8 migrations with `prisma migrate deploy` (never `migrate dev`, never
 `migrate reset`), then run `npm run db:seed-phase8-masters` to create accounts
 4200 and 5500. That seed creates only those two accounts and never touches the
@@ -232,7 +325,7 @@ Owner password — unlike `db:seed`, which must not be run on production.
 ### Step 3 — verify the live commit and migration status
 
 Confirm the Vercel Production deployment is the accepted commit and that
-`migrate status` reports **16 migrations** applied with none failed or rolled
+`migrate status` reports **17 migrations** applied with none failed or rolled
 back, and that accounts 4200 and 5500 exist.
 
 ### Step 4 — preview R1 and R2 again against unchanged preconditions
@@ -248,13 +341,17 @@ Any difference stops the run.
 
 ### Step 5 — post R1 and R2 once each
 
-| Step | Idempotency key | Batch |
-|---|---|---|
-| R1 (`newCostValue` omitted) | `prod-opening-r1-2026-09-21` | `PROD-OPENING-2026-09-21` step 1 of 2 |
-| R2 (`newCostValue = 351664`) | `prod-opening-r2-2026-09-21` | same batch, step 2 of 2 |
+Posted from **Corrections → Correct an Opening Stock entry**, as the Owner,
+after reading the impact preview on screen:
 
-Each is one transaction. Re-running either with its key returns the existing
-correction instead of posting again.
+| Step | Correction | Batch fields | Reason |
+|---|---|---|---|
+| R1 | "Post to the ledger at the saved value (R1)" | code `PROD-OPENING-2026-09-21`, step 1, steps in batch 2 | "Opening metal stock was never posted to the ledger (Phase 8 defect D-2)." |
+| R2 | "Correct the value (R2)", corrected total **351664** | same code, step 2, steps in batch 2 | "Opening gold was valued at ₹7,279.68 per fine gram instead of the actual ₹16,000." |
+
+Each is one transaction, carrying the idempotency key its form generates, so a
+double click or a retry saves it once — proven in the browser run. Posting is
+refused if the step is already taken.
 
 ### Step 6 — verify the accounts against stock values
 
@@ -287,7 +384,9 @@ numbers, so the undo path is known-good before the session closes.
   written. Re-run after fixing the cause.
 - **R1 posted, R2 not:** the books are already better off (1300 is no longer
   negative) and the batch simply stays `OPEN`. Continue or stop; no undo needed.
-- **Both posted and the Owner wants them undone:** run `reverseCorrectionBatch`.
+- **Both posted and the Owner wants them undone:** run
+  `npx tsx scripts/reverseCorrectionBatch.ts PROD-OPENING-2026-09-21 "<reason>"`
+  to see the plan, then again with `--confirm` to apply it.
   It reverses each step newest-first, posting an audited reversing correction
   and a REVERSAL voucher for each, and marks both originals `REVERSED` with a
   link to what reversed them. This is exercised as a test against a fixture

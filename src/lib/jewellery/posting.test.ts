@@ -536,6 +536,83 @@ describe("reverseMetalStockAdjustment", () => {
     ).rejects.toThrow(/already been reversed/);
   });
 
+  it("reverses BOTH legs of a pool transfer, so neither pool keeps value the other gave back", async () => {
+    const fixture = createFakeJewelleryTx();
+    const purity = seedGold22k(fixture);
+    await postOpeningMetalStock(fixture.tx as never, {
+      metalType: "GOLD",
+      purityId: purity.id as string,
+      grossWeight: 10,
+      costValue: 50000,
+      ...FY,
+      createdByUserId: "owner-1",
+    });
+    const transfer = await adjustMetalStock(fixture.tx as never, {
+      metalType: "GOLD",
+      purityId: purity.id as string,
+      mode: "USABLE_TO_SCRAP",
+      grossWeight: 4,
+      reason: "Bent stock moved to the scrap pool",
+      ...FY,
+      createdByUserId: "owner-1",
+    });
+
+    await reverseMetalStockAdjustment(fixture.tx as never, {
+      movementId: transfer.id as string,
+      reason: "The transfer was a mistake",
+      ...FY,
+      createdByUserId: "owner-1",
+    });
+
+    const usable = await getMetalStockBalanceInTx(fixture.tx as never, "GOLD", purity.id as string);
+    const scrap = await getScrapMetalBalanceInTx(fixture.tx as never, "GOLD", purity.id as string);
+    expect(usable.grossWeight.toFixed(3)).toBe("10.000");
+    expect(usable.costValue.toFixed(2)).toBe("50000.00");
+    expect(scrap.grossWeight.toFixed(3)).toBe("0.000");
+    expect(scrap.costValue.toFixed(2)).toBe("0.00");
+  });
+
+  it("refuses a reversal that would drive a pool negative", async () => {
+    const fixture = createFakeJewelleryTx();
+    const purity = seedGold22k(fixture);
+    await postOpeningMetalStock(fixture.tx as never, {
+      metalType: "GOLD",
+      purityId: purity.id as string,
+      grossWeight: 10,
+      costValue: 50000,
+      ...FY,
+      createdByUserId: "owner-1",
+    });
+    const transfer = await adjustMetalStock(fixture.tx as never, {
+      metalType: "GOLD",
+      purityId: purity.id as string,
+      mode: "USABLE_TO_SCRAP",
+      grossWeight: 4,
+      reason: "Bent stock moved to the scrap pool",
+      ...FY,
+      createdByUserId: "owner-1",
+    });
+    // Part of that scrap has since gone back into usable stock.
+    await adjustMetalStock(fixture.tx as never, {
+      metalType: "GOLD",
+      purityId: purity.id as string,
+      mode: "SCRAP_TO_USABLE",
+      grossWeight: 3,
+      reason: "Recovered from scrap",
+      ...FY,
+      createdByUserId: "owner-1",
+    });
+
+    await expect(
+      reverseMetalStockAdjustment(fixture.tx as never, {
+        movementId: transfer.id as string,
+        reason: "Trying to undo a transfer whose scrap has moved on",
+        ...FY,
+        createdByUserId: "owner-1",
+      })
+    ).rejects.toThrow(/already been moved on/);
+  });
+
   it("refuses to reverse anything that is not an authorized adjustment", async () => {
     const fixture = createFakeJewelleryTx();
     const purity = seedGold22k(fixture);

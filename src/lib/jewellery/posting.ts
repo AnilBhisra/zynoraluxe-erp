@@ -9,6 +9,8 @@ import type {
   QcStatus,
 } from "@/generated/prisma/enums";
 
+import { randomUUID } from "node:crypto";
+
 import { SYSTEM_ACCOUNT_CODES } from "@/lib/accounting/accounts";
 import { splitGstAmount } from "@/lib/accounting/gst";
 import { Decimal, type DecimalInput, round2, ZERO } from "@/lib/accounting/money";
@@ -65,13 +67,34 @@ export function sumMetalPool(
   return { grossWeight: round3(grossWeight), fineWeight: round3(fineWeight), costValue: round2(costValue) };
 }
 
-/** Usable (issuable) stock of one metal+purity. */
+/**
+ * Phase 8: a pool's VALUE is its movements plus every posted revaluation of
+ * it. Without this, an Owner correction would move the ledger and the reports
+ * but not the rate the next issue or adjustment is costed at — which is the
+ * whole defect this phase exists to fix. Weights are never revalued.
+ */
+export async function postedPoolRevaluation(
+  tx: Tx,
+  metalType: MetalType,
+  purityId: string,
+  target: "USABLE_POOL" | "SCRAP_POOL"
+): Promise<Decimal> {
+  const rows = await tx.metalRevaluation.findMany({
+    where: { correction: { state: "POSTED" }, target, metalType, purityId },
+    select: { deltaCostValue: true },
+  });
+  return round2(rows.reduce((sum, r) => sum.plus(new Decimal(r.deltaCostValue)), ZERO));
+}
+
+/** Usable (issuable) stock of one metal+purity, at its carrying value. */
 export async function getMetalStockBalanceInTx(tx: Tx, metalType: MetalType, purityId: string): Promise<MetalPoolTotals> {
   const movements = await tx.metalStockMovement.findMany({
     where: { metalType, purityId },
     select: { type: true, grossWeight: true, fineWeight: true, costValue: true },
   });
-  return sumMetalPool(movements, "usable");
+  const totals = sumMetalPool(movements, "usable");
+  const revalued = await postedPoolRevaluation(tx, metalType, purityId, "USABLE_POOL");
+  return { ...totals, costValue: round2(totals.costValue.plus(revalued)) };
 }
 
 /** Recoverable scrap of one metal+purity — never issuable (see sumMetalPool). */
@@ -80,7 +103,9 @@ export async function getScrapMetalBalanceInTx(tx: Tx, metalType: MetalType, pur
     where: { metalType, purityId },
     select: { type: true, grossWeight: true, fineWeight: true, costValue: true },
   });
-  return sumMetalPool(movements, "scrap");
+  const totals = sumMetalPool(movements, "scrap");
+  const revalued = await postedPoolRevaluation(tx, metalType, purityId, "SCRAP_POOL");
+  return { ...totals, costValue: round2(totals.costValue.plus(revalued)) };
 }
 
 /** How much fine weight of ONE purity is still outstanding *with the
@@ -569,15 +594,20 @@ export async function adjustMetalStock(
   if (input.mode === "USABLE_TO_SCRAP" || input.mode === "SCRAP_TO_USABLE") {
     const outType = input.mode === "USABLE_TO_SCRAP" ? "ADJUSTMENT_OUT" : "SCRAP_ADJUSTMENT_OUT";
     const inType = input.mode === "USABLE_TO_SCRAP" ? "SCRAP_ADJUSTMENT_IN" : "ADJUSTMENT_IN";
+    // Both legs carry one pair id: they are created together and, crucially,
+    // reversed together — undoing one alone would leave the other pool holding
+    // value the first has already given back.
+    const transferPairId = randomUUID();
     const out = await tx.metalStockMovement.create({
       data: {
         ...common,
         type: outType,
         voucherId: voucher.id,
         idempotencyKey: input.idempotencyKey ?? null,
+        transferPairId,
       },
     });
-    await tx.metalStockMovement.create({ data: { ...common, type: inType } });
+    await tx.metalStockMovement.create({ data: { ...common, type: inType, transferPairId } });
     return out;
   }
 
@@ -621,12 +651,49 @@ export async function reverseMetalStockAdjustment(
   if (!input.reason || input.reason.trim().length < 3) {
     throw new PostingError("Give a short reason for reversing this adjustment.");
   }
-  const existing = await tx.metalStockMovement.findFirst({ where: { reversalOfMovementId: original.id } });
-  if (existing) throw new PostingError("This adjustment has already been reversed.");
+  // A pool transfer is two legs; reversing it means reversing both, and the
+  // voucher they share is cancelled once.
+  const legs = original.transferPairId
+    ? await tx.metalStockMovement.findMany({
+        where: { transferPairId: original.transferPairId },
+        orderBy: { createdAt: "asc" },
+      })
+    : [original];
 
-  if (original.voucherId) {
+  for (const leg of legs) {
+    const already = await tx.metalStockMovement.findFirst({ where: { reversalOfMovementId: leg.id } });
+    if (already) throw new PostingError("This adjustment has already been reversed.");
+  }
+
+  // A reversal must never drive a pool negative: if the metal has since been
+  // moved on, the later movement has to be dealt with first.
+  const usableNow = await getMetalStockBalanceInTx(tx, original.metalType, original.purityId);
+  const scrapNow = await getScrapMetalBalanceInTx(tx, original.metalType, original.purityId);
+  let usableAfter = usableNow.grossWeight;
+  let scrapAfter = scrapNow.grossWeight;
+  for (const leg of legs) {
+    const legOpposite = OPPOSITE[leg.type as keyof typeof OPPOSITE];
+    const weight = round3(leg.grossWeight);
+    if (legOpposite === "ADJUSTMENT_OUT") usableAfter = usableAfter.minus(weight);
+    if (legOpposite === "ADJUSTMENT_IN") usableAfter = usableAfter.plus(weight);
+    if (legOpposite === "SCRAP_ADJUSTMENT_OUT") scrapAfter = scrapAfter.minus(weight);
+    if (legOpposite === "SCRAP_ADJUSTMENT_IN") scrapAfter = scrapAfter.plus(weight);
+  }
+  if (usableAfter.isNegative()) {
+    throw new PostingError(
+      `Reversing this adjustment would leave ${usableNow.grossWeight.toFixed(3)}g of stock at ${usableAfter.toFixed(3)}g. Some of that metal has already been used or moved on — deal with that first.`
+    );
+  }
+  if (scrapAfter.isNegative()) {
+    throw new PostingError(
+      `Reversing this adjustment would leave ${scrapNow.grossWeight.toFixed(3)}g of scrap at ${scrapAfter.toFixed(3)}g. Some of that scrap has already been moved on — deal with that first.`
+    );
+  }
+
+  const voucherId = legs.find((leg) => leg.voucherId)?.voucherId ?? null;
+  if (voucherId) {
     await cancelVoucher(tx, {
-      voucherId: original.voucherId,
+      voucherId,
       cancelledByUserId: input.createdByUserId,
       cancellationReason: input.reason.trim(),
       fyStartMonth: input.fyStartMonth,
@@ -634,20 +701,28 @@ export async function reverseMetalStockAdjustment(
     });
   }
 
-  return tx.metalStockMovement.create({
-    data: {
-      type: opposite,
-      metalType: original.metalType,
-      purityId: original.purityId,
-      // Exactly the original figures, so the pair nets to zero in both pools.
-      grossWeight: round3(original.grossWeight).toFixed(3),
-      fineWeight: round3(original.fineWeight).toFixed(3),
-      costValue: round2(original.costValue).toFixed(2),
-      sourceDocument: `Reversal of ${original.sourceDocument} — ${input.reason.trim()}`,
-      reversalOfMovementId: original.id,
-      createdByUserId: input.createdByUserId,
-    },
-  });
+  let first: Awaited<ReturnType<typeof tx.metalStockMovement.create>> | null = null;
+  for (const leg of legs) {
+    const legOpposite = OPPOSITE[leg.type as keyof typeof OPPOSITE];
+    if (!legOpposite) throw new PostingError("Only an authorized stock adjustment can be reversed this way.");
+    const created = await tx.metalStockMovement.create({
+      data: {
+        type: legOpposite,
+        metalType: leg.metalType,
+        purityId: leg.purityId,
+        // Exactly the original figures, so the pair nets to zero in both pools.
+        grossWeight: round3(leg.grossWeight).toFixed(3),
+        fineWeight: round3(leg.fineWeight).toFixed(3),
+        costValue: round2(leg.costValue).toFixed(2),
+        sourceDocument: `Reversal of ${leg.sourceDocument} — ${input.reason.trim()}`,
+        reversalOfMovementId: leg.id,
+        transferPairId: leg.transferPairId,
+        createdByUserId: input.createdByUserId,
+      },
+    });
+    if (!first) first = created;
+  }
+  return first!;
 }
 
 // ---------------------------------------------------------------------------

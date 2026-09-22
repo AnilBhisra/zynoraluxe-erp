@@ -3,7 +3,11 @@
 import { useRouter } from "next/navigation";
 import { useActionState, useEffect, useState } from "react";
 
-import { createOpeningMetalStock, adjustMetalStockAction } from "@/app/actions/metal";
+import {
+  createOpeningMetalStock,
+  adjustMetalStockAction,
+  reverseMetalStockAdjustmentAction,
+} from "@/app/actions/metal";
 import { MetalPurchaseForm } from "@/components/jewellery/MetalPurchaseForm";
 import type { MetalPurityOption } from "@/components/jewellery/ReceiveFinishedForm";
 import { Button } from "@/components/ui/Button";
@@ -13,6 +17,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import type { PartyOption } from "@/components/accounting/PartySelect";
 import { CsvDownloadButton } from "@/components/accounting/CsvDownloadButton";
 import { metalTypeLabel } from "@/lib/jewellery/types";
+import type { MetalAdjustmentRow } from "@/lib/jewellery/adjustmentHistory";
 
 /** Usable stock (issuable, valued in Metal Inventory) and recoverable scrap
  * (never issuable, valued in Scrap Metal Inventory) per metal + purity.
@@ -111,6 +116,7 @@ function MetalAdjustmentForm({ purities, onDone }: { purities: MetalPurityOption
   const [weight, setWeight] = useState("");
   const [value, setValue] = useState("");
   const [idempotencyKey] = useState(() => crypto.randomUUID());
+  const [confirmed, setConfirmed] = useState(false);
   const purityOptions = purities.filter((p) => p.metalType === metalType);
   // Shown before saving so an entered value is never a surprise: quantity,
   // total and the rate it implies.
@@ -218,12 +224,104 @@ function MetalAdjustmentForm({ purities, onDone }: { purities: MetalPurityOption
           : "Metal leaving a pool always moves at that pool's carrying average — no value is entered. / જે ભાવે સ્ટોક છે એ જ ભાવે જશે."}
       </p>
       <input type="hidden" name="idempotencyKey" value={idempotencyKey} />
-      <input type="hidden" name="confirmValue" value={mode === "IN" && impliedRate ? "true" : "false"} />
+      {mode === "IN" && impliedRate ? (
+        <label className="flex items-start gap-2 text-sm text-zinc-800 dark:text-zinc-200">
+          <input
+            type="checkbox"
+            name="confirmValue"
+            value="true"
+            data-testid="confirm-adjustment-value"
+            checked={confirmed}
+            onChange={(e) => setConfirmed(e.target.checked)}
+            className="mt-1"
+          />
+          <span>
+            I confirm {weight}g at ₹{value} — ₹{impliedRate} per gross gram. / મેં ખાતરી કરી.
+          </span>
+        </label>
+      ) : (
+        <input type="hidden" name="confirmValue" value="false" />
+      )}
       <Field label="Reason (required)" name="reason" required />
       <Button type="submit" variant="danger" size="md" disabled={pending} className="self-start">
         {pending ? "Saving…" : "Save adjustment"}
       </Button>
     </form>
+  );
+}
+
+/**
+ * Owner-authorized adjustments, with the only way back: a posted adjustment
+ * is never edited or deleted, so each row offers a reversal that reuses its
+ * exact weight and value.
+ */
+function MetalAdjustmentHistory({ adjustments }: { adjustments: MetalAdjustmentRow[] }) {
+  const [state, formAction, pending] = useActionState(reverseMetalStockAdjustmentAction, undefined);
+  const [reasonById, setReasonById] = useState<Record<string, string>>({});
+
+  if (adjustments.length === 0) {
+    return (
+      <p data-testid="adjustment-history-empty" className="text-sm text-zinc-600 dark:text-zinc-400">
+        No authorized adjustments yet.
+      </p>
+    );
+  }
+
+  const TYPE_LABELS: Record<string, string> = {
+    ADJUSTMENT_IN: "Added to stock",
+    ADJUSTMENT_OUT: "Removed from stock",
+    SCRAP_ADJUSTMENT_IN: "Into scrap",
+    SCRAP_ADJUSTMENT_OUT: "Out of scrap",
+  };
+
+  return (
+    <div data-testid="adjustment-history" className="flex flex-col gap-3">
+      {state?.error ? <Alert tone="error">{state.error}</Alert> : null}
+      {state?.success ? <Alert tone="success">Adjustment reversed.</Alert> : null}
+      {adjustments.map((row) => (
+        <div
+          key={row.id}
+          data-testid={`adjustment-${row.id}`}
+          className="rounded-xl border border-[var(--border)] p-3 text-sm"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-medium text-zinc-900 dark:text-zinc-100">
+              {TYPE_LABELS[row.type] ?? row.type} · {row.purityDisplayName} · {row.grossWeight}g
+            </span>
+            <span className="tabular-nums text-zinc-700 dark:text-zinc-300">
+              {row.costValue === null ? "" : `₹${row.costValue}`}
+              {row.voucherNumber ? ` · ${row.voucherNumber}` : ""}
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">{row.sourceDocument}</p>
+          {row.reversedByMovementId ? (
+            <p data-testid={`adjustment-reversed-${row.id}`} className="mt-2 text-xs font-medium text-amber-700 dark:text-amber-300">
+              Reversed — the original entry is kept for the audit trail.
+            </p>
+          ) : row.isReversal ? null : (
+            <form action={formAction} className="mt-2 flex flex-wrap items-end gap-2">
+              <input type="hidden" name="movementId" value={row.id} />
+              <input type="hidden" name="reason" value={reasonById[row.id] ?? ""} />
+              <Field
+                label="Reverse because"
+                name={`reverseReason-${row.id}`}
+                value={reasonById[row.id] ?? ""}
+                onChange={(e) => setReasonById((prev) => ({ ...prev, [row.id]: e.target.value }))}
+              />
+              <Button
+                type="submit"
+                variant="ghost"
+                size="md"
+                disabled={pending}
+                data-testid={`reverse-adjustment-${row.id}`}
+              >
+                Reverse
+              </Button>
+            </form>
+          )}
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -236,6 +334,7 @@ export function MetalStockTab({
   gstRates,
   isOwner,
   search,
+  adjustments,
 }: {
   buckets: SerializedMetalStockBucket[];
   purchases: SerializedMetalPurchase[];
@@ -245,6 +344,7 @@ export function MetalStockTab({
   gstRates: { id: string; label: string; ratePercent: string }[];
   isOwner: boolean;
   search: string;
+  adjustments: MetalAdjustmentRow[];
 }) {
   const router = useRouter();
   const [showPurchaseForm, setShowPurchaseForm] = useState(false);
@@ -373,6 +473,12 @@ export function MetalStockTab({
       ) : null}
       {isOwner && showOpeningForm ? <OpeningMetalStockForm purities={purities} onDone={handleSaved} /> : null}
       {isOwner && showAdjustForm ? <MetalAdjustmentForm purities={purities} onDone={handleSaved} /> : null}
+      {isOwner && showAdjustForm ? (
+        <div className="mt-4">
+          <h3 className="mb-2 text-sm font-semibold text-zinc-900 dark:text-zinc-50">Adjustment history</h3>
+          <MetalAdjustmentHistory adjustments={adjustments} />
+        </div>
+      ) : null}
 
       <form method="GET" action="/jewellery-jobs" className="flex flex-wrap gap-2">
         <input type="hidden" name="tab" value="metal" />

@@ -10,7 +10,12 @@ import "dotenv/config";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { prisma } from "@/lib/db/prisma";
-import { postOpeningMetalStock } from "@/lib/jewellery/posting";
+import {
+  adjustMetalStock,
+  getMetalStockBalanceInTx,
+  postOpeningMetalStock,
+  reverseMetalStockAdjustment,
+} from "@/lib/jewellery/posting";
 import {
   approveCorrectionDraft,
   ensureCorrectionBatch,
@@ -723,6 +728,40 @@ describe("R1 and R2 as one cumulative production correction batch", () => {
     expect(after.finishedPieces[fj87Id]).toBe(AFTER.fj87Metal);
   }, 60_000);
 
+  it("makes the NEXT issue or adjustment use the corrected average, not the old one", async () => {
+    // The whole point of the phase: a correction that moves the ledger but
+    // leaves the posting engine costing at the old basis would recreate the
+    // defect on the very next movement.
+    const pool = await getMetalStockBalanceInTx(prisma, "GOLD", purity24kId);
+    expect(pool.costValue.toFixed(2)).toBe(AFTER.pool);
+    expect(pool.costValue.dividedBy(pool.grossWeight).toFixed(4)).toBe("15918.4334");
+
+    const beforeAdjustment = await prisma.metalStockMovement.count();
+    const adjustment = await prisma.$transaction((tx) =>
+      adjustMetalStock(tx, {
+        metalType: "GOLD",
+        purityId: purity24kId,
+        mode: "IN",
+        grossWeight: "1.000",
+        reason: "Quantity-only count correction after the revaluation",
+        ...FY,
+        createdByUserId: ownerId,
+      })
+    );
+    expect(adjustment.costValue.toFixed(2)).toBe("15918.43");
+    expect(await prisma.metalStockMovement.count()).toBe(beforeAdjustment + 1);
+
+    // Undo it so the later rollback assertions start from the posted state.
+    await prisma.$transaction((tx) =>
+      reverseMetalStockAdjustment(tx, {
+        movementId: adjustment.id,
+        reason: "Undoing the probe adjustment",
+        ...FY,
+        createdByUserId: ownerId,
+      })
+    );
+  }, 60_000);
+
   it("keeps BOTH corrections posted and active — neither replaces the other", async () => {
     const [r1, r2] = await Promise.all([
       prisma.correction.findUniqueOrThrow({ where: { id: r1Id } }),
@@ -922,7 +961,11 @@ describe("R1 and R2 as one cumulative production correction batch", () => {
 
     // Each reversal posted a real voucher of its own, and the original
     // correction vouchers are marked CANCELLED rather than removed.
-    const reversalVouchers = await prisma.voucher.findMany({ where: { voucherType: "REVERSAL" } });
+    // Only the two that reversed the batch's own correction vouchers; the
+    // adjustment probe earlier in this suite reversed one of its own.
+    const reversalVouchers = await prisma.voucher.findMany({
+      where: { voucherType: "REVERSAL", reversalOfVoucher: { is: { voucherType: "CORRECTION" } } },
+    });
     expect(reversalVouchers).toHaveLength(2);
     const cancelled = await prisma.voucher.findMany({
       where: { voucherType: "CORRECTION", status: "CANCELLED" },

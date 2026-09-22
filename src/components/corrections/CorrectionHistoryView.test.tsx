@@ -1,5 +1,15 @@
 import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// The approval controls import Server Actions, whose module creates the real
+// Prisma client at import time (no DATABASE_URL under Vitest) — mock them out.
+vi.mock("@/app/actions/corrections", () => ({
+  approveCorrection: vi.fn(),
+  postOpeningStockCorrection: vi.fn(),
+  previewOpeningStockCorrection: vi.fn(),
+  rejectCorrection: vi.fn(),
+  saveOpeningStockCorrectionDraft: vi.fn(),
+}));
 
 import { CorrectionHistoryView } from "./CorrectionHistoryView";
 import type { CorrectionHistoryRow } from "@/lib/corrections/history";

@@ -93,3 +93,43 @@ export async function listCorrections(limit = 100): Promise<CorrectionHistoryRow
     })),
   }));
 }
+
+export type OpeningStockEntry = {
+  id: string;
+  label: string;
+  purityDisplayName: string;
+  grossWeight: string;
+  fineWeight: string;
+  costValue: string;
+  postedToLedger: boolean;
+  correctionCount: number;
+};
+
+/**
+ * Opening Metal Stock entries the Owner can correct, newest first. Owner-only:
+ * every row carries a cost figure.
+ */
+export async function listOpeningStockEntries(): Promise<OpeningStockEntry[]> {
+  const rows = await prisma.metalStockMovement.findMany({
+    where: { type: "OPENING_IN" },
+    orderBy: { createdAt: "desc" },
+    include: { purity: { select: { displayName: true } } },
+  });
+  const corrections = await prisma.correction.groupBy({
+    by: ["entityId"],
+    where: { entityType: "METAL_OPENING_STOCK", state: "POSTED" },
+    _count: { entityId: true },
+  });
+  const countById = new Map(corrections.map((c) => [c.entityId, c._count.entityId]));
+
+  return rows.map((m) => ({
+    id: m.id,
+    label: `${m.purity.displayName} ${m.grossWeight.toFixed(3)}g — ${m.sourceDocument}`,
+    purityDisplayName: m.purity.displayName,
+    grossWeight: m.grossWeight.toFixed(3),
+    fineWeight: m.fineWeight.toFixed(3),
+    costValue: m.costValue.toFixed(2),
+    postedToLedger: m.voucherId !== null,
+    correctionCount: countById.get(m.id) ?? 0,
+  }));
+}

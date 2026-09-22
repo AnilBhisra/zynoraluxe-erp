@@ -1,3 +1,4 @@
+import { CorrectionApproval } from "@/components/corrections/CorrectionWorkbench";
 import { EmptyState } from "@/components/ui/EmptyState";
 import type { CorrectionHistoryRow } from "@/lib/corrections/history";
 
@@ -12,6 +13,7 @@ const STATE_LABELS: Record<string, string> = {
   AWAITING_APPROVAL: "Waiting for Owner",
   POSTED: "Posted",
   REJECTED: "Closed",
+  REVERSED: "Reversed",
 };
 
 const ENTITY_LABELS: Record<string, string> = {
@@ -39,6 +41,7 @@ function formatDate(iso: string | null) {
 function stateTone(state: string) {
   if (state === "POSTED") return "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-200";
   if (state === "AWAITING_APPROVAL") return "bg-amber-100 text-amber-900 dark:bg-amber-900/50 dark:text-amber-100";
+  if (state === "REVERSED") return "bg-rose-100 text-rose-900 dark:bg-rose-900/50 dark:text-rose-100";
   return "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300";
 }
 
@@ -118,6 +121,8 @@ export function CorrectionHistoryView({ rows }: { rows: CorrectionHistoryRow[] }
             {row.approvedBy ? ` · Approved by ${row.approvedBy}` : " · not yet approved"}
             {row.rejectionReason ? ` · ${row.rejectionReason}` : ""}
           </p>
+
+          {row.state === "AWAITING_APPROVAL" ? <CorrectionApproval correctionId={row.id} /> : null}
 
           {row.impacts.length > 0 ? (
             <div className="mt-4 overflow-x-auto">
