@@ -2,6 +2,7 @@ import "dotenv/config";
 import { PrismaPg } from "@prisma/adapter-pg";
 
 import { PrismaClient } from "../src/generated/prisma/client";
+import { CORRECTION_TRANSACTION_OPTIONS } from "../src/lib/corrections/types";
 
 /**
  * The correction engine reaches the posting engine, which starts with
@@ -70,15 +71,17 @@ async function main() {
     const owner = await prisma.user.findFirstOrThrow({ where: { role: "OWNER" }, orderBy: { createdAt: "asc" } });
     const settings = await prisma.companySettings.findUnique({ where: { id: "default" } });
 
-    const reversals = await prisma.$transaction((tx) =>
-      reverseCorrectionBatch(tx, {
-        batchId: batch.id,
-        reason,
-        approverRole: "OWNER",
-        approvedByUserId: owner.id,
-        fyStartMonth: settings?.financialYearStartMonth ?? 4,
-        fyStartDay: settings?.financialYearStartDay ?? 1,
-      })
+    const reversals = await prisma.$transaction(
+      (tx) =>
+        reverseCorrectionBatch(tx, {
+          batchId: batch.id,
+          reason,
+          approverRole: "OWNER",
+          approvedByUserId: owner.id,
+          fyStartMonth: settings?.financialYearStartMonth ?? 4,
+          fyStartDay: settings?.financialYearStartDay ?? 1,
+        }),
+      CORRECTION_TRANSACTION_OPTIONS
     );
     console.log(`\nreversed ${reversals.length} step(s): ${reversals.map((r) => r.correctionCode).join(", ")}`);
 

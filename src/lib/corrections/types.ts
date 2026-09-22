@@ -89,3 +89,22 @@ export function fingerprintPlan(plan: CorrectionPlan): PlanFingerprint {
       .sort(),
   };
 }
+
+/**
+ * Correction transactions read the whole affected ledger and then write a
+ * voucher, its journal lines, the correction, its impacts and a revaluation
+ * row per affected location — around twenty round trips. Against a remote
+ * database that comfortably exceeds Prisma's 5-second interactive-transaction
+ * default, which is what stopped the production revaluation on 2026-09-22
+ * (the same work completes in milliseconds against localhost, so no local
+ * test ever came close to the limit).
+ *
+ * One shared constant so the two values cannot drift between the posting,
+ * approval, rejection and reversal paths.
+ */
+export const CORRECTION_TRANSACTION_OPTIONS = {
+  /** How long the transaction itself may run. */
+  timeout: 30_000,
+  /** How long to wait for a connection before the transaction starts. */
+  maxWait: 15_000,
+} as const;

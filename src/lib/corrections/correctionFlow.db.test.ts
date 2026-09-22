@@ -29,7 +29,7 @@ import {
   planOpeningStockLedgerBackfill,
   planOpeningStockRevaluation,
 } from "./openingStockCorrection";
-import { CorrectionError } from "./types";
+import { CORRECTION_TRANSACTION_OPTIONS, CorrectionError } from "./types";
 import {
   carryingValues,
   planCorrectionBatchRollback,
@@ -762,6 +762,88 @@ describe("R1 and R2 as one cumulative production correction batch", () => {
     );
   }, 60_000);
 
+  it("completes a correction transaction that runs past Prisma's old 5-second default", async () => {
+    // The production revaluation was rolled back because the posting
+    // transaction exceeded Prisma's interactive default against a remote
+    // database. With the shared options it survives a deliberately slow run.
+    const before = await prisma.correction.count();
+    const started = Date.now();
+    const posted = await prisma.$transaction(async (tx) => {
+      const plan = await planOpeningStockRevaluation(tx, {
+        movementId: batchMovementId,
+        newCostValue: "351665.00",
+        reason: "Deliberately slow transaction, to prove the timeout is raised.",
+      });
+      // Longer than the 5,000 ms default, comfortably inside the new 30,000.
+      await new Promise((resolve) => setTimeout(resolve, 6_000));
+      return postCorrection(tx, {
+        plan,
+        preparedByUserId: ownerId,
+        approvedByUserId: ownerId,
+        approverRole: "OWNER",
+        idempotencyKey: "test-slow-transaction",
+        ...FY,
+      });
+    }, CORRECTION_TRANSACTION_OPTIONS);
+
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeGreaterThan(5_000);
+    expect(posted.state).toBe("POSTED");
+    expect(await prisma.correction.count()).toBe(before + 1);
+
+    // Undo it so the batch assertions below start from the posted state.
+    await prisma.$transaction(
+      (tx) =>
+        reverseCorrection(tx, {
+          correctionId: posted.id,
+          reason: "Undoing the slow-transaction probe",
+          approverRole: "OWNER",
+          approvedByUserId: ownerId,
+          ...FY,
+        }),
+      CORRECTION_TRANSACTION_OPTIONS
+    );
+  }, 90_000);
+
+  it("leaves nothing behind when a correction transaction fails part-way", async () => {
+    const before = {
+      corrections: await prisma.correction.count(),
+      vouchers: await prisma.voucher.count(),
+      journalEntries: await prisma.journalEntry.count(),
+      impacts: await prisma.correctionImpact.count(),
+      revaluations: await prisma.metalRevaluation.count(),
+      sequence: (await prisma.voucherSequence.findFirst({ where: { voucherType: "CORRECTION" } }))?.lastNumber ?? 0,
+    };
+
+    await expect(
+      prisma.$transaction(async (tx) => {
+        const plan = await planOpeningStockRevaluation(tx, {
+          movementId: batchMovementId,
+          newCostValue: "360000.00",
+          reason: "This transaction is about to fail on purpose.",
+        });
+        await postCorrection(tx, {
+          plan,
+          preparedByUserId: ownerId,
+          approvedByUserId: ownerId,
+          approverRole: "OWNER",
+          ...FY,
+        });
+        // Everything above is written; this abandons all of it.
+        throw new Error("deliberate failure after the writes");
+      }, CORRECTION_TRANSACTION_OPTIONS)
+    ).rejects.toThrow(/deliberate failure/);
+
+    expect(await prisma.correction.count()).toBe(before.corrections);
+    expect(await prisma.voucher.count()).toBe(before.vouchers);
+    expect(await prisma.journalEntry.count()).toBe(before.journalEntries);
+    expect(await prisma.correctionImpact.count()).toBe(before.impacts);
+    expect(await prisma.metalRevaluation.count()).toBe(before.revaluations);
+    // Not even the voucher number is consumed.
+    const sequence = await prisma.voucherSequence.findFirst({ where: { voucherType: "CORRECTION" } });
+    expect(sequence?.lastNumber ?? 0).toBe(before.sequence);
+  }, 60_000);
+
   it("keeps BOTH corrections posted and active — neither replaces the other", async () => {
     const [r1, r2] = await Promise.all([
       prisma.correction.findUniqueOrThrow({ where: { id: r1Id } }),
@@ -961,16 +1043,27 @@ describe("R1 and R2 as one cumulative production correction batch", () => {
 
     // Each reversal posted a real voucher of its own, and the original
     // correction vouchers are marked CANCELLED rather than removed.
-    // Only the two that reversed the batch's own correction vouchers; the
-    // adjustment probe earlier in this suite reversed one of its own.
-    const reversalVouchers = await prisma.voucher.findMany({
-      where: { voucherType: "REVERSAL", reversalOfVoucher: { is: { voucherType: "CORRECTION" } } },
+    // Scoped to this batch: other probes in this suite reverse corrections of
+    // their own, and those are not what this assertion is about.
+    const batchReversals = await prisma.correction.findMany({
+      where: { mode: "REVERSAL", reverses: { batchId } },
+      include: { correctionVoucher: { select: { voucherNumber: true, voucherType: true } } },
     });
-    expect(reversalVouchers).toHaveLength(2);
-    const cancelled = await prisma.voucher.findMany({
-      where: { voucherType: "CORRECTION", status: "CANCELLED" },
+    expect(batchReversals).toHaveLength(2);
+    for (const reversal of batchReversals) {
+      expect(reversal.correctionVoucher?.voucherType).toBe("REVERSAL");
+    }
+    // Again scoped to this batch: each step's own voucher is CANCELLED, not
+    // removed. Probes elsewhere in this suite cancel vouchers of their own.
+    const stepVouchers = await prisma.voucher.findMany({
+      where: { correction: { batchId } },
+      select: { voucherNumber: true, voucherType: true, status: true },
     });
-    expect(cancelled).toHaveLength(2);
+    expect(stepVouchers).toHaveLength(2);
+    for (const voucher of stepVouchers) {
+      expect(voucher.voucherType).toBe("CORRECTION");
+      expect(voucher.status).toBe("CANCELLED");
+    }
 
     // Nothing about the corrected record ever moved.
     const movement = await prisma.metalStockMovement.findUniqueOrThrow({ where: { id: batchMovementId } });

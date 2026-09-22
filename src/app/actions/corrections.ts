@@ -19,7 +19,44 @@ import {
   planOpeningStockRevaluation,
   replanCorrection,
 } from "@/lib/corrections/openingStockCorrection";
-import { CorrectionError, type CorrectionPlan, type Tx } from "@/lib/corrections/types";
+import {
+  CORRECTION_TRANSACTION_OPTIONS,
+  CorrectionError,
+  type CorrectionPlan,
+  type Tx,
+} from "@/lib/corrections/types";
+import { Prisma } from "@/generated/prisma/client";
+
+/** Prisma's code for "the interactive transaction ran past its timeout". */
+const TRANSACTION_TIMEOUT_CODE = "P2028";
+
+/**
+ * A rolled-back transaction saves nothing, and the Owner needs to be told that
+ * plainly rather than left wondering whether half of it landed.
+ */
+const TIMEOUT_MESSAGE =
+  "This correction took longer than the database allows, so it was rolled back and nothing was saved. Check Correction History before trying again.";
+
+/**
+ * Logs what is needed to diagnose a failure and nothing more: never a
+ * connection string, credential, cookie or request body.
+ */
+function reportCorrectionFailure(
+  error: unknown,
+  context: { operation: string; entityType?: string; batchCode?: string | null; batchStep?: number | null }
+): string | undefined {
+  const prismaCode = error instanceof Prisma.PrismaClientKnownRequestError ? error.code : undefined;
+  console.error("correction action failed", {
+    operation: context.operation,
+    entityType: context.entityType ?? "METAL_OPENING_STOCK",
+    batchCode: context.batchCode ?? null,
+    batchStep: context.batchStep ?? null,
+    errorName: error instanceof Error ? error.name : typeof error,
+    prismaCode: prismaCode ?? null,
+    message: error instanceof Error ? error.message.slice(0, 300) : undefined,
+  });
+  return prismaCode;
+}
 
 export type CorrectionFormState =
   | { error?: string; success?: boolean; code?: string; preview?: SerializedPreview }
@@ -115,7 +152,7 @@ export async function previewOpeningStockCorrection(
     return { success: true, preview: serializePreview(plan) };
   } catch (error) {
     if (error instanceof CorrectionError) return { error: error.message };
-    console.error("previewOpeningStockCorrection failed:", error);
+    reportCorrectionFailure(error, { operation: "previewOpeningStockCorrection" });
     return { error: "Could not build the impact preview. Please try again." };
   }
 }
@@ -138,12 +175,13 @@ export async function saveOpeningStockCorrectionDraft(
     const draft = await prisma.$transaction(async (tx) => {
       const plan = await buildPlan(tx, parsed.data);
       return saveCorrectionDraft(tx, { plan, preparedByUserId: user.id, submitForApproval: true });
-    });
+    }, CORRECTION_TRANSACTION_OPTIONS);
     revalidateCorrections();
     return { success: true, code: draft.correctionCode };
   } catch (error) {
     if (error instanceof CorrectionError) return { error: error.message };
-    console.error("saveOpeningStockCorrectionDraft failed:", error);
+    const code = reportCorrectionFailure(error, { operation: "saveOpeningStockCorrectionDraft" });
+    if (code === TRANSACTION_TIMEOUT_CODE) return { error: TIMEOUT_MESSAGE };
     return { error: "Could not save this correction draft. Please try again." };
   }
 }
@@ -199,7 +237,7 @@ export async function postOpeningStockCorrection(
         idempotencyKey: idempotencyKey || null,
         batch: batch ? { batchId: batch.id, step: batchStep! } : null,
       });
-    });
+    }, CORRECTION_TRANSACTION_OPTIONS);
     revalidateCorrections();
     return { success: true, code: correction.correctionCode };
   } catch (error) {
@@ -208,7 +246,12 @@ export async function postOpeningStockCorrection(
       if (existing) return { success: true, code: existing.correctionCode };
     }
     if (error instanceof CorrectionError) return { error: error.message };
-    console.error("postOpeningStockCorrection failed:", error);
+    const code = reportCorrectionFailure(error, {
+      operation: "postOpeningStockCorrection",
+      batchCode: parsed.data.batchCode ?? null,
+      batchStep: parsed.data.batchStep ?? null,
+    });
+    if (code === TRANSACTION_TIMEOUT_CODE) return { error: TIMEOUT_MESSAGE };
     return { error: "Could not post this correction. Please try again." };
   }
 }
@@ -245,12 +288,13 @@ export async function approveCorrection(
         fyStartDay: fy.fyStartDay,
         idempotencyKey: parsed.data.idempotencyKey || null,
       });
-    });
+    }, CORRECTION_TRANSACTION_OPTIONS);
     revalidateCorrections();
     return { success: true, code: posted.correctionCode };
   } catch (error) {
     if (error instanceof CorrectionError) return { error: error.message };
-    console.error("approveCorrection failed:", error);
+    const code = reportCorrectionFailure(error, { operation: "approveCorrection" });
+    if (code === TRANSACTION_TIMEOUT_CODE) return { error: TIMEOUT_MESSAGE };
     return { error: "Could not approve this correction. Please try again." };
   }
 }
@@ -274,13 +318,15 @@ export async function rejectCorrection(
         approverRole: owner.role,
         approvedByUserId: owner.id,
         reason: reason.trim(),
-      })
+      }),
+      CORRECTION_TRANSACTION_OPTIONS
     );
     revalidateCorrections();
     return { success: true };
   } catch (error) {
     if (error instanceof CorrectionError) return { error: error.message };
-    console.error("rejectCorrection failed:", error);
+    const code = reportCorrectionFailure(error, { operation: "rejectCorrection" });
+    if (code === TRANSACTION_TIMEOUT_CODE) return { error: TIMEOUT_MESSAGE };
     return { error: "Could not reject this correction. Please try again." };
   }
 }
