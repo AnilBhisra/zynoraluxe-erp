@@ -8,7 +8,13 @@ import { round3 } from "@/lib/diamond/allocation";
 import { PostingError } from "@/lib/accounting/posting";
 import { computeCostSheetTotals } from "@/lib/costing/calculations";
 import { toTotalsInput } from "@/lib/costing/reports";
-import { getAuthoritativeInventoryCost } from "@/lib/jewellery/finishedSalesPosting";
+import {
+  CARRYING_COST_UNAVAILABLE_MESSAGE,
+  carryingFinishedPieceCost,
+  carryingFinishedPieceCosts,
+  isUnavailable,
+  type CarryingAmount,
+} from "@/lib/jewellery/carryingCost";
 
 /**
  * Audits Phase 3/4's own posted, allocated figures and reads them as the
@@ -63,7 +69,10 @@ export type EligibleFinishedJewelleryOutput = {
   quantity: number;
   netMetalWeight: Decimal;
   purityDisplayName: string;
-  totalCost: Decimal;
+  /** Current carrying total — what creating a costing from this item would
+   * actually freeze in (see buildActualSourceSnapshot). CARRYING_COST_
+   * UNAVAILABLE_MESSAGE-flagged items cannot be sourced until reconciled. */
+  totalCost: CarryingAmount;
   qcStatus: string;
   receiveDate: Date;
 };
@@ -93,6 +102,23 @@ export async function listEligibleFinishedJewelleryOutputs(
     take: 200,
   });
 
+  // The picker's total is the same current display figure the job/finished-
+  // stock pages show — Actual sourcing itself freezes the metal/diamond/
+  // other/labour lines separately (see buildActualSourceSnapshot), each at
+  // its own current carrying value.
+  const carryingById = await carryingFinishedPieceCosts(
+    prisma,
+    outputs.map((o) => ({
+      id: o.id,
+      jobId: o.jobId,
+      metalCost: new Decimal(o.metalCost),
+      diamondCost: new Decimal(o.diamondCost),
+      otherMaterialCost: new Decimal(o.otherMaterialCost),
+      labourAllocated: new Decimal(o.labourAllocated),
+      totalCost: new Decimal(o.totalCost),
+    }))
+  );
+
   return outputs.map((o) => ({
     id: o.id,
     finishedCode: o.finishedCode,
@@ -105,7 +131,7 @@ export async function listEligibleFinishedJewelleryOutputs(
     quantity: o.quantity,
     netMetalWeight: round3(o.netMetalWeight),
     purityDisplayName: o.purity.displayName,
-    totalCost: round2(o.totalCost),
+    totalCost: carryingById.get(o.id)?.totalCost ?? round2(o.totalCost),
     qcStatus: o.qcStatus,
     receiveDate: o.receipt.receiveDate,
   }));
@@ -169,6 +195,23 @@ export async function buildActualSourceSnapshot(tx: Tx, finishedJewelleryId: str
 
   const setDiamonds = output.diamonds.filter((d) => d.resolvedAs === "SET" && d.setInFinishedJewelleryId === output.id);
 
+  // A new costing document snapshots the item's CURRENT carrying cost, not
+  // its stale original — the same shared service every other write path
+  // uses. Blocks (never approximates) if a touched purity cannot be
+  // replayed, since this freezes a number into a real, persisted document.
+  const carrying = await carryingFinishedPieceCost(tx, {
+    id: output.id,
+    jobId: output.jobId,
+    metalCost: new Decimal(output.metalCost),
+    diamondCost: new Decimal(output.diamondCost),
+    otherMaterialCost: new Decimal(output.otherMaterialCost),
+    labourAllocated: new Decimal(output.labourAllocated),
+    totalCost: new Decimal(output.totalCost),
+  });
+  if (isUnavailable(carrying.metalCost)) {
+    throw new PostingError(`${output.finishedCode}: ${CARRYING_COST_UNAVAILABLE_MESSAGE}`);
+  }
+
   return {
     jewelleryType: output.jewelleryType,
     itemName: output.job.designName,
@@ -186,7 +229,7 @@ export async function buildActualSourceSnapshot(tx: Tx, finishedJewelleryId: str
       finenessPercentSnapshot: new Decimal(output.finenessPercentSnapshot),
       grossWeight: round3(output.netMetalWeight),
       fineWeight: round3(output.fineMetalWeight),
-      amount: round2(output.metalCost),
+      amount: carrying.metalCost,
     },
     diamondLines: setDiamonds.map((d) => ({
       sourcePolishedDiamondId: d.polishedDiamondId,
@@ -265,9 +308,10 @@ export type Phase5VsPhase6Comparison = {
   expectedProfit: Decimal; // estimatedProfit
   expectedMarginPercent: Decimal;
 
-  // ---- Phase 6 (accounting) — the item's authoritative carrying cost,
-  // shown regardless of sale status, since it never changes with a sale ----
-  authoritativeAccountingCost: Decimal; // metalCost + diamondCost + labourAllocated
+  // ---- Phase 6 (accounting) — the item's authoritative CURRENT carrying
+  // cost, replayed through every POSTED revaluation (not the frozen
+  // original, and not the possibly-different figure a past sale posted) ----
+  authoritativeAccountingCost: CarryingAmount; // metalCost + diamondCost + labourAllocated
   otherMaterialCostExcluded: Decimal; // exactly why expectedFullBusinessCost > authoritativeAccountingCost
 
   // ---- Realized outcome — null unless there is an ACTIVE (unreversed) sale ----
@@ -304,7 +348,16 @@ export async function getPhase5VsPhase6Comparison(
 ): Promise<Phase5VsPhase6Comparison | null> {
   const item = await prisma.finishedJewellery.findUnique({
     where: { id: finishedJewelleryId },
-    select: { id: true, finishedCode: true, metalCost: true, diamondCost: true, labourAllocated: true, otherMaterialCost: true },
+    select: {
+      id: true,
+      jobId: true,
+      finishedCode: true,
+      metalCost: true,
+      diamondCost: true,
+      labourAllocated: true,
+      totalCost: true,
+      otherMaterialCost: true,
+    },
   });
   if (!item) return null;
 
@@ -316,7 +369,16 @@ export async function getPhase5VsPhase6Comparison(
   if (!sheet) return null; // no genuinely linked, finalized Costing — never compare an unrelated sheet
 
   const totals = computeCostSheetTotals(toTotalsInput(sheet));
-  const authoritativeAccountingCost = getAuthoritativeInventoryCost(item);
+  const carrying = await carryingFinishedPieceCost(prisma, {
+    id: item.id,
+    jobId: item.jobId,
+    metalCost: new Decimal(item.metalCost),
+    diamondCost: new Decimal(item.diamondCost),
+    otherMaterialCost: new Decimal(item.otherMaterialCost),
+    labourAllocated: new Decimal(item.labourAllocated),
+    totalCost: new Decimal(item.totalCost),
+  });
+  const authoritativeAccountingCost = carrying.authoritativeCost;
   const otherMaterialCostExcluded = round2(new Decimal(item.otherMaterialCost));
 
   const latestLine = await prisma.finishedJewellerySaleLine.findFirst({
@@ -340,7 +402,10 @@ export async function getPhase5VsPhase6Comparison(
       note = `Sale ${saleCode} was cancelled — revenue and COGS were both fully reversed, so no realized profit applies to it.`;
     } else if (latestLine.returnStatus === "RETURNED_DAMAGED") {
       realizedStatus = "RETURNED_DAMAGED";
-      note = `Sold via ${saleCode}, then returned damaged — its cost (₹${authoritativeAccountingCost.toFixed(2)}) was reclassified into Damaged Jewellery Loss, not realized as sale profit.`;
+      // The amount actually reclassified into Damaged Jewellery Loss was the
+      // sale's own frozen cogsAmount, not today's carrying cost — quoting
+      // the latter here would misdescribe a past, already-posted entry.
+      note = `Sold via ${saleCode}, then returned damaged — its cost (₹${new Decimal(latestLine.cogsAmount).toFixed(2)}) was reclassified into Damaged Jewellery Loss, not realized as sale profit.`;
     } else if (latestLine.returnStatus === "RETURNED_SELLABLE") {
       realizedStatus = "RETURNED_SELLABLE";
       note = `Sold via ${saleCode}, then returned sellable — the piece is Available again; that sale's revenue and COGS were both reversed, so no realized profit applies to it.`;

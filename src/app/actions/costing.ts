@@ -107,33 +107,39 @@ export async function createActualCostingAction(
   const settings = await getCostingSettings();
 
   try {
-    const sheet = await prisma.$transaction((tx) =>
-      costingEngine.createActualCostSheet(tx, {
-        fyStartMonth: fy.fyStartMonth,
-        fyStartDay: fy.fyStartDay,
-        sourceFinishedJewelleryId: data.sourceFinishedJewelleryId,
-        costingDate,
-        quantity: data.quantity,
-        sizeOrLength: data.sizeOrLength || null,
-        customerId: data.customerId || null,
-        notes: data.notes || null,
-        pricingMethod: data.pricingMethod,
-        markupPercent: data.markupPercent,
-        targetMarginPercent: data.targetMarginPercent,
-        manualSellingPriceOverride: data.manualSellingPriceOverride,
-        discountType: data.discountType,
-        discountValue: data.discountValue,
-        gstTreatment: data.gstTreatment,
-        gstRateId: data.gstRateId || null,
-        priceType: data.priceType,
-        roundingStep: data.roundingStep,
-        sellingExpenseFixed: data.sellingExpenseFixed,
-        sellingExpensePercent: data.sellingExpensePercent,
-        quotationTerms: data.quotationTerms || settings.quotationTerms,
-        validityDays: settings.defaultValidityDays,
-        idempotencyKey: data.idempotencyKey || null,
-        createdByUserId: user.id,
-      })
+    const sheet = await prisma.$transaction(
+      (tx) =>
+        costingEngine.createActualCostSheet(tx, {
+          fyStartMonth: fy.fyStartMonth,
+          fyStartDay: fy.fyStartDay,
+          sourceFinishedJewelleryId: data.sourceFinishedJewelleryId,
+          costingDate,
+          quantity: data.quantity,
+          sizeOrLength: data.sizeOrLength || null,
+          customerId: data.customerId || null,
+          notes: data.notes || null,
+          pricingMethod: data.pricingMethod,
+          markupPercent: data.markupPercent,
+          targetMarginPercent: data.targetMarginPercent,
+          manualSellingPriceOverride: data.manualSellingPriceOverride,
+          discountType: data.discountType,
+          discountValue: data.discountValue,
+          gstTreatment: data.gstTreatment,
+          gstRateId: data.gstRateId || null,
+          priceType: data.priceType,
+          roundingStep: data.roundingStep,
+          sellingExpenseFixed: data.sellingExpenseFixed,
+          sellingExpensePercent: data.sellingExpensePercent,
+          quotationTerms: data.quotationTerms || settings.quotationTerms,
+          validityDays: settings.defaultValidityDays,
+          idempotencyKey: data.idempotencyKey || null,
+          createdByUserId: user.id,
+        }),
+      // Phase 8B: buildActualSourceSnapshot now replays the source purity's
+      // ledger when it carries an active revaluation — the same extra
+      // round-trips that already earned createFinishedJewellerySaleAction
+      // its own 20s allowance over a remote pooled Postgres connection.
+      { timeout: 20000 }
     );
     revalidateCosting();
     return { success: true, id: sheet.id, costingNumber: sheet.costingNumber };
@@ -220,8 +226,10 @@ export async function refreshActualCostingAction(
   if (!parsed.success) return { error: "Missing costing." };
 
   try {
-    await prisma.$transaction((tx) =>
-      costingEngine.refreshActualCostSheetFromSource(tx, { costSheetId: parsed.data.costSheetId, userId: user.id })
+    await prisma.$transaction(
+      (tx) => costingEngine.refreshActualCostSheetFromSource(tx, { costSheetId: parsed.data.costSheetId, userId: user.id }),
+      // Same replay-inside-transaction allowance as createActualCostingAction.
+      { timeout: 20000 }
     );
   } catch (error) {
     if (error instanceof costingEngine.PostingError) return { error: error.message };

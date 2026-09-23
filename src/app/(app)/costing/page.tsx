@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { HelpLink } from "@/components/help/HelpLink";
 import { getCostSheetDetail, getCostingSettings, listCostSheets } from "@/lib/costing/reports";
 import { listEligibleFinishedJewelleryOutputs } from "@/lib/costing/sourcing";
+import { formatCarryingAmount } from "@/lib/jewellery/carryingCost";
 import { getCustomerQuotationView } from "@/lib/costing/quotation";
 import { resolveJewelleryAssetUrl } from "@/lib/storage/jewelleryMedia";
 import { CostSheetsTab } from "@/components/costing/CostSheetsTab";
@@ -225,7 +226,7 @@ async function NewCostingTabContent({ newMode }: { newMode: string }) {
         quantity: o.quantity,
         netMetalWeight: o.netMetalWeight.toFixed(3),
         purityDisplayName: o.purityDisplayName,
-        totalCost: o.totalCost.toFixed(2),
+        totalCost: formatCarryingAmount(o.totalCost),
         qcStatus: o.qcStatus,
         receiveDate: o.receiveDate.toISOString(),
       }))}

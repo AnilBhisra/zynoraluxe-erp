@@ -210,6 +210,7 @@ export async function listJewelleryJobs(filters?: {
   // PHASE_8_VERIFICATION.md "job carrying cost"). A job untouched by any
   // revaluation costs nothing extra: its stored total is already current.
   const carrying = await carryingJobCosts(
+    prisma,
     jobs.map((j) => ({ id: j.id, issuedMetalCost: new Decimal(j.issuedMetalCost), remainingWipCost: new Decimal(j.remainingWipCost) }))
   );
 
@@ -421,13 +422,15 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
   // each piece's totalCost) are never rewritten — this is display only, and
   // fails closed (CARRYING_COST_UNAVAILABLE) rather than approximating.
   const [jobCarrying, finishedCarryingById] = await Promise.all([
-    carryingJobCosts([{ id: job.id, issuedMetalCost: new Decimal(job.issuedMetalCost), remainingWipCost: new Decimal(job.remainingWipCost) }]),
+    carryingJobCosts(prisma, [{ id: job.id, issuedMetalCost: new Decimal(job.issuedMetalCost), remainingWipCost: new Decimal(job.remainingWipCost) }]),
     carryingFinishedPieceCosts(
+      prisma,
       job.finishedJewellery.map((f) => ({
         id: f.id,
         jobId: job.id,
         metalCost: new Decimal(f.metalCost),
         diamondCost: new Decimal(f.diamondCost),
+        otherMaterialCost: new Decimal(f.otherMaterialCost),
         labourAllocated: new Decimal(f.labourAllocated),
         totalCost: new Decimal(f.totalCost),
       }))
@@ -703,11 +706,13 @@ export async function listFinishedJewellery(filters?: { search?: string }): Prom
   });
 
   const carryingById = await carryingFinishedPieceCosts(
+    prisma,
     outputs.map((o) => ({
       id: o.id,
       jobId: o.jobId,
       metalCost: new Decimal(o.metalCost),
       diamondCost: new Decimal(o.diamondCost),
+      otherMaterialCost: new Decimal(o.otherMaterialCost),
       labourAllocated: new Decimal(o.labourAllocated),
       totalCost: new Decimal(o.totalCost),
     }))
@@ -860,6 +865,7 @@ export async function listFinishedJewelleryStock(filters?: {
         createdAt: true,
         metalCost: true,
         diamondCost: true,
+        otherMaterialCost: true,
         labourAllocated: true,
         totalCost: true,
         job: { select: { jobCode: true, designName: true, karigar: { select: { name: true } } } },
@@ -877,22 +883,25 @@ export async function listFinishedJewelleryStock(filters?: {
       orderBy: { createdAt: "desc" },
       take: 500,
     });
-    // getAuthoritativeInventoryCost is the accounting function COGS posting
-    // uses at sale time — never touched here; this display figure is
-    // computed independently, replaying through every POSTED revaluation.
+    // Same formula getAuthoritativeInventoryCost applies to the stored
+    // original (excludes otherMaterialCost — the true accounting inventory
+    // value, matching account 1330), applied here to the CURRENT, replayed
+    // metal cost via the shared carrying-cost service.
     const carryingById = await carryingFinishedPieceCosts(
+      prisma,
       outputs.map((o) => ({
         id: o.id,
         jobId: o.jobId,
         metalCost: new Decimal(o.metalCost),
         diamondCost: new Decimal(o.diamondCost),
+        otherMaterialCost: new Decimal(o.otherMaterialCost),
         labourAllocated: new Decimal(o.labourAllocated),
         totalCost: new Decimal(o.totalCost),
       }))
     );
     return outputs.map((o) =>
       toStockRow(o, {
-        inventoryCost: carryingById.get(o.id)?.totalCost ?? getAuthoritativeInventoryCost(o),
+        inventoryCost: carryingById.get(o.id)?.authoritativeCost ?? getAuthoritativeInventoryCost(o),
         costSheetNumber: o.costSheets[0]?.costingNumber ?? null,
       })
     );
@@ -1089,30 +1098,35 @@ export async function getFinishedJewelleryStockSummary(includeValue = false): Pr
         fineMetalWeight: true,
         metalCost: true,
         diamondCost: true,
+        otherMaterialCost: true,
         labourAllocated: true,
         totalCost: true,
       },
     });
     const carryingById = await carryingFinishedPieceCosts(
+      prisma,
       rows.map((r) => ({
         id: r.id,
         jobId: r.jobId,
         metalCost: new Decimal(r.metalCost),
         diamondCost: new Decimal(r.diamondCost),
+        otherMaterialCost: new Decimal(r.otherMaterialCost),
         labourAllocated: new Decimal(r.labourAllocated),
         totalCost: new Decimal(r.totalCost),
       }))
     );
-    // If any included piece's replay failed closed, the whole tile does too
-    // — a silently partial sum would be worse than an honest "unavailable".
-    const anyUnavailable = rows.some((r) => isUnavailable(carryingById.get(r.id)?.totalCost ?? ZERO));
+    // Inventory value is the AUTHORITATIVE accounting figure (matches
+    // account 1330), never the display total. If any included piece's
+    // replay failed closed, the whole tile does too — a silently partial
+    // sum would be worse than an honest "unavailable".
+    const anyUnavailable = rows.some((r) => isUnavailable(carryingById.get(r.id)?.authoritativeCost ?? ZERO));
     return {
       availableCount: rows.length,
       availableFineWeight: round3(rows.reduce((sum, r) => sum.plus(r.fineMetalWeight), new Decimal(0))),
       availableInventoryValue: anyUnavailable
         ? CARRYING_COST_UNAVAILABLE
         : round2(
-            rows.reduce((sum, r) => sum.plus(carryingById.get(r.id)?.totalCost as Decimal), ZERO)
+            rows.reduce((sum, r) => sum.plus(carryingById.get(r.id)?.authoritativeCost as Decimal), ZERO)
           ),
     };
   }

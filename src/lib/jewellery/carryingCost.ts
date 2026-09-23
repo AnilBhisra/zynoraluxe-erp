@@ -1,6 +1,5 @@
 import "server-only";
 
-import { prisma } from "@/lib/db/prisma";
 import { Decimal, round2, ZERO } from "@/lib/accounting/money";
 import {
   logReplayFailure,
@@ -8,6 +7,7 @@ import {
   replayPuritiesOnce,
   type PurityReplayOutcome,
 } from "@/lib/corrections/jobCostReplay";
+import type { Tx } from "@/lib/corrections/types";
 import { CARRYING_COST_UNAVAILABLE_MESSAGE } from "@/lib/jewellery/carryingCostMessage";
 import type { MetalType } from "@/generated/prisma/enums";
 
@@ -47,16 +47,16 @@ type JobIssueRow = { id: string; jewelleryJobId: string | null; metalType: Metal
  * issued, 18K received) — so both job- and piece-level lookups key off the
  * JOB's own ISSUE_OUT movements, never a piece's own purity column.
  */
-async function replayForJobs(jobIds: string[]) {
+async function replayForJobs(tx: Tx, jobIds: string[]) {
   const issueMovements: JobIssueRow[] = jobIds.length
-    ? await prisma.metalStockMovement.findMany({
+    ? await tx.metalStockMovement.findMany({
         where: { type: "ISSUE_OUT", jewelleryJobId: { in: jobIds } },
         select: { id: true, jewelleryJobId: true, metalType: true, purityId: true, costValue: true },
       })
     : [];
-  const activePurities = await purityIdsWithActiveRevaluation(prisma);
+  const activePurities = await purityIdsWithActiveRevaluation(tx);
   const replayByPurity = await replayPuritiesOnce(
-    prisma,
+    tx,
     issueMovements
       .filter((m) => activePurities.has(`${m.metalType}:${m.purityId}`))
       .map((m) => ({ metalType: m.metalType, purityId: m.purityId }))
@@ -102,11 +102,12 @@ export type JobCarryingCost = { issuedMetalCost: CarryingAmount; remainingWipCos
  * omitting the unrevalued purity's share.
  */
 export async function carryingJobCosts(
+  tx: Tx,
   jobs: { id: string; issuedMetalCost: Decimal; remainingWipCost: Decimal }[]
 ): Promise<Map<string, JobCarryingCost>> {
   const result = new Map<string, JobCarryingCost>();
   if (jobs.length === 0) return result;
-  const { activePurities, replayByPurity, movementsByJob } = await replayForJobs(jobs.map((j) => j.id));
+  const { activePurities, replayByPurity, movementsByJob } = await replayForJobs(tx, jobs.map((j) => j.id));
 
   for (const job of jobs) {
     const entries = jobOutcomes(movementsByJob.get(job.id) ?? [], activePurities, replayByPurity);
@@ -156,23 +157,60 @@ export async function carryingJobCosts(
   return result;
 }
 
-export type FinishedPieceCarryingCost = { metalCost: CarryingAmount; totalCost: CarryingAmount };
+/**
+ * `totalCost` is the DISPLAY figure — metalCost + diamondCost +
+ * otherMaterialCost + labourAllocated, matching the stored
+ * `FinishedJewellery.totalCost` column's own formula (posting.ts), so a
+ * piece untouched by any revaluation shows exactly its stored total.
+ *
+ * `authoritativeCost` is the ACCOUNTING figure — metalCost + diamondCost +
+ * labourAllocated, deliberately EXCLUDING otherMaterialCost, the same
+ * formula `getAuthoritativeInventoryCost` (finishedSalesPosting.ts) applies
+ * to the stored original. Every write that posts COGS or freezes a costing
+ * document uses `authoritativeCost`, never `totalCost` — mixing the two up
+ * is exactly the class of bug PHASE_6_VERIFICATION.md §1 already warned
+ * about for the stored columns, and it applies equally to their carrying
+ * equivalents.
+ *
+ * Both are derived from the SAME single replayed `metalCost` — only the
+ * addition differs, never a second replay.
+ */
+export type FinishedPieceCarryingCost = { metalCost: CarryingAmount; totalCost: CarryingAmount; authoritativeCost: CarryingAmount };
+
+type PieceInput = {
+  id: string;
+  jobId: string;
+  diamondCost: Decimal;
+  otherMaterialCost: Decimal;
+  labourAllocated: Decimal;
+  totalCost: Decimal;
+  metalCost: Decimal;
+};
+
+function deriveTotals(p: PieceInput, metalCost: CarryingAmount): FinishedPieceCarryingCost {
+  if (isUnavailable(metalCost)) {
+    return { metalCost: CARRYING_COST_UNAVAILABLE, totalCost: CARRYING_COST_UNAVAILABLE, authoritativeCost: CARRYING_COST_UNAVAILABLE };
+  }
+  return {
+    metalCost,
+    totalCost: round2(metalCost.plus(p.diamondCost).plus(p.otherMaterialCost).plus(p.labourAllocated)),
+    authoritativeCost: round2(metalCost.plus(p.diamondCost).plus(p.labourAllocated)),
+  };
+}
 
 /**
- * Current carrying metal/total cost for a batch of finished pieces,
- * replaying each affected purity once — keyed off each piece's OWN JOB's
- * ISSUE_OUT movements (see replayForJobs), never the piece's own `purityId`
- * column, which is its output purity and can differ from the source. A
- * piece whose job never touched a revalued purity keeps its stored figures
- * unchanged (the common, fast path).
+ * Current carrying metal/total/authoritative cost for a batch of finished
+ * pieces, replaying each affected purity once — keyed off each piece's OWN
+ * JOB's ISSUE_OUT movements (see replayForJobs), never the piece's own
+ * `purityId` column, which is its output purity and can differ from the
+ * source. A piece whose job never touched a revalued purity keeps its
+ * stored figures unchanged (the common, fast path).
  */
-export async function carryingFinishedPieceCosts(
-  pieces: { id: string; jobId: string; diamondCost: Decimal; labourAllocated: Decimal; totalCost: Decimal; metalCost: Decimal }[]
-): Promise<Map<string, FinishedPieceCarryingCost>> {
+export async function carryingFinishedPieceCosts(tx: Tx, pieces: PieceInput[]): Promise<Map<string, FinishedPieceCarryingCost>> {
   const result = new Map<string, FinishedPieceCarryingCost>();
   if (pieces.length === 0) return result;
   const jobIds = [...new Set(pieces.map((p) => p.jobId))];
-  const { activePurities, replayByPurity, movementsByJob } = await replayForJobs(jobIds);
+  const { activePurities, replayByPurity, movementsByJob } = await replayForJobs(tx, jobIds);
 
   for (const p of pieces) {
     const entries = jobOutcomes(movementsByJob.get(p.jobId) ?? [], activePurities, replayByPurity);
@@ -185,11 +223,11 @@ export async function carryingFinishedPieceCosts(
         finishedJewelleryId: p.id,
         reason: "job draws on both a revalued and an unrevalued purity; cannot be decomposed for display",
       });
-      result.set(p.id, { metalCost: CARRYING_COST_UNAVAILABLE, totalCost: CARRYING_COST_UNAVAILABLE });
+      result.set(p.id, deriveTotals(p, CARRYING_COST_UNAVAILABLE));
       continue;
     }
     if (entries.length === 0) {
-      result.set(p.id, { metalCost: p.metalCost, totalCost: p.totalCost });
+      result.set(p.id, { metalCost: p.metalCost, totalCost: p.totalCost, authoritativeCost: round2(p.metalCost.plus(p.diamondCost).plus(p.labourAllocated)) });
       continue;
     }
 
@@ -208,20 +246,28 @@ export async function carryingFinishedPieceCosts(
     }
 
     if (failed) {
-      result.set(p.id, { metalCost: CARRYING_COST_UNAVAILABLE, totalCost: CARRYING_COST_UNAVAILABLE });
+      result.set(p.id, deriveTotals(p, CARRYING_COST_UNAVAILABLE));
       continue;
     }
     if (found === null) {
       // None of the job's revalued purities produced this piece — its own
       // metal cost is untouched (e.g. an alloy-only or otherwise unaffected
       // output on an otherwise-revalued job).
-      result.set(p.id, { metalCost: p.metalCost, totalCost: p.totalCost });
+      result.set(p.id, { metalCost: p.metalCost, totalCost: p.totalCost, authoritativeCost: round2(p.metalCost.plus(p.diamondCost).plus(p.labourAllocated)) });
       continue;
     }
-    const metalCost = round2(found);
-    const totalCost = round2(metalCost.plus(p.diamondCost).plus(p.labourAllocated));
-    result.set(p.id, { metalCost, totalCost });
+    result.set(p.id, deriveTotals(p, round2(found)));
   }
 
   return result;
+}
+
+/**
+ * Single-piece convenience wrapper — the same batched call with one piece.
+ * Use `.authoritativeCost` for any accounting/COGS/costing-document write,
+ * `.totalCost` only for display (see FinishedPieceCarryingCost above).
+ */
+export async function carryingFinishedPieceCost(tx: Tx, piece: PieceInput): Promise<FinishedPieceCarryingCost> {
+  const result = await carryingFinishedPieceCosts(tx, [piece]);
+  return result.get(piece.id)!;
 }

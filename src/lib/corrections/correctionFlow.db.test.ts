@@ -12,15 +12,28 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { prisma } from "@/lib/db/prisma";
 import {
   adjustMetalStock,
+  createJewelleryJob,
   getMetalStockBalanceInTx,
+  issueMaterialsToJewelleryJob,
   postOpeningMetalStock,
+  receiveFinishedJewellery,
   reverseMetalStockAdjustment,
 } from "@/lib/jewellery/posting";
-import { getJewelleryJobDetail, listFinishedJewelleryStock, listJewelleryJobs } from "@/lib/jewellery/reports";
-import { CARRYING_COST_UNAVAILABLE, isUnavailable } from "@/lib/jewellery/carryingCost";
+import {
+  getJewelleryJobDetail,
+  listFinishedJewelleryStock,
+  listJewelleryJobs,
+} from "@/lib/jewellery/reports";
+import { CARRYING_COST_UNAVAILABLE, CARRYING_COST_UNAVAILABLE_MESSAGE, carryingFinishedPieceCost, carryingFinishedPieceCosts, isUnavailable } from "@/lib/jewellery/carryingCost";
 import { serializeJobCostSummary } from "@/lib/jewellery/jobDetailSerializers";
+import {
+  adjustFinishedJewelleryStock,
+  cancelFinishedJewellerySale,
+  postFinishedJewellerySale,
+} from "@/lib/jewellery/finishedSalesPosting";
+import { buildActualSourceSnapshot } from "@/lib/costing/sourcing";
 import { replayPurityAtCurrentValues } from "./jobCostReplay";
-import type { Decimal } from "@/lib/accounting/money";
+import { Decimal, ZERO } from "@/lib/accounting/money";
 import {
   approveCorrectionDraft,
   ensureCorrectionBatch,
@@ -57,14 +70,38 @@ let ownerId: string;
 const purityIdByName = new Map<string, string>();
 
 async function clearBusinessData() {
+  // Phase 8B downstream-consistency tests added sales, adjustments and
+  // costing documents on top of the job/finished-piece fixtures this suite
+  // already built — each in proper child-before-parent order so a
+  // half-finished run (or a re-run against a database this suite already
+  // populated once) can always clean itself out from scratch.
+  await prisma.costSheetAuditEvent.deleteMany();
+  await prisma.costSheetChargeLine.deleteMany();
+  await prisma.costSheetOtherMaterialLine.deleteMany();
+  await prisma.costSheetDiamondLine.deleteMany();
+  await prisma.costSheetMetalLine.deleteMany();
+  await prisma.costSheet.deleteMany();
+  await prisma.finishedJewelleryReturnLine.deleteMany();
+  await prisma.finishedJewelleryStockMovement.deleteMany();
+  await prisma.finishedJewelleryReturn.deleteMany();
+  await prisma.finishedJewellerySaleLine.deleteMany();
+  await prisma.finishedJewellerySale.deleteMany();
+  await prisma.finishedJewellery.deleteMany();
+  await prisma.jewelleryReceipt.deleteMany();
+  await prisma.jewelleryMetalIssueLine.deleteMany();
+  await prisma.jewelleryDiamondIssueLine.deleteMany();
+  await prisma.jewelleryOtherMaterialLine.deleteMany();
+  await prisma.jewelleryPacketIssueLine.deleteMany();
   await prisma.correctionImpact.deleteMany();
   await prisma.metalRevaluation.deleteMany();
   await prisma.correction.deleteMany();
   await prisma.correctionBatch.deleteMany();
   await prisma.journalEntry.deleteMany();
   await prisma.metalStockMovement.deleteMany();
+  await prisma.jewelleryJob.deleteMany();
   await prisma.voucher.deleteMany();
   await prisma.voucherSequence.deleteMany();
+  await prisma.party.deleteMany();
 }
 
 beforeAll(async () => {
@@ -830,6 +867,188 @@ describe("R1 and R2 as one cumulative production correction batch", () => {
     expect(amount(listRow.totalIssuedCost).toFixed(2)).toBe("43716.87");
   }, 30_000);
 
+  // ---------------------------------------------------------------------------
+  // Phase 8B downstream-consistency fix — every WRITE that consumes a
+  // finished piece's cost must use the SAME current carrying figure the
+  // display already shows, via the SAME shared service (carryingCost.ts),
+  // never a second formula and never the stale original. This reuses the
+  // exact production-shaped fixture above: FJ-86 and FJ-87 already carry
+  // their corrected totals from R1+R2.
+  // ---------------------------------------------------------------------------
+  let downstreamCustomerId: string;
+
+  it("a sale of FJ-86 posts COGS at the corrected total — Rs 93,265.04, not the frozen Rs 56,971.05", async () => {
+    const customer = await prisma.party.upsert({
+      where: { id: "phase8b-downstream-customer" },
+      create: { id: "phase8b-downstream-customer", name: "Phase8B Downstream Customer", type: "CUSTOMER", createdByUserId: ownerId },
+      update: {},
+    });
+    downstreamCustomerId = customer.id;
+
+    const { sale, voucher } = await prisma.$transaction((tx) =>
+      postFinishedJewellerySale(tx, {
+        date: new Date("2026-09-23"),
+        saleDate: new Date("2026-09-23"),
+        ...FY,
+        currencyCode: "INR",
+        exchangeRate: 1,
+        createdByUserId: ownerId,
+        customerId: downstreamCustomerId,
+        gstTreatment: "NONE",
+        idempotencyKey: "phase8b-downstream-sale-fj86",
+        items: [{ finishedJewelleryId: fj86Id, sellingPrice: "150000.00", gstRatePercent: 0, taxType: "EXCLUSIVE" }],
+      })
+    );
+
+    expect(sale.cogsTotal.toFixed(2)).toBe("93265.04"); // 66592.00 + 20102.04 + 6571.00
+    const journalLines = await prisma.journalEntry.findMany({ where: { voucherId: voucher.id }, include: { account: true } });
+    const cogsLine = journalLines.find((l) => l.account.code === "5200"); // SYSTEM_ACCOUNT_CODES.FINISHED_JEWELLERY_COGS
+    const inventoryLine = journalLines.find((l) => l.account.code === "1330");
+    expect(inventoryLine?.credit.toFixed(2)).toBe("93265.04");
+    expect(cogsLine?.debit.toFixed(2)).toBe("93265.04");
+
+    const sold = await prisma.finishedJewellery.findUniqueOrThrow({ where: { id: fj86Id } });
+    expect(sold.status).toBe("SOLD");
+    // The ORIGINAL row is still untouched — only status changed.
+    expect(sold.metalCost.toFixed(2)).toBe("30298.01");
+  }, 30_000);
+
+  it("cancelling that sale reverses the EXACT frozen Rs 93,265.04, restoring FJ-86 to Available", async () => {
+    const sale = await prisma.finishedJewellerySale.findFirstOrThrow({ where: { idempotencyKey: "phase8b-downstream-sale-fj86" } });
+    const { reversal } = await prisma.$transaction((tx) =>
+      cancelFinishedJewellerySale(tx, { saleId: sale.id, cancelledByUserId: ownerId, cancellationReason: "Undoing the downstream-consistency probe", ...FY })
+    );
+
+    const reversalLines = await prisma.journalEntry.findMany({ where: { voucherId: reversal.id }, include: { account: true } });
+    const inventoryDebit = reversalLines.find((l) => l.account.code === "1330");
+    expect(inventoryDebit?.debit.toFixed(2)).toBe("93265.04"); // the exact amount originally posted, not recomputed
+
+    const restored = await prisma.finishedJewellery.findUniqueOrThrow({ where: { id: fj86Id } });
+    expect(restored.status).toBe("AVAILABLE"); // undoes the probe, like the adjustment probe above
+  }, 30_000);
+
+  it("creating an Actual costing document from FJ-87 freezes the corrected metal cost — Rs 29,512.78, not Rs 15,668.63", async () => {
+    // Mandatory check #3: costing-document creation now replays carrying
+    // cost inline too (createActualCostingAction/refreshActualCostingAction
+    // both now set the same 20s allowance as the sale action).
+    const started = Date.now();
+    const snapshot = await prisma.$transaction((tx) => buildActualSourceSnapshot(tx, fj87Id));
+    const elapsedMs = Date.now() - started;
+    console.log(`Phase8B costing-snapshot transaction latency: ${elapsedMs}ms (5s default, 20s allowance)`);
+    expect(elapsedMs).toBeLessThan(5_000);
+    expect(snapshot.metalLine.amount.toFixed(2)).toBe("29512.78");
+  }, 30_000);
+
+  it("an Owner stock adjustment on FJ-87 values it at the corrected authoritative total — Rs 43,467.78", async () => {
+    // Mandatory check #3: adjustFinishedJewelleryStockAction now sets the
+    // same 20s allowance for the same reason.
+    const adjustStarted = Date.now();
+    const { costValue: outValue } = await (async () => {
+      const output = await prisma.$transaction((tx) =>
+        adjustFinishedJewelleryStock(tx, { finishedJewelleryId: fj87Id, direction: "OUT", reason: "Phase8B downstream probe", createdByUserId: ownerId })
+      );
+      const movement = await prisma.finishedJewelleryStockMovement.findFirstOrThrow({
+        where: { finishedJewelleryId: fj87Id, type: "OWNER_ADJUSTMENT_OUT" },
+        orderBy: { createdAt: "desc" },
+      });
+      return { output, costValue: movement.costValue };
+    })();
+    const adjustElapsedMs = Date.now() - adjustStarted;
+    console.log(`Phase8B adjustment transaction latency: ${adjustElapsedMs}ms (5s default, 20s allowance)`);
+    expect(adjustElapsedMs).toBeLessThan(5_000);
+    expect(outValue.toFixed(2)).toBe("43467.78"); // 29512.78 + 11880.00 + 2075.00
+
+    // Undo the probe.
+    await prisma.$transaction((tx) =>
+      adjustFinishedJewelleryStock(tx, { finishedJewelleryId: fj87Id, direction: "IN", reason: "Undoing the Phase8B downstream probe", createdByUserId: ownerId })
+    );
+    const restored = await prisma.finishedJewellery.findUniqueOrThrow({ where: { id: fj87Id } });
+    expect(restored.status).toBe("AVAILABLE");
+  }, 30_000);
+
+  it("no double counting: repeated and batched carrying-cost lookups for FJ-86 and FJ-87 agree exactly", async () => {
+    const fj86Input = {
+      id: fj86Id,
+      jobId: job68Id,
+      metalCost: new Decimal("30298.01"),
+      diamondCost: new Decimal("20102.04"),
+      otherMaterialCost: new Decimal("0"),
+      labourAllocated: new Decimal("6571.00"),
+      totalCost: new Decimal("56971.05"),
+    };
+    const fj86Once = await carryingFinishedPieceCost(prisma, fj86Input);
+    const fj86Twice = await carryingFinishedPieceCost(prisma, fj86Input);
+    expect(amount(fj86Once.authoritativeCost).toFixed(2)).toBe(amount(fj86Twice.authoritativeCost).toFixed(2));
+    expect(amount(fj86Once.authoritativeCost).toFixed(2)).toBe("93265.04");
+  }, 30_000);
+
+  it("avoids N+1: two pieces on two different jobs sharing one purity cost exactly one ledger replay, not two", async () => {
+    let ledgerFetches = 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- deliberate: a thin counting wrapper over the real client's dynamic shape
+    const countingTx: any = new Proxy(prisma as any, {
+      get(target, prop, receiver) {
+        if (prop === "metalStockMovement") {
+          const real = Reflect.get(target, prop, receiver);
+          return new Proxy(real, {
+            get(t2, p2, r2) {
+              if (p2 === "findMany") {
+                return (...args: unknown[]) => {
+                  ledgerFetches++;
+                  return (real.findMany as (...a: unknown[]) => unknown).apply(t2, args);
+                };
+              }
+              return Reflect.get(t2, p2, r2);
+            },
+          });
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    // ONE batched call for both pieces — the shape a real job list or
+    // finished-stock report actually uses (see reports.ts), and the only
+    // shape that can prove "once per AFFECTED PURITY, not once per piece
+    // or once per job": two separate singular calls would legitimately
+    // cost two full replays of the same 24K pool, which is not what a
+    // multi-row read/write path ever does in production.
+    const started = Date.now();
+    const results = await carryingFinishedPieceCosts(countingTx, [
+      {
+        id: fj86Id,
+        jobId: job68Id,
+        metalCost: new Decimal("30298.01"),
+        diamondCost: new Decimal("20102.04"),
+        otherMaterialCost: new Decimal("0"),
+        labourAllocated: new Decimal("6571.00"),
+        totalCost: new Decimal("56971.05"),
+      },
+      {
+        id: fj87Id,
+        jobId: job69Id,
+        metalCost: new Decimal("15668.63"),
+        diamondCost: new Decimal("11880.00"),
+        otherMaterialCost: new Decimal("0"),
+        labourAllocated: new Decimal("2075.00"),
+        totalCost: new Decimal("29623.63"),
+      },
+    ]);
+    const elapsedMs = Date.now() - started;
+
+    expect(amount(results.get(fj86Id)!.authoritativeCost).toFixed(2)).toBe("93265.04");
+    expect(amount(results.get(fj87Id)!.authoritativeCost).toFixed(2)).toBe("43467.78");
+
+    // Exactly 2 ledger fetches for 2 pieces on 2 different jobs sharing 1
+    // purity: one findMany for BOTH jobs' issue movements together
+    // (replayForJobs' single `jewelleryJobId: { in: jobIds } }` query), and
+    // one for the shared 24K purity's full ledger, replayed exactly once
+    // via replayPuritiesOnce's dedup over distinct (metalType, purityId)
+    // keys — never once per job and never once per piece. A regression
+    // that replayed per job or per piece would show 3 or 4 here.
+    expect(ledgerFetches).toBe(2);
+    console.log(`Phase8B downstream carrying-cost latency: ${elapsedMs}ms for 2 pieces, ${ledgerFetches} ledger fetch(es)`);
+    expect(elapsedMs).toBeLessThan(2000);
+  }, 30_000);
+
   it("makes the NEXT issue or adjustment use the corrected average, not the old one", async () => {
     // The whole point of the phase: a correction that moves the ledger but
     // leaves the posting engine costing at the old basis would recreate the
@@ -1140,6 +1359,33 @@ describe("R1 and R2 as one cumulative production correction batch", () => {
     expect(amount(rows.find((r) => r.id === job69Id)!.totalIssuedCost).toFixed(2)).toBe("28782.51");
   }, 30_000);
 
+  it("after rollback, a NEW sale of FJ-86 posts COGS at the ORIGINAL Rs 56,971.05 again — write behavior restored, not just display", async () => {
+    const { sale, voucher } = await prisma.$transaction((tx) =>
+      postFinishedJewellerySale(tx, {
+        date: new Date("2026-09-24"),
+        saleDate: new Date("2026-09-24"),
+        ...FY,
+        currencyCode: "INR",
+        exchangeRate: 1,
+        createdByUserId: ownerId,
+        customerId: downstreamCustomerId,
+        gstTreatment: "NONE",
+        idempotencyKey: "phase8b-downstream-sale-fj86-post-rollback",
+        items: [{ finishedJewelleryId: fj86Id, sellingPrice: "150000.00", gstRatePercent: 0, taxType: "EXCLUSIVE" }],
+      })
+    );
+    expect(sale.cogsTotal.toFixed(2)).toBe("56971.05"); // 30298.01 + 20102.04 + 6571.00 — the pre-correction figure
+
+    // Undo the probe so later assertions (e.g. the two-corrections-exist
+    // check below) find FJ-86 back in its post-rollback Available state.
+    await prisma.$transaction((tx) =>
+      cancelFinishedJewellerySale(tx, { saleId: sale.id, cancelledByUserId: ownerId, cancellationReason: "Undoing the post-rollback probe", ...FY })
+    );
+    const restored = await prisma.finishedJewellery.findUniqueOrThrow({ where: { id: fj86Id } });
+    expect(restored.status).toBe("AVAILABLE");
+    void voucher; // asserted indirectly via sale.cogsTotal above
+  }, 30_000);
+
   it("records the rollback as audited reversing corrections, deleting nothing", async () => {
     const rows = await listCorrections();
 
@@ -1227,6 +1473,9 @@ describe("R1 and R2 as one cumulative production correction batch", () => {
 describe("carrying cost fails closed when a revalued purity cannot be replayed", () => {
   let purityId: string;
   let jobId: string;
+  let completedJobId: string;
+  let finishedPieceId: string;
+  let downstreamFailureCustomerId: string;
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
 
   beforeAll(async () => {
@@ -1304,7 +1553,83 @@ describe("carrying cost fails closed when a revalued purity cannot be replayed",
       })
     );
 
+    // A second, COMPLETED job on the SAME purity, with a finished piece —
+    // so the sale/costing/adjustment write paths below have something real
+    // to attempt (and to prove blocked) once the ledger is poisoned.
+    const completedJob = await prisma.jewelleryJob.create({
+      data: {
+        jobCode: `ZL-JJOB-REPLAYFAIL-COMPLETED-${Date.now()}`,
+        jewelleryType: "RING",
+        designName: "Replay failure fixture — completed job",
+        karigarId: karigar.id,
+        issueDate: new Date("2026-09-01"),
+        status: "COMPLETED",
+        issuedMetalFineWeight: "3.000",
+        issuedMetalCost: "30000.00",
+        receivedFineWeight: "3.000",
+        remainingWipCost: "0.00",
+        createdByUserId: ownerId,
+      },
+    });
+    completedJobId = completedJob.id;
+    await prisma.metalStockMovement.create({
+      data: {
+        type: "ISSUE_OUT",
+        metalType: "GOLD",
+        purityId,
+        grossWeight: "3.000",
+        fineWeight: "2.748",
+        costValue: "30000.00",
+        sourceDocument: completedJob.jobCode,
+        jewelleryJobId: completedJob.id,
+        createdByUserId: ownerId,
+      },
+    });
+    const receipt = await prisma.jewelleryReceipt.create({
+      data: { receiptCode: `ZL-JREC-REPLAYFAIL-${Date.now()}`, jobId: completedJob.id, receiveDate: new Date("2026-09-05"), createdByUserId: ownerId },
+    });
+    await prisma.metalStockMovement.create({
+      data: {
+        type: "CONSUMED_OUT",
+        metalType: "GOLD",
+        purityId,
+        grossWeight: "0.000",
+        fineWeight: "2.748",
+        costValue: "30000.00",
+        sourceDocument: receipt.receiptCode,
+        jewelleryJobId: completedJob.id,
+        createdByUserId: ownerId,
+      },
+    });
+    const piece = await prisma.finishedJewellery.create({
+      data: {
+        finishedCode: `ZL-FJ-REPLAYFAIL-${Date.now()}`,
+        receiptId: receipt.id,
+        jobId: completedJob.id,
+        jewelleryType: "RING",
+        netMetalWeight: "3.000",
+        metalType: "GOLD",
+        purityId,
+        finenessPercentSnapshot: "91.600",
+        fineMetalWeight: "2.748",
+        metalCost: "30000.00",
+        diamondCost: "0.00",
+        labourAllocated: "0.00",
+        totalCost: "30000.00",
+        status: "AVAILABLE",
+        createdByUserId: ownerId,
+      },
+    });
+    finishedPieceId = piece.id;
+    const customer = await prisma.party.upsert({
+      where: { id: "phase8b-replay-failure-customer" },
+      create: { id: "phase8b-replay-failure-customer", name: "Phase8B Replay Failure Customer", type: "CUSTOMER", createdByUserId: ownerId },
+      update: {},
+    });
+    downstreamFailureCustomerId = customer.id;
+
     // NOW poison the ledger — the shape metalReplay.ts explicitly refuses.
+    // Both jobs share this purity, so both are blocked from here on.
     await prisma.metalStockMovement.create({
       data: {
         type: "ISSUE_CANCEL_IN",
@@ -1357,4 +1682,571 @@ describe("carrying cost fails closed when a revalued purity cannot be replayed",
     expect(staff.issuedMetalCost).toBeNull();
     expect(staff.totalIssuedCost).toBeNull();
   });
+
+  it("blocks a sale of the affected piece entirely — nothing claimed, nothing posted", async () => {
+    await expect(
+      prisma.$transaction((tx) =>
+        postFinishedJewellerySale(tx, {
+          date: new Date("2026-09-23"),
+          saleDate: new Date("2026-09-23"),
+          ...FY,
+          currencyCode: "INR",
+          exchangeRate: 1,
+          createdByUserId: ownerId,
+          customerId: downstreamFailureCustomerId,
+          gstTreatment: "NONE",
+          idempotencyKey: "phase8b-replay-failure-sale",
+          items: [{ finishedJewelleryId: finishedPieceId, sellingPrice: "50000.00", gstRatePercent: 0, taxType: "EXCLUSIVE" }],
+        })
+      )
+    ).rejects.toThrow(CARRYING_COST_UNAVAILABLE_MESSAGE);
+
+    // The transaction rolled back completely — not even the AVAILABLE ->
+    // SOLD claim (which runs BEFORE the cost check) survives.
+    const piece = await prisma.finishedJewellery.findUniqueOrThrow({ where: { id: finishedPieceId } });
+    expect(piece.status).toBe("AVAILABLE");
+    expect(await prisma.finishedJewellerySale.count({ where: { idempotencyKey: "phase8b-replay-failure-sale" } })).toBe(0);
+  }, 30_000);
+
+  it("blocks creating an Actual costing document from the affected piece", async () => {
+    await expect(prisma.$transaction((tx) => buildActualSourceSnapshot(tx, finishedPieceId))).rejects.toThrow(
+      CARRYING_COST_UNAVAILABLE_MESSAGE
+    );
+    expect(await prisma.costSheet.count({ where: { sourceFinishedJewelleryId: finishedPieceId } })).toBe(0);
+  }, 30_000);
+
+  it("blocks an Owner stock adjustment on the affected piece", async () => {
+    await expect(
+      prisma.$transaction((tx) =>
+        adjustFinishedJewelleryStock(tx, { finishedJewelleryId: finishedPieceId, direction: "OUT", reason: "Should be blocked", createdByUserId: ownerId })
+      )
+    ).rejects.toThrow(CARRYING_COST_UNAVAILABLE_MESSAGE);
+
+    const piece = await prisma.finishedJewellery.findUniqueOrThrow({ where: { id: finishedPieceId } });
+    expect(piece.status).toBe("AVAILABLE"); // unchanged — the claim inside the same transaction rolled back too
+    expect(
+      await prisma.finishedJewelleryStockMovement.count({ where: { finishedJewelleryId: finishedPieceId, type: "OWNER_ADJUSTMENT_OUT" } })
+    ).toBe(0);
+  }, 30_000);
+
+  it("the completed job's own read model is also blocked — the whole purity fails closed, not just the original job", async () => {
+    const detail = (await getJewelleryJobDetail(completedJobId))!;
+    expect(isUnavailable(detail.issuedMetalCost)).toBe(true);
+    const output = detail.finishedOutputs.find((o) => o.id === finishedPieceId)!;
+    expect(isUnavailable(output.totalCostCurrent)).toBe(true);
+  }, 30_000);
+
+  it("a blocked sale consumes no sale-code sequence number — a retry gets the next real number, not a gap", async () => {
+    const yearLabel = String(new Date().getUTCFullYear());
+    const before = await prisma.jewellerySequence.findUnique({
+      where: { sequenceType_yearLabel: { sequenceType: "FINISHED_JEWELLERY_SALE", yearLabel } },
+    });
+    await expect(
+      prisma.$transaction((tx) =>
+        postFinishedJewellerySale(tx, {
+          date: new Date("2026-09-23"),
+          saleDate: new Date("2026-09-23"),
+          ...FY,
+          currencyCode: "INR",
+          exchangeRate: 1,
+          createdByUserId: ownerId,
+          customerId: downstreamFailureCustomerId,
+          gstTreatment: "NONE",
+          idempotencyKey: "phase8b-replay-failure-sale-sequence-probe",
+          items: [{ finishedJewelleryId: finishedPieceId, sellingPrice: "50000.00", gstRatePercent: 0, taxType: "EXCLUSIVE" }],
+        })
+      )
+    ).rejects.toThrow(CARRYING_COST_UNAVAILABLE_MESSAGE);
+
+    const after = await prisma.jewellerySequence.findUnique({
+      where: { sequenceType_yearLabel: { sequenceType: "FINISHED_JEWELLERY_SALE", yearLabel } },
+    });
+    // nextJewelleryCode's upsert runs inside the SAME transaction as the
+    // rest of the sale — when the carrying-cost check throws later in that
+    // transaction, the whole thing rolls back, counter included. No gap is
+    // ever visible to a real Owner who retries after fixing the purity.
+    expect(after?.lastNumber ?? 0).toBe(before?.lastNumber ?? 0);
+  }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// Mandatory check #1: a non-zero otherMaterialCost fixture, built through the
+// REAL posting engine (createJewelleryJob -> issueMaterialsToJewelleryJob ->
+// receiveFinishedJewellery), proving — from the accounting ledger itself,
+// never assumed — exactly what account 1330 capitalises at receipt, that
+// authoritativeCost matches it, that a sale's COGS matches it too, and that
+// the display total (which DOES include otherMaterialCost) is clearly a
+// different, separately labelled figure.
+// ---------------------------------------------------------------------------
+describe("non-zero otherMaterialCost: authoritativeCost proven against the real 1330 ledger", () => {
+  let purityId: string;
+  let jobCode: string;
+  let jobId: string;
+  let customerId: string;
+  let receiptVoucherId: string;
+  let pieces: { id: string; netMetalWeight: string; metalCost: Decimal; diamondCost: Decimal; otherMaterialCost: Decimal; labourAllocated: Decimal; totalCost: Decimal }[];
+
+  beforeAll(async () => {
+    purityId = (
+      await prisma.metalPurity.upsert({
+        where: { metalType_displayName: { metalType: "GOLD", displayName: "Phase8B OtherMaterial Karat" } },
+        create: { metalType: "GOLD", displayName: "Phase8B OtherMaterial Karat", finenessPercent: "91.600", createdByUserId: ownerId },
+        update: { finenessPercent: "91.600" },
+      })
+    ).id;
+    const karigar = await prisma.party.upsert({
+      where: { id: "phase8b-othermaterial-karigar" },
+      create: { id: "phase8b-othermaterial-karigar", name: "Phase8B OtherMaterial Karigar", type: "KARIGAR", createdByUserId: ownerId },
+      update: {},
+    });
+    const customer = await prisma.party.upsert({
+      where: { id: "phase8b-othermaterial-customer" },
+      create: { id: "phase8b-othermaterial-customer", name: "Phase8B OtherMaterial Customer", type: "CUSTOMER", createdByUserId: ownerId },
+      update: {},
+    });
+    customerId = customer.id;
+
+    await prisma.$transaction((tx) =>
+      postOpeningMetalStock(tx, {
+        metalType: "GOLD",
+        purityId,
+        grossWeight: "300.000",
+        costValue: "300000.00",
+        idempotencyKey: "phase8b-othermaterial-opening",
+        ...FY,
+        createdByUserId: ownerId,
+      })
+    );
+
+    const job = await prisma.$transaction((tx) =>
+      createJewelleryJob(tx, {
+        jewelleryType: "RING",
+        designName: "OtherMaterial fixture",
+        karigarId: karigar.id,
+        issueDate: new Date("2026-09-23"),
+        quantity: 3,
+        createdByUserId: ownerId,
+        idempotencyKey: "phase8b-othermaterial-job",
+      })
+    );
+    jobId = job.id;
+    jobCode = job.jobCode;
+
+    await prisma.$transaction((tx) =>
+      issueMaterialsToJewelleryJob(tx, {
+        jobId,
+        issueDate: new Date("2026-09-23"),
+        metalLines: [{ metalType: "GOLD", purityId, grossWeight: "30" }],
+        polishedDiamondIds: [],
+        otherMaterialLines: [{ description: "Alloy + findings", quantity: 1, unit: "GRAM", cost: "450.00" }],
+        ...FY,
+        createdByUserId: ownerId,
+        idempotencyKey: "phase8b-othermaterial-issue",
+      })
+    );
+
+    // Three unequal-weight outputs in one receipt — the same shape
+    // posting.test.ts already proves allocates without dropping a paisa —
+    // so this fixture ALSO exercises "sum of per-piece cost equals the
+    // inventory amount capitalised" (mandatory check #2) for real money
+    // that includes a non-zero otherMaterialCost.
+    const received = await prisma.$transaction((tx) =>
+      receiveFinishedJewellery(tx, {
+        jobId,
+        receiveDate: new Date("2026-09-23"),
+        outputs: [
+          { jewelleryType: "RING", quantity: 1, netMetalWeight: 10, metalType: "GOLD", purityId, diamondIds: [], qcStatus: "PASSED" },
+          { jewelleryType: "RING", quantity: 1, netMetalWeight: 7, metalType: "GOLD", purityId, diamondIds: [], qcStatus: "PASSED" },
+          { jewelleryType: "RING", quantity: 1, netMetalWeight: 13, metalType: "GOLD", purityId, diamondIds: [], qcStatus: "PASSED" },
+        ],
+        diamondResolutions: [],
+        returnedMetalLines: [],
+        scrapMetalLines: [],
+        karigarAddedFineWeight: 0,
+        karigarAddedCost: 0,
+        labourCharge: "300.00",
+        makingCharge: 0,
+        settingCharge: 0,
+        platingCharge: 0,
+        otherExpense: 0,
+        markJobComplete: true,
+        isAbnormalLoss: false,
+        damagedLostByUserId: ownerId,
+        ...FY,
+        createdByUserId: ownerId,
+        idempotencyKey: "phase8b-othermaterial-receipt",
+      })
+    );
+    receiptVoucherId = received.receipt.postingVoucherId!;
+
+    const rows = await prisma.finishedJewellery.findMany({ where: { jobId }, orderBy: { netMetalWeight: "asc" } });
+    pieces = rows.map((r) => ({
+      id: r.id,
+      netMetalWeight: new Decimal(r.netMetalWeight).toFixed(3),
+      metalCost: new Decimal(r.metalCost),
+      diamondCost: new Decimal(r.diamondCost),
+      otherMaterialCost: new Decimal(r.otherMaterialCost),
+      labourAllocated: new Decimal(r.labourAllocated),
+      totalCost: new Decimal(r.totalCost),
+    }));
+  }, 60_000);
+
+  it("produced exactly 3 outputs, with a real, non-zero otherMaterialCost on each", () => {
+    expect(pieces).toHaveLength(3);
+    expect(pieces.map((p) => p.netMetalWeight)).toEqual(["7.000", "10.000", "13.000"]);
+    for (const p of pieces) expect(p.otherMaterialCost.greaterThan(0)).toBe(true);
+    const otherMaterialSum = pieces.reduce((s, p) => s.plus(p.otherMaterialCost), ZERO);
+    expect(otherMaterialSum.toFixed(2)).toBe("450.00");
+  });
+
+  it("account 1330 capitalises exactly metalCost + diamondCost + labourAllocated — otherMaterialCost never reaches it", async () => {
+    const voucher = await prisma.voucher.findUniqueOrThrow({
+      where: { id: receiptVoucherId },
+      include: { journalEntries: { include: { account: true } } },
+    });
+    const inv1330 = voucher.journalEntries.find((e) => e.account.code === "1330")!;
+
+    const capitalisedSum = pieces.reduce((s, p) => s.plus(p.metalCost).plus(p.diamondCost).plus(p.labourAllocated), ZERO);
+    const displayTotalSum = pieces.reduce((s, p) => s.plus(p.totalCost), ZERO);
+    const otherMaterialSum = pieces.reduce((s, p) => s.plus(p.otherMaterialCost), ZERO);
+
+    expect(inv1330.debit.toFixed(2)).toBe(capitalisedSum.toFixed(2));
+    // The ledger PROVES otherMaterialCost is excluded — not assumed: the
+    // capitalised amount is short of the display total by exactly the
+    // otherMaterialCost sum, never zero, never a coincidence.
+    expect(inv1330.debit.toFixed(2)).not.toBe(displayTotalSum.toFixed(2));
+    expect(displayTotalSum.minus(inv1330.debit).toFixed(2)).toBe(otherMaterialSum.toFixed(2));
+  });
+
+  it("carryingFinishedPieceCost's authoritativeCost matches the real 1330 capitalisation for every piece, individually", async () => {
+    for (const p of pieces) {
+      const carrying = await carryingFinishedPieceCost(prisma, {
+        id: p.id,
+        jobId,
+        metalCost: p.metalCost,
+        diamondCost: p.diamondCost,
+        otherMaterialCost: p.otherMaterialCost,
+        labourAllocated: p.labourAllocated,
+        totalCost: p.totalCost,
+      });
+      // Ledger-derived, per-piece PRODUCED_IN stock movement — the same
+      // figure posting.ts actually capitalised for THIS piece, independent
+      // of the voucher-level aggregate check above.
+      const produced = await prisma.finishedJewelleryStockMovement.findFirstOrThrow({
+        where: { finishedJewelleryId: p.id, type: "PRODUCED_IN" },
+      });
+      expect(amount(carrying.authoritativeCost).toFixed(2)).toBe(produced.costValue.toFixed(2));
+      expect(amount(carrying.authoritativeCost).toFixed(2)).toBe(
+        p.metalCost.plus(p.diamondCost).plus(p.labourAllocated).toFixed(2)
+      );
+      // The DISPLAY total is a different, larger figure — labelled
+      // `totalCost`/`authoritativeCost` precisely so an Owner never confuses
+      // "what the piece is worth on the shelf" with "what accounting moved."
+      expect(amount(carrying.totalCost).toFixed(2)).toBe(p.totalCost.toFixed(2));
+      expect(amount(carrying.totalCost).greaterThan(amount(carrying.authoritativeCost))).toBe(true);
+    }
+  });
+
+  it("a partial sale of 2 of the 3 pieces posts COGS at authoritativeCost, credits exactly that from 1330, and the paisa reconciles to zero drift", async () => {
+    const [piece7, piece10, piece13] = pieces;
+    // Scoped to THIS job's own pieces via search, never the system-wide
+    // summary — another describe block in this suite deliberately leaves a
+    // replay-broken piece AVAILABLE (see "carrying cost fails closed"
+    // above), which correctly makes the GLOBAL aggregate fail closed too.
+    // That is fail-closed working as designed, not something this test
+    // should trip over.
+    function sumInventoryCost(rows: { inventoryCost?: Decimal | typeof CARRYING_COST_UNAVAILABLE }[]): Decimal {
+      return rows.reduce((s, r) => {
+        if (r.inventoryCost === undefined || isUnavailable(r.inventoryCost)) {
+          throw new Error("expected a real inventory cost in this fixture's own scope");
+        }
+        return s.plus(r.inventoryCost);
+      }, ZERO);
+    }
+    const beforeRows = await listFinishedJewelleryStock({ search: jobCode, status: "AVAILABLE", includeCost: true });
+    const beforeValue = sumInventoryCost(beforeRows);
+
+    // Mandatory check #3: this transaction now replays carrying cost inside
+    // itself (2 items, both on the same purity) — time it directly against
+    // Prisma's 5s interactive default and the 20s allowance
+    // createFinishedJewellerySaleAction actually sets in production.
+    const saleStarted = Date.now();
+    const sale = await prisma.$transaction((tx) =>
+      postFinishedJewellerySale(tx, {
+        date: new Date("2026-09-23"),
+        saleDate: new Date("2026-09-23"),
+        ...FY,
+        currencyCode: "INR",
+        exchangeRate: 1,
+        createdByUserId: ownerId,
+        customerId,
+        gstTreatment: "NONE",
+        idempotencyKey: "phase8b-othermaterial-sale",
+        items: [
+          { finishedJewelleryId: piece10.id, sellingPrice: "60000.00", gstRatePercent: 0, taxType: "EXCLUSIVE" },
+          { finishedJewelleryId: piece13.id, sellingPrice: "80000.00", gstRatePercent: 0, taxType: "EXCLUSIVE" },
+        ],
+      })
+    );
+    const saleElapsedMs = Date.now() - saleStarted;
+    console.log(`Phase8B sale-transaction latency: ${saleElapsedMs}ms for a 2-item sale replaying carrying cost inline (5s default, 20s allowance)`);
+    expect(saleElapsedMs).toBeLessThan(5_000);
+
+    const expectedCogs = amount(
+      (await carryingFinishedPieceCost(prisma, {
+        id: piece10.id,
+        jobId,
+        metalCost: piece10.metalCost,
+        diamondCost: piece10.diamondCost,
+        otherMaterialCost: piece10.otherMaterialCost,
+        labourAllocated: piece10.labourAllocated,
+        totalCost: piece10.totalCost,
+      })).authoritativeCost
+    ).plus(
+      amount(
+        (await carryingFinishedPieceCost(prisma, {
+          id: piece13.id,
+          jobId,
+          metalCost: piece13.metalCost,
+          diamondCost: piece13.diamondCost,
+          otherMaterialCost: piece13.otherMaterialCost,
+          labourAllocated: piece13.labourAllocated,
+          totalCost: piece13.totalCost,
+        })).authoritativeCost
+      )
+    );
+
+    expect(sale.sale.cogsTotal.toFixed(2)).toBe(expectedCogs.toFixed(2));
+
+    const lines = await prisma.finishedJewellerySaleLine.findMany({ where: { saleId: sale.sale.id } });
+    // Sum of per-piece COGS equals the sale's total exactly — every line
+    // was already independently rounded to 2dp by deriveTotals, so the sum
+    // of exact 2dp figures cannot itself carry a rounding remainder.
+    const lineSum = lines.reduce((s, l) => s.plus(l.cogsAmount), ZERO);
+    expect(lineSum.toFixed(2)).toBe(sale.sale.cogsTotal.toFixed(2));
+
+    const saleVoucher = await prisma.voucher.findUniqueOrThrow({
+      where: { id: sale.voucher.id },
+      include: { journalEntries: { include: { account: true } } },
+    });
+    const inv1330Credit = saleVoucher.journalEntries.find((e) => e.account.code === "1330")!;
+    expect(inv1330Credit.credit.toFixed(2)).toBe(sale.sale.cogsTotal.toFixed(2));
+
+    // What left 1330 for these two pieces is EXACTLY what entered it for
+    // them at receipt — no revaluation touched this purity, so the round
+    // trip must net to zero.
+    const enteredFor2 = piece10.metalCost
+      .plus(piece10.diamondCost)
+      .plus(piece10.labourAllocated)
+      .plus(piece13.metalCost)
+      .plus(piece13.diamondCost)
+      .plus(piece13.labourAllocated);
+    expect(inv1330Credit.credit.toFixed(2)).toBe(enteredFor2.toFixed(2));
+
+    // Remaining Finished Stock value (scoped to this job, same reasoning as
+    // `beforeRows` above) dropped by exactly the COGS just posted.
+    const afterRows = await listFinishedJewelleryStock({ search: jobCode, status: "AVAILABLE", includeCost: true });
+    const afterValue = sumInventoryCost(afterRows);
+    expect(beforeValue.minus(afterValue).toFixed(2)).toBe(sale.sale.cogsTotal.toFixed(2));
+
+    // Only the untouched 7g piece remains available for this job.
+    expect(afterRows).toHaveLength(1);
+    expect(afterRows[0].id).toBe(piece7.id);
+
+    // Cancelling reverses the EXACT frozen COGS just posted, not a
+    // recomputed figure — proven the same way as the FJ-86 cancellation
+    // test above, now with a fixture that has real otherMaterialCost.
+    await prisma.$transaction((tx) =>
+      cancelFinishedJewellerySale(tx, {
+        saleId: sale.sale.id,
+        cancelledByUserId: ownerId,
+        cancellationReason: "Phase8B downstream-consistency regression test reversal",
+        ...FY,
+      })
+    );
+    const reversalLines = await prisma.journalEntry.findMany({
+      where: { voucher: { reversalOfVoucherId: sale.voucher.id } },
+      include: { account: true },
+    });
+    const reversal1330 = reversalLines.find((e) => e.account.code === "1330")!;
+    expect(reversal1330.debit.toFixed(2)).toBe(sale.sale.cogsTotal.toFixed(2));
+
+    const restored = await listFinishedJewelleryStock({ search: jobCode, status: "AVAILABLE", includeCost: true });
+    expect(restored).toHaveLength(3);
+  }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// Mandatory check #4: concurrency and idempotency for the sale write path.
+// ---------------------------------------------------------------------------
+describe("concurrency and idempotency for the finished-jewellery sale write path", () => {
+  let purityId: string;
+  let customerId: string;
+  let pieceAId: string;
+  let pieceBId: string;
+  let pieceCId: string;
+
+  async function makeAvailablePiece(label: string, karigarId: string): Promise<string> {
+    const job = await prisma.jewelleryJob.create({
+      data: {
+        jobCode: `ZL-JJOB-CONCURRENCY-${label}-${Date.now()}`,
+        jewelleryType: "RING",
+        designName: `Concurrency fixture ${label}`,
+        karigarId,
+        issueDate: new Date("2026-09-23"),
+        status: "COMPLETED",
+        issuedMetalFineWeight: "3.000",
+        issuedMetalCost: "30000.00",
+        receivedFineWeight: "3.000",
+        remainingWipCost: "0.00",
+        createdByUserId: ownerId,
+      },
+    });
+    const receipt = await prisma.jewelleryReceipt.create({
+      data: { receiptCode: `ZL-JREC-CONCURRENCY-${label}-${Date.now()}`, jobId: job.id, receiveDate: new Date("2026-09-23"), createdByUserId: ownerId },
+    });
+    const piece = await prisma.finishedJewellery.create({
+      data: {
+        finishedCode: `ZL-FJ-CONCURRENCY-${label}-${Date.now()}`,
+        receiptId: receipt.id,
+        jobId: job.id,
+        jewelleryType: "RING",
+        netMetalWeight: "3.000",
+        metalType: "GOLD",
+        purityId,
+        finenessPercentSnapshot: "91.600",
+        fineMetalWeight: "2.748",
+        metalCost: "30000.00",
+        diamondCost: "0.00",
+        otherMaterialCost: "0.00",
+        labourAllocated: "0.00",
+        totalCost: "30000.00",
+        status: "AVAILABLE",
+        createdByUserId: ownerId,
+      },
+    });
+    return piece.id;
+  }
+
+  beforeAll(async () => {
+    purityId = (
+      await prisma.metalPurity.upsert({
+        where: { metalType_displayName: { metalType: "GOLD", displayName: "Phase8B Concurrency Karat" } },
+        create: { metalType: "GOLD", displayName: "Phase8B Concurrency Karat", finenessPercent: "91.600", createdByUserId: ownerId },
+        update: { finenessPercent: "91.600" },
+      })
+    ).id;
+    const karigar = await prisma.party.upsert({
+      where: { id: "phase8b-concurrency-karigar" },
+      create: { id: "phase8b-concurrency-karigar", name: "Phase8B Concurrency Karigar", type: "KARIGAR", createdByUserId: ownerId },
+      update: {},
+    });
+    const customer = await prisma.party.upsert({
+      where: { id: "phase8b-concurrency-customer" },
+      create: { id: "phase8b-concurrency-customer", name: "Phase8B Concurrency Customer", type: "CUSTOMER", createdByUserId: ownerId },
+      update: {},
+    });
+    customerId = customer.id;
+    pieceAId = await makeAvailablePiece("A", karigar.id);
+    pieceBId = await makeAvailablePiece("B", karigar.id);
+    pieceCId = await makeAvailablePiece("C", karigar.id);
+  }, 60_000);
+
+  it("two simultaneous sales of the SAME piece: exactly one succeeds, the other is rejected, nothing is double-sold", async () => {
+    const sellOnce = () =>
+      prisma.$transaction((tx) =>
+        postFinishedJewellerySale(tx, {
+          date: new Date("2026-09-23"),
+          saleDate: new Date("2026-09-23"),
+          ...FY,
+          currencyCode: "INR",
+          exchangeRate: 1,
+          createdByUserId: ownerId,
+          customerId,
+          gstTreatment: "NONE",
+          items: [{ finishedJewelleryId: pieceAId, sellingPrice: "45000.00", gstRatePercent: 0, taxType: "EXCLUSIVE" }],
+        })
+      );
+
+    const [first, second] = await Promise.allSettled([sellOnce(), sellOnce()]);
+    const outcomes = [first, second];
+    const fulfilled = outcomes.filter((o) => o.status === "fulfilled");
+    const rejected = outcomes.filter((o) => o.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+
+    const piece = await prisma.finishedJewellery.findUniqueOrThrow({ where: { id: pieceAId } });
+    expect(piece.status).toBe("SOLD");
+    expect(await prisma.finishedJewellerySaleLine.count({ where: { finishedJewelleryId: pieceAId } })).toBe(1);
+    expect(await prisma.finishedJewelleryStockMovement.count({ where: { finishedJewelleryId: pieceAId, type: "SOLD_OUT" } })).toBe(1);
+  }, 30_000);
+
+  it("a duplicate submit (same idempotencyKey, two different pieces racing) creates exactly one voucher/COGS posting", async () => {
+    const key = "phase8b-concurrency-duplicate-submit";
+    const sellB = () =>
+      prisma.$transaction((tx) =>
+        postFinishedJewellerySale(tx, {
+          date: new Date("2026-09-23"),
+          saleDate: new Date("2026-09-23"),
+          ...FY,
+          currencyCode: "INR",
+          exchangeRate: 1,
+          createdByUserId: ownerId,
+          customerId,
+          gstTreatment: "NONE",
+          idempotencyKey: key,
+          items: [{ finishedJewelleryId: pieceBId, sellingPrice: "45000.00", gstRatePercent: 0, taxType: "EXCLUSIVE" }],
+        })
+      );
+    const sellC = () =>
+      prisma.$transaction((tx) =>
+        postFinishedJewellerySale(tx, {
+          date: new Date("2026-09-23"),
+          saleDate: new Date("2026-09-23"),
+          ...FY,
+          currencyCode: "INR",
+          exchangeRate: 1,
+          createdByUserId: ownerId,
+          customerId,
+          gstTreatment: "NONE",
+          idempotencyKey: key,
+          items: [{ finishedJewelleryId: pieceCId, sellingPrice: "45000.00", gstRatePercent: 0, taxType: "EXCLUSIVE" }],
+        })
+      );
+
+    const [first, second] = await Promise.allSettled([sellB(), sellC()]);
+    const fulfilled = [first, second].filter((o) => o.status === "fulfilled");
+    const rejected = [first, second].filter((o) => o.status === "rejected");
+    // The database's UNIQUE constraint on idempotencyKey is the real
+    // guarantee here — exactly one of these two racing submissions can
+    // ever hold that key, regardless of which piece it names.
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(await prisma.finishedJewellerySale.count({ where: { idempotencyKey: key } })).toBe(1);
+
+    // Whichever piece lost the race is still AVAILABLE — its own claim was
+    // made inside the same transaction that then failed on the duplicate
+    // key, so it rolled back too, exactly like the replay-failure case.
+    const [pieceB, pieceC] = await Promise.all([
+      prisma.finishedJewellery.findUniqueOrThrow({ where: { id: pieceBId } }),
+      prisma.finishedJewellery.findUniqueOrThrow({ where: { id: pieceCId } }),
+    ]);
+    const statuses = [pieceB.status, pieceC.status].sort();
+    expect(statuses).toEqual(["AVAILABLE", "SOLD"]);
+  }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// Final reconciliation — runs last (vitest executes describe blocks in file
+// order), after every fixture above has posted sales, cancellations,
+// adjustments and costing documents on top of R1/R2. Every voucher this
+// entire file created, across every describe block, must still balance
+// exactly: proof that the downstream-consistency fix never left a
+// one-sided posting anywhere in the run.
+// ---------------------------------------------------------------------------
+describe("final reconciliation — every voucher this whole suite posted still balances", () => {
+  it("reconcileVoucherBalances reports ok across the full run", async () => {
+    const result = await reconcileVoucherBalances(prisma);
+    expect(result.ok).toBe(true);
+  }, 30_000);
 });

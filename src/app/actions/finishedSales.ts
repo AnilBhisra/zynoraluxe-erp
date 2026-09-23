@@ -12,6 +12,7 @@ import { Decimal } from "@/lib/accounting/money";
 import * as posting from "@/lib/accounting/posting";
 import * as finishedSalesPosting from "@/lib/jewellery/finishedSalesPosting";
 import { getPhase5VsPhase6Comparison, getSuggestedSalePrice } from "@/lib/costing/sourcing";
+import { formatCarryingAmount } from "@/lib/jewellery/carryingCost";
 import {
   adjustFinishedJewelleryStockSchema,
   cancelFinishedJewellerySaleSchema,
@@ -107,7 +108,7 @@ export async function getPhase5VsPhase6ComparisonAction(
     expectedFullBusinessCost: comparison.expectedFullBusinessCost.toFixed(2),
     expectedProfit: comparison.expectedProfit.toFixed(2),
     expectedMarginPercent: comparison.expectedMarginPercent.toFixed(2),
-    authoritativeAccountingCost: comparison.authoritativeAccountingCost.toFixed(2),
+    authoritativeAccountingCost: formatCarryingAmount(comparison.authoritativeAccountingCost),
     otherMaterialCostExcluded: comparison.otherMaterialCostExcluded.toFixed(2),
     realizedStatus: comparison.realizedStatus,
     saleCode: comparison.saleCode,
@@ -429,13 +430,19 @@ export async function adjustFinishedJewelleryStockAction(
   }
 
   try {
-    await prisma.$transaction((tx) =>
-      finishedSalesPosting.adjustFinishedJewelleryStock(tx, {
-        finishedJewelleryId: parsed.data.finishedJewelleryId,
-        direction: parsed.data.direction,
-        reason: parsed.data.reason,
-        createdByUserId: user.id,
-      })
+    await prisma.$transaction(
+      (tx) =>
+        finishedSalesPosting.adjustFinishedJewelleryStock(tx, {
+          finishedJewelleryId: parsed.data.finishedJewelleryId,
+          direction: parsed.data.direction,
+          reason: parsed.data.reason,
+          createdByUserId: user.id,
+        }),
+      // Phase 8B: this now replays the piece's source purity when it
+      // carries an active revaluation, the same extra round-trips that
+      // already earned createFinishedJewellerySaleAction its own 20s
+      // allowance over a remote pooled Postgres connection.
+      { timeout: 20000 }
     );
     revalidateFinishedSales();
     return { success: true };

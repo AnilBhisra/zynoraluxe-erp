@@ -23,17 +23,28 @@ import {
   type JournalLineInput,
 } from "@/lib/accounting/posting";
 import { nextJewelleryCode } from "@/lib/jewellery/numbering";
+import { carryingFinishedPieceCost, carryingFinishedPieceCosts, isUnavailable, CARRYING_COST_UNAVAILABLE_MESSAGE } from "@/lib/jewellery/carryingCost";
 
 type Tx = Prisma.TransactionClient;
 type FyInput = { fyStartMonth: number; fyStartDay: number };
 
 /**
- * The ONE authoritative definition of a FinishedJewellery output's real
- * accounting inventory carrying cost, used EVERYWHERE in this file —
- * never `output.totalCost` (which wrongly includes display-only
- * `otherMaterialCost`, never posted to any account — see the header
- * comment on `model FinishedJewellery` in schema.prisma and
- * PHASE_6_VERIFICATION.md §1 for the full audit trail proving this).
+ * The ONE authoritative FORMULA for a FinishedJewellery output's real
+ * accounting inventory carrying cost — never `output.totalCost` (which
+ * wrongly includes display-only `otherMaterialCost`, never posted to any
+ * account — see the header comment on `model FinishedJewellery` in
+ * schema.prisma and PHASE_6_VERIFICATION.md §1 for the full audit trail).
+ *
+ * Phase 8B: this formula alone is no longer enough for a NEW posting — a
+ * posted revaluation restates `metalCost` without ever rewriting the
+ * stored column, so any write that values an item AS OF RIGHT NOW must
+ * first resolve its CURRENT metalCost via
+ * `@/lib/jewellery/carryingCost`'s `carryingFinishedPieceCost(s)` (which
+ * applies this exact formula to the replayed figure) rather than calling
+ * this directly on the stored row. This function still applies UNCHANGED
+ * wherever the ORIGINAL/frozen value is what's needed — e.g. reading back
+ * an already-posted sale line's own `cogsAmount`, which a reversal must
+ * mirror exactly regardless of any later revaluation.
  */
 export function getAuthoritativeInventoryCost(output: {
   metalCost: DecimalInput;
@@ -174,7 +185,34 @@ export async function postFinishedJewellerySale(
 
   const { computed } = computeLineTotalsForAll(lines);
 
-  const cogsPerItem = claimedOutputs.map(({ output }) => getAuthoritativeInventoryCost(output));
+  // COGS posts at the item's CURRENT carrying cost — the stored metalCost
+  // replayed through every POSTED revaluation of this purity, via the same
+  // shared service the display pages use (never a second formula). If a
+  // purity that touches a claimed item cannot be replayed cleanly, the
+  // whole sale is blocked rather than posting an approximate COGS — the
+  // transaction throws here, so the earlier AVAILABLE->SOLD claims above
+  // are rolled back too.
+  const carrying = await carryingFinishedPieceCosts(
+    tx,
+    claimedOutputs.map(({ output }) => ({
+      id: output.id,
+      jobId: output.jobId,
+      metalCost: new Decimal(output.metalCost),
+      diamondCost: new Decimal(output.diamondCost),
+      otherMaterialCost: new Decimal(output.otherMaterialCost),
+      labourAllocated: new Decimal(output.labourAllocated),
+      totalCost: new Decimal(output.totalCost),
+    }))
+  );
+  const cogsPerItem = claimedOutputs.map(({ output }) => {
+    // COGS is the AUTHORITATIVE accounting cost — excludes otherMaterialCost,
+    // exactly like getAuthoritativeInventoryCost does for the stored original.
+    const cost = carrying.get(output.id)!.authoritativeCost;
+    if (isUnavailable(cost)) {
+      throw new PostingError(`${output.finishedCode}: ${CARRYING_COST_UNAVAILABLE_MESSAGE}`);
+    }
+    return cost;
+  });
   const cogsTotal = round2(cogsPerItem.reduce((sum, c) => sum.plus(c), ZERO));
 
   const additionalLines: JournalLineInput[] = [
@@ -622,7 +660,24 @@ export async function adjustFinishedJewelleryStock(
   });
   if (!output) throw new PostingError("Item not found.");
 
-  const costValue = getAuthoritativeInventoryCost(output);
+  // This is a NEW event happening now, not a reversal of something already
+  // posted — it must value the item at its CURRENT carrying cost, same as a
+  // sale would, and block (never approximate) if that cannot be replayed.
+  const carrying = await carryingFinishedPieceCost(tx, {
+    id: output.id,
+    jobId: output.jobId,
+    metalCost: new Decimal(output.metalCost),
+    diamondCost: new Decimal(output.diamondCost),
+    otherMaterialCost: new Decimal(output.otherMaterialCost),
+    labourAllocated: new Decimal(output.labourAllocated),
+    totalCost: new Decimal(output.totalCost),
+  });
+  if (isUnavailable(carrying.authoritativeCost)) {
+    throw new PostingError(`${output.finishedCode}: ${CARRYING_COST_UNAVAILABLE_MESSAGE}`);
+  }
+  // Matches getAuthoritativeInventoryCost's original formula — the inventory
+  // ledger's costValue was never the display total, and still isn't.
+  const costValue = carrying.authoritativeCost;
   await tx.finishedJewelleryStockMovement.create({
     data: {
       type: input.direction === "IN" ? "OWNER_ADJUSTMENT_IN" : "OWNER_ADJUSTMENT_OUT",

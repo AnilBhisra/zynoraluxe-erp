@@ -4,6 +4,10 @@ const mocks = vi.hoisted(() => ({
   finishedJewelleryFindUnique: vi.fn(),
   costSheetFindFirst: vi.fn(),
   finishedJewellerySaleLineFindFirst: vi.fn(),
+  // This suite has no posted revaluation, so every carrying-cost lookup
+  // takes the fast, unaffected path — see carryingCost.ts.
+  metalRevaluationFindMany: vi.fn().mockResolvedValue([]),
+  metalStockMovementFindMany: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("@/lib/db/prisma", () => ({
@@ -11,17 +15,29 @@ vi.mock("@/lib/db/prisma", () => ({
     finishedJewellery: { findUnique: mocks.finishedJewelleryFindUnique },
     costSheet: { findFirst: mocks.costSheetFindFirst },
     finishedJewellerySaleLine: { findFirst: mocks.finishedJewellerySaleLineFindFirst },
+    metalRevaluation: { findMany: mocks.metalRevaluationFindMany },
+    metalStockMovement: { findMany: mocks.metalStockMovementFindMany },
   },
 }));
 
 import { getPhase5VsPhase6Comparison } from "./sourcing";
+import type { Decimal } from "@/lib/accounting/money";
+
+/** authoritativeAccountingCost is a real Decimal whenever no purity here has
+ * an active revaluation (always true in this suite) — narrows for .toFixed(). */
+function amount(v: Decimal | "UNAVAILABLE"): Decimal {
+  if (typeof v === "string") throw new Error("expected a Decimal, got the unavailable sentinel");
+  return v;
+}
 
 const ITEM = {
   id: "fj-1",
+  jobId: "job-1",
   finishedCode: "ZL-FJ-2026-000001",
   metalCost: "50000.00",
   diamondCost: "20000.00",
   labourAllocated: "8000.00",
+  totalCost: "83000.00",
   otherMaterialCost: "5000.00", // display-only — the difference this comparison must explain
 };
 
@@ -97,9 +113,9 @@ describe("getPhase5VsPhase6Comparison — the otherMaterialCost explanation", ()
     mocks.finishedJewellerySaleLineFindFirst.mockResolvedValue(null);
 
     const result = await getPhase5VsPhase6Comparison("fj-1");
-    expect(result!.authoritativeAccountingCost.toFixed(2)).toBe("78000.00"); // 50000+20000+8000
+    expect(amount(result!.authoritativeAccountingCost).toFixed(2)).toBe("78000.00"); // 50000+20000+8000
     expect(result!.otherMaterialCostExcluded.toFixed(2)).toBe("5000.00");
-    expect(result!.expectedFullBusinessCost.minus(result!.authoritativeAccountingCost).toFixed(2)).toBe("5000.00");
+    expect(result!.expectedFullBusinessCost.minus(amount(result!.authoritativeAccountingCost)).toFixed(2)).toBe("5000.00");
   });
 });
 
