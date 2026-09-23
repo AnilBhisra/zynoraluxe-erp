@@ -7,6 +7,13 @@ import { shapeLabel } from "@/lib/diamond/shapes";
 import { getAuthoritativeInventoryCost } from "@/lib/jewellery/finishedSalesPosting";
 import { jobIssuedCosts } from "@/lib/jewellery/jobIssuedCost";
 import { sumMetalPool } from "@/lib/jewellery/posting";
+import {
+  CARRYING_COST_UNAVAILABLE,
+  type CarryingAmount,
+  carryingFinishedPieceCosts,
+  carryingJobCosts,
+  isUnavailable,
+} from "@/lib/jewellery/carryingCost";
 import type {
   FinishedJewelleryStockStatus,
   JewelleryJobStatus,
@@ -155,7 +162,7 @@ export type JewelleryJobRow = {
   status: JewelleryJobStatus;
   issuedMetalFineWeight: Decimal;
   pendingFineWeight: Decimal;
-  totalIssuedCost: Decimal;
+  totalIssuedCost: CarryingAmount;
 };
 
 export function pendingFineWeightOf(job: {
@@ -197,20 +204,35 @@ export async function listJewelleryJobs(filters?: {
     take: 300,
   });
 
-  return jobs.map((j) => ({
-    id: j.id,
-    jobCode: j.jobCode,
-    customerName: j.customer?.name ?? null,
-    karigarName: j.karigar.name,
-    jewelleryType: j.jewelleryType,
-    designName: j.designName,
-    issueDate: j.issueDate,
-    expectedDeliveryDate: j.expectedDeliveryDate,
-    status: j.status,
-    issuedMetalFineWeight: round3(j.issuedMetalFineWeight),
-    pendingFineWeight: pendingFineWeightOf(j),
-    totalIssuedCost: jobIssuedCosts(j).totalIssuedCost,
-  }));
+  // A correction never rewrites issuedMetalCost itself — the current figure
+  // is replayed through the same corrected ledger the correction that
+  // revalued it was planned against (Phase 8B display-defect fix; see
+  // PHASE_8_VERIFICATION.md "job carrying cost"). A job untouched by any
+  // revaluation costs nothing extra: its stored total is already current.
+  const carrying = await carryingJobCosts(
+    jobs.map((j) => ({ id: j.id, issuedMetalCost: new Decimal(j.issuedMetalCost), remainingWipCost: new Decimal(j.remainingWipCost) }))
+  );
+
+  return jobs.map((j) => {
+    const jobCarrying = carrying.get(j.id);
+    const issuedMetalCost = jobCarrying?.issuedMetalCost ?? new Decimal(j.issuedMetalCost);
+    return {
+      id: j.id,
+      jobCode: j.jobCode,
+      customerName: j.customer?.name ?? null,
+      karigarName: j.karigar.name,
+      jewelleryType: j.jewelleryType,
+      designName: j.designName,
+      issueDate: j.issueDate,
+      expectedDeliveryDate: j.expectedDeliveryDate,
+      status: j.status,
+      issuedMetalFineWeight: round3(j.issuedMetalFineWeight),
+      pendingFineWeight: pendingFineWeightOf(j),
+      totalIssuedCost: isUnavailable(issuedMetalCost)
+        ? CARRYING_COST_UNAVAILABLE
+        : jobIssuedCosts({ ...j, issuedMetalCost }).totalIssuedCost,
+    };
+  });
 }
 
 export type JewelleryJobDetail = JewelleryJobRow & {
@@ -223,10 +245,10 @@ export type JewelleryJobDetail = JewelleryJobRow & {
   targetMetalType: MetalType | null;
   targetPurityDisplayName: string | null;
   targetFinishedWeight: Decimal | null;
-  issuedMetalCost: Decimal;
+  issuedMetalCost: CarryingAmount;
   issuedDiamondCost: Decimal;
   otherMaterialCost: Decimal;
-  remainingWipCost: Decimal;
+  remainingWipCost: CarryingAmount;
   totalLabourCharge: Decimal;
   receivedFineWeight: Decimal;
   returnedMetalFineWeight: Decimal;
@@ -324,7 +346,13 @@ export type JewelleryJobDetail = JewelleryJobRow & {
     sourcePurityDisplayName: string | null;
     alloyAddedWeight: Decimal;
     alloyCost: Decimal;
+    /** The original figure Phase 4 posted at receive time — never rewritten
+     * by a correction. Kept for any write-path (e.g. OverrideAllocationForm)
+     * that must redistribute exactly this receipt's already-posted total. */
     totalCost: Decimal;
+    /** totalCost replayed through every POSTED revaluation of this piece's
+     * purity — what the piece is carried at right now. Display only. */
+    totalCostCurrent: CarryingAmount;
     qcStatus: QcStatus;
     photoAssetId: string | null;
   }[];
@@ -386,7 +414,30 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
     }),
   ]);
   if (!job) return null;
-  const issuedCosts = jobIssuedCosts(job);
+
+  // Current carrying values: the stored figures replayed through every
+  // POSTED revaluation, via the same replay engine the correction itself was
+  // planned against. The stored columns (issuedMetalCost, remainingWipCost,
+  // each piece's totalCost) are never rewritten — this is display only, and
+  // fails closed (CARRYING_COST_UNAVAILABLE) rather than approximating.
+  const [jobCarrying, finishedCarryingById] = await Promise.all([
+    carryingJobCosts([{ id: job.id, issuedMetalCost: new Decimal(job.issuedMetalCost), remainingWipCost: new Decimal(job.remainingWipCost) }]),
+    carryingFinishedPieceCosts(
+      job.finishedJewellery.map((f) => ({
+        id: f.id,
+        jobId: job.id,
+        metalCost: new Decimal(f.metalCost),
+        diamondCost: new Decimal(f.diamondCost),
+        labourAllocated: new Decimal(f.labourAllocated),
+        totalCost: new Decimal(f.totalCost),
+      }))
+    ),
+  ]);
+  const carryingIssuedMetalCost = jobCarrying.get(job.id)?.issuedMetalCost ?? new Decimal(job.issuedMetalCost);
+  const carryingRemainingWipCost = jobCarrying.get(job.id)?.remainingWipCost ?? new Decimal(job.remainingWipCost);
+  const issuedCosts = isUnavailable(carryingIssuedMetalCost)
+    ? { issuedDiamondCost: jobIssuedCosts(job).issuedDiamondCost, totalIssuedCost: CARRYING_COST_UNAVAILABLE as CarryingAmount }
+    : jobIssuedCosts({ ...job, issuedMetalCost: carryingIssuedMetalCost });
 
   const timeline: JewelleryJobDetail["timeline"] = [
     ...metalMovements.map((m) => ({
@@ -427,10 +478,10 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
     targetPurityDisplayName: job.targetPurity?.displayName ?? null,
     targetFinishedWeight: job.targetFinishedWeight ? round3(job.targetFinishedWeight) : null,
     issuedMetalFineWeight: round3(job.issuedMetalFineWeight),
-    issuedMetalCost: round2(job.issuedMetalCost),
+    issuedMetalCost: carryingIssuedMetalCost,
     issuedDiamondCost: issuedCosts.issuedDiamondCost,
     otherMaterialCost: round2(job.otherMaterialCost),
-    remainingWipCost: round2(job.remainingWipCost),
+    remainingWipCost: carryingRemainingWipCost,
     totalLabourCharge: round2(job.totalLabourCharge),
     receivedFineWeight: round3(job.receivedFineWeight),
     returnedMetalFineWeight: round3(job.returnedMetalFineWeight),
@@ -541,6 +592,7 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
       alloyAddedWeight: round3(f.alloyAddedWeight),
       alloyCost: round2(f.alloyCost),
       totalCost: round2(f.totalCost),
+      totalCostCurrent: finishedCarryingById.get(f.id)?.totalCost ?? round2(f.totalCost),
       qcStatus: f.qcStatus,
       photoAssetId: f.photoAssetId,
     })),
@@ -605,7 +657,7 @@ export type FinishedJewelleryRow = {
   fineMetalWeight: Decimal;
   grossWeight: Decimal | null;
   diamondCount: number;
-  totalCost: Decimal;
+  totalCost: CarryingAmount;
   qcStatus: QcStatus;
   photoAssetId: string | null;
   createdAt: Date;
@@ -650,6 +702,17 @@ export async function listFinishedJewellery(filters?: { search?: string }): Prom
     take: 300,
   });
 
+  const carryingById = await carryingFinishedPieceCosts(
+    outputs.map((o) => ({
+      id: o.id,
+      jobId: o.jobId,
+      metalCost: new Decimal(o.metalCost),
+      diamondCost: new Decimal(o.diamondCost),
+      labourAllocated: new Decimal(o.labourAllocated),
+      totalCost: new Decimal(o.totalCost),
+    }))
+  );
+
   return outputs.map((o) => ({
     id: o.id,
     finishedCode: o.finishedCode,
@@ -664,7 +727,8 @@ export async function listFinishedJewellery(filters?: { search?: string }): Prom
     fineMetalWeight: round3(o.fineMetalWeight),
     grossWeight: o.grossWeight ? round3(o.grossWeight) : null,
     diamondCount: setStoneTotals(o.diamonds, o.packetResolutions).count,
-    totalCost: round2(o.totalCost),
+    // Current carrying value — replayed through every POSTED revaluation.
+    totalCost: carryingById.get(o.id)?.totalCost ?? round2(o.totalCost),
     qcStatus: o.qcStatus,
     photoAssetId: o.photoAssetId,
     createdAt: o.createdAt,
@@ -707,7 +771,7 @@ export type FinishedJewelleryStockRow = {
   saleCode: string | null;
   saleDate: Date | null;
   // Owner-only. Present only when the query was run with includeCost:true.
-  inventoryCost?: Decimal;
+  inventoryCost?: CarryingAmount;
   costSheetNumber?: string | null;
 };
 
@@ -729,7 +793,7 @@ type StockRowSource = {
   saleLines: { sale: { saleCode: string; saleDate: Date } }[];
 };
 
-function toStockRow(o: StockRowSource, cost?: { inventoryCost: Decimal; costSheetNumber: string | null }): FinishedJewelleryStockRow {
+function toStockRow(o: StockRowSource, cost?: { inventoryCost: CarryingAmount; costSheetNumber: string | null }): FinishedJewelleryStockRow {
   const activeSaleLine = o.saleLines[0] ?? null;
   return {
     id: o.id,
@@ -784,6 +848,7 @@ export async function listFinishedJewelleryStock(filters?: {
       where,
       select: {
         id: true,
+        jobId: true,
         finishedCode: true,
         jewelleryType: true,
         metalType: true,
@@ -796,6 +861,7 @@ export async function listFinishedJewelleryStock(filters?: {
         metalCost: true,
         diamondCost: true,
         labourAllocated: true,
+        totalCost: true,
         job: { select: { jobCode: true, designName: true, karigar: { select: { name: true } } } },
         purity: { select: { displayName: true } },
         diamonds: { select: { caratAtIssue: true } },
@@ -811,9 +877,22 @@ export async function listFinishedJewelleryStock(filters?: {
       orderBy: { createdAt: "desc" },
       take: 500,
     });
+    // getAuthoritativeInventoryCost is the accounting function COGS posting
+    // uses at sale time — never touched here; this display figure is
+    // computed independently, replaying through every POSTED revaluation.
+    const carryingById = await carryingFinishedPieceCosts(
+      outputs.map((o) => ({
+        id: o.id,
+        jobId: o.jobId,
+        metalCost: new Decimal(o.metalCost),
+        diamondCost: new Decimal(o.diamondCost),
+        labourAllocated: new Decimal(o.labourAllocated),
+        totalCost: new Decimal(o.totalCost),
+      }))
+    );
     return outputs.map((o) =>
       toStockRow(o, {
-        inventoryCost: getAuthoritativeInventoryCost(o),
+        inventoryCost: carryingById.get(o.id)?.totalCost ?? getAuthoritativeInventoryCost(o),
         costSheetNumber: o.costSheets[0]?.costingNumber ?? null,
       })
     );
@@ -930,7 +1009,7 @@ export type FinishedJewelleryStockSummary = {
   availableCount: number;
   availableFineWeight: Decimal;
   // Owner-only — undefined unless includeValue was requested.
-  availableInventoryValue?: Decimal;
+  availableInventoryValue?: CarryingAmount;
 };
 
 // ---------------------------------------------------------------------------
@@ -1004,14 +1083,37 @@ export async function getFinishedJewelleryStockSummary(includeValue = false): Pr
   if (includeValue) {
     const rows = await prisma.finishedJewellery.findMany({
       where: { status: "AVAILABLE" },
-      select: { fineMetalWeight: true, metalCost: true, diamondCost: true, labourAllocated: true },
+      select: {
+        id: true,
+        jobId: true,
+        fineMetalWeight: true,
+        metalCost: true,
+        diamondCost: true,
+        labourAllocated: true,
+        totalCost: true,
+      },
     });
+    const carryingById = await carryingFinishedPieceCosts(
+      rows.map((r) => ({
+        id: r.id,
+        jobId: r.jobId,
+        metalCost: new Decimal(r.metalCost),
+        diamondCost: new Decimal(r.diamondCost),
+        labourAllocated: new Decimal(r.labourAllocated),
+        totalCost: new Decimal(r.totalCost),
+      }))
+    );
+    // If any included piece's replay failed closed, the whole tile does too
+    // — a silently partial sum would be worse than an honest "unavailable".
+    const anyUnavailable = rows.some((r) => isUnavailable(carryingById.get(r.id)?.totalCost ?? ZERO));
     return {
       availableCount: rows.length,
       availableFineWeight: round3(rows.reduce((sum, r) => sum.plus(r.fineMetalWeight), new Decimal(0))),
-      availableInventoryValue: round2(
-        rows.reduce((sum, r) => sum.plus(getAuthoritativeInventoryCost(r)), ZERO)
-      ),
+      availableInventoryValue: anyUnavailable
+        ? CARRYING_COST_UNAVAILABLE
+        : round2(
+            rows.reduce((sum, r) => sum.plus(carryingById.get(r.id)?.totalCost as Decimal), ZERO)
+          ),
     };
   }
   const rows = await prisma.finishedJewellery.findMany({

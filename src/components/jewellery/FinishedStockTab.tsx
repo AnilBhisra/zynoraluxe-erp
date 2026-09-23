@@ -11,6 +11,13 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { CsvDownloadButton } from "@/components/accounting/CsvDownloadButton";
 import { Phase5VsPhase6Comparison } from "@/components/jewellery/Phase5VsPhase6Comparison";
 import { jewelleryTypeLabel } from "@/lib/jewellery/types";
+import { CARRYING_COST_UNAVAILABLE_MESSAGE } from "@/lib/jewellery/carryingCostMessage";
+
+/** A cost field may carry the fail-closed message instead of a number — see
+ * carryingCostMessage.ts. Shown as-is, without a ₹ prefix. */
+function money(value: string): string {
+  return value === CARRYING_COST_UNAVAILABLE_MESSAGE ? value : `₹${value}`;
+}
 
 export type SerializedFinishedStockRow = {
   id: string;
@@ -235,7 +242,7 @@ export function FinishedStockTab({
                     <td className="px-3 py-2">{i.saleCode ?? "—"}</td>
                     {isOwner ? (
                       <td className="px-3 py-2">
-                        ₹{i.inventoryCost}
+                        {i.inventoryCost !== undefined ? money(i.inventoryCost) : ""}
                         {i.costSheetNumber ? (
                           <span className="block text-xs text-zinc-500 dark:text-zinc-400">{i.costSheetNumber}</span>
                         ) : null}
@@ -329,7 +336,7 @@ export function FinishedStockTab({
                   {isOwner ? (
                     <div>
                       <dt className="text-zinc-400 dark:text-zinc-500">Inventory cost</dt>
-                      <dd>₹{i.inventoryCost}</dd>
+                      <dd>{i.inventoryCost !== undefined ? money(i.inventoryCost) : ""}</dd>
                     </div>
                   ) : null}
                   {isOwner && i.costSheetNumber ? (

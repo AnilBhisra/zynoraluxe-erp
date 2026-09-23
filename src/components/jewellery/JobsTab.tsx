@@ -8,7 +8,14 @@ import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import type { PartyOption } from "@/components/accounting/PartySelect";
 import { jewelleryTypeLabel } from "@/lib/jewellery/types";
+import { CARRYING_COST_UNAVAILABLE_MESSAGE } from "@/lib/jewellery/carryingCostMessage";
 import type { JewelleryType } from "@/generated/prisma/enums";
+
+/** A cost field may carry the fail-closed message instead of a number — see
+ * carryingCostMessage.ts. Shown as-is, without a ₹ prefix. */
+function money(value: string): string {
+  return value === CARRYING_COST_UNAVAILABLE_MESSAGE ? value : `₹${value}`;
+}
 
 export type SerializedJewelleryJob = {
   id: string;
@@ -144,7 +151,7 @@ export function JobsTab({
                 <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
                   {job.designName} · {jewelleryTypeLabel(job.jewelleryType)} · {job.karigarName}
                   {job.customerName ? ` · ${job.customerName}` : ""} · {job.pendingFineWeight}g pending
-                  {isOwner ? ` · ₹${job.totalIssuedCost}` : ""}
+                  {isOwner && job.totalIssuedCost !== null ? ` · ${money(job.totalIssuedCost)}` : ""}
                 </p>
               </div>
               <a

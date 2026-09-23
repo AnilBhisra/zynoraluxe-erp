@@ -4,6 +4,7 @@ import { requireUser } from "@/lib/auth/dal";
 import { getCashBankSummary, getReceivablePayableSummary } from "@/lib/accounting/reports";
 import { getDashboardDiamondSummary } from "@/lib/diamond/reports";
 import { getFinishedJewelleryStockSummary, getPendingJewelleryJobsCount } from "@/lib/jewellery/reports";
+import { isUnavailable } from "@/lib/jewellery/carryingCost";
 import { getDraftCostingsCount } from "@/lib/costing/reports";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { SummaryCard } from "@/components/dashboard/SummaryCard";
@@ -65,7 +66,10 @@ export default async function DashboardPage() {
         <SummaryCard label="Finished stock (Available)" value={String(finishedStock.availableCount)} />
         <SummaryCard label="Finished stock weight" value={carat(finishedStock.availableFineWeight)} unit="g fine" />
         {isOwner && finishedStock.availableInventoryValue !== undefined ? (
-          <SummaryCard label="Finished stock value" value={money(finishedStock.availableInventoryValue)} />
+          <SummaryCard
+            label="Finished stock value"
+            value={isUnavailable(finishedStock.availableInventoryValue) ? "Reconciliation required" : money(finishedStock.availableInventoryValue)}
+          />
         ) : null}
       </section>
 

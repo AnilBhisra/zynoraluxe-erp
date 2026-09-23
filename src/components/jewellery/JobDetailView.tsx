@@ -20,6 +20,14 @@ import { OverrideAllocationForm } from "@/components/jewellery/OverrideAllocatio
 import { Button } from "@/components/ui/Button";
 import { jewelleryTypeLabel } from "@/lib/jewellery/types";
 import { formatThousandths, toThousandths } from "@/lib/jewellery/metalMath";
+import { CARRYING_COST_UNAVAILABLE_MESSAGE } from "@/lib/jewellery/carryingCostMessage";
+
+/** A cost field may carry the fail-closed message instead of a number when a
+ * posted revaluation could not be replayed — shown as-is, without a ₹ prefix. */
+function money(value: string | null): string {
+  if (value === null) return "";
+  return value === CARRYING_COST_UNAVAILABLE_MESSAGE ? value : `₹${value}`;
+}
 
 /** Cost / payable figures are Owner-only and arrive as null for Staff —
  * redacted on the server in src/app/(app)/jewellery-jobs/page.tsx. */
@@ -127,7 +135,13 @@ export type SerializedJobDetail = {
     sourcePurityDisplayName: string | null;
     alloyAddedWeight: string;
     alloyCost: string | null;
+    /** Original figure at receive time — never rewritten by a correction.
+     * Used only as the redistribution baseline for OverrideAllocationForm's
+     * "must sum to X" check, never shown as the piece's current cost. */
     totalCost: string | null;
+    /** totalCost plus every POSTED revaluation of this piece — what it is
+     * carried at right now. This is what the page displays. */
+    totalCostCurrent: string | null;
     qcStatus: string;
     photoUrl: string | null;
   }[];
@@ -266,13 +280,13 @@ export function JobDetailView({
               value={`${job.issuedAlloyGrossWeight}g · ${job.consumedAlloyGrossWeight}g used · ${job.returnedAlloyGrossWeight}g returned · ${job.alloyPendingGrossWeight}g pending`}
             />
           ) : null}
-          {isOwner ? <Stat label="Metal cost issued" value={`₹${job.issuedMetalCost}`} /> : null}
+          {isOwner ? <Stat label="Metal cost issued" value={money(job.issuedMetalCost)} /> : null}
           {isOwner ? <Stat label="Diamond cost issued" value={`₹${job.issuedDiamondCost}`} /> : null}
           {isOwner ? <Stat label="Other material cost" value={`₹${job.otherMaterialCost}`} /> : null}
-          {isOwner ? <Stat label="Remaining WIP cost" value={`₹${job.remainingWipCost}`} /> : null}
+          {isOwner ? <Stat label="Remaining WIP cost" value={money(job.remainingWipCost)} /> : null}
           {isOwner && hasCompanyAlloy ? <Stat label="Remaining alloy cost" value={`₹${job.remainingAlloyWipCost}`} /> : null}
           {isOwner ? <Stat label="Labour/making/setting so far" value={`₹${job.totalLabourCharge}`} /> : null}
-          {isOwner ? <Stat label="Total manufacturing cost issued" value={`₹${job.totalIssuedCost}`} /> : null}
+          {isOwner ? <Stat label="Total manufacturing cost issued" value={money(job.totalIssuedCost)} /> : null}
         </div>
 
         {job.customerReference ? (
@@ -473,7 +487,7 @@ export function JobDetailView({
                     Qty {o.quantity} · {o.netMetalWeight}g net / {o.fineMetalWeight}g fine
                     {toThousandths(o.alloyAddedWeight) > BigInt(0) ? ` · Alloy Added ${o.alloyAddedWeight}g` : ""} · QC:{" "}
                     {o.qcStatus.replace(/_/g, " ")}
-                    {isOwner ? ` · ₹${o.totalCost}` : ""}
+                    {isOwner && o.totalCostCurrent !== null ? ` · ${money(o.totalCostCurrent)}` : ""}
                   </p>
                 </div>
                 {isOwner ? (

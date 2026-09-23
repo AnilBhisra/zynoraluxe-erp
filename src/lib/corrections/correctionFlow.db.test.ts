@@ -7,7 +7,7 @@
  */
 import "dotenv/config";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { prisma } from "@/lib/db/prisma";
 import {
@@ -16,6 +16,11 @@ import {
   postOpeningMetalStock,
   reverseMetalStockAdjustment,
 } from "@/lib/jewellery/posting";
+import { getJewelleryJobDetail, listFinishedJewelleryStock, listJewelleryJobs } from "@/lib/jewellery/reports";
+import { CARRYING_COST_UNAVAILABLE, isUnavailable } from "@/lib/jewellery/carryingCost";
+import { serializeJobCostSummary } from "@/lib/jewellery/jobDetailSerializers";
+import { replayPurityAtCurrentValues } from "./jobCostReplay";
+import type { Decimal } from "@/lib/accounting/money";
 import {
   approveCorrectionDraft,
   ensureCorrectionBatch,
@@ -38,6 +43,13 @@ import {
   verifyCorrection,
   verifyCorrectionBatch,
 } from "./verify";
+
+/** Every carrying-cost figure in this suite is a real Decimal, never the
+ * fail-closed sentinel — narrows the type for `.toFixed()`. */
+function amount(v: Decimal | "UNAVAILABLE"): Decimal {
+  if (typeof v === "string") throw new Error("expected a Decimal, got the unavailable sentinel");
+  return v;
+}
 
 const FY = { fyStartMonth: 4, fyStartDay: 1 };
 
@@ -404,6 +416,10 @@ describe("R1 and R2 as one cumulative production correction batch", () => {
   let r1Id: string;
   let r2Id: string;
   let job68Id: string;
+  let job69Id: string;
+  let job68IssueOutId: string;
+  let job69IssueOutId: string;
+  let job69ReturnInId: string;
   let fj86Id: string;
   let fj87Id: string;
 
@@ -521,6 +537,7 @@ describe("R1 and R2 as one cumulative production correction batch", () => {
         createdByUserId: ownerId,
       },
     });
+    job69Id = job69.id;
     const receipt53 = await prisma.jewelleryReceipt.create({
       data: {
         receiptCode: "ZL-JREC-2026-000053",
@@ -578,11 +595,11 @@ describe("R1 and R2 as one cumulative production correction batch", () => {
 
     const opening = await movement("OPENING_IN", "22.001", "21.979", "160000.00", "Opening stock", null);
     batchMovementId = opening.id;
-    await movement("ISSUE_OUT", "10.000", "9.990", "72723.97", "ZL-JJOB-2026-000068", job68.id);
+    job68IssueOutId = (await movement("ISSUE_OUT", "10.000", "9.990", "72723.97", "ZL-JJOB-2026-000068", job68.id)).id;
     await movement("CONSUMED_OUT", "0.000", "4.162", "30298.01", "ZL-JREC-2026-000052", job68.id);
     await movement("PURCHASE_IN", "2.000", "2.000", "31050.00", "ZL-MP-2026-000057", null);
-    await movement("ISSUE_OUT", "2.000", "2.000", "16902.51", "ZL-JJOB-2026-000069", job69.id);
-    await movement("RETURN_IN", "0.146", "0.146", "1233.88", "ZL-JREC-2026-000053", job69.id);
+    job69IssueOutId = (await movement("ISSUE_OUT", "2.000", "2.000", "16902.51", "ZL-JJOB-2026-000069", job69.id)).id;
+    job69ReturnInId = (await movement("RETURN_IN", "0.146", "0.146", "1233.88", "ZL-JREC-2026-000053", job69.id)).id;
     await movement("CONSUMED_OUT", "0.000", "1.854", "15668.63", "ZL-JREC-2026-000053", job69.id);
 
     // ---- The vouchers those movements posted, so the trial balance starts
@@ -727,6 +744,91 @@ describe("R1 and R2 as one cumulative production correction batch", () => {
     expect(after.finishedPieces[fj86Id]).toBe(AFTER.fj86Metal);
     expect(after.finishedPieces[fj87Id]).toBe(AFTER.fj87Metal);
   }, 60_000);
+
+  // ---------------------------------------------------------------------------
+  // Phase 8B — the Owner-facing display defect: Job 68 and Job 69 kept
+  // showing their ORIGINAL snapshot costs after R1+R2 posted, even though the
+  // ledger, WIP and Finished Stock were already correct. This proves every
+  // Owner-facing read path now shows the replayed, current figure — and that
+  // replaying it repeatedly, or through different entry points (job detail,
+  // job list, finished stock), never produces two different numbers for the
+  // same fact (the "no double counting" requirement).
+  // ---------------------------------------------------------------------------
+  it("Job 68's read model shows the corrected figures, matching across detail, list and finished stock", async () => {
+    // The whole 22.001g opening layer was issued to job 68 in one line, so
+    // its own ISSUE_OUT movement replays to the exact corrected total.
+    const purityOutcome = await replayPurityAtCurrentValues(prisma, "GOLD", purity24kId);
+    expect(purityOutcome.ok).toBe(true);
+    if (purityOutcome.ok) {
+      expect(purityOutcome.movements.get(job68IssueOutId)!.newValue.toFixed(2)).toBe("159840.01");
+    }
+
+    const detail = (await getJewelleryJobDetail(job68Id))!;
+    expect(isUnavailable(detail.issuedMetalCost)).toBe(false);
+    expect(amount(detail.issuedMetalCost).toFixed(2)).toBe("159840.01");
+    expect(amount(detail.remainingWipCost).toFixed(2)).toBe("93248.01");
+    const owner = serializeJobCostSummary(detail, true);
+    expect(owner.issuedMetalCost).toBe("159840.01");
+    expect(owner.issuedDiamondCost).toBe("20102.04"); // unchanged — diamonds never revalued
+    expect(owner.totalIssuedCost).toBe("179942.05");
+    const staff = serializeJobCostSummary(detail, false);
+    expect(staff.issuedMetalCost).toBeNull();
+    expect(staff.totalIssuedCost).toBeNull();
+
+    const fj86Output = detail.finishedOutputs.find((o) => o.id === fj86Id)!;
+    expect(fj86Output.totalCost.toFixed(2)).toBe("56971.05"); // original, unchanged — for OverrideAllocationForm
+    expect(isUnavailable(fj86Output.totalCostCurrent)).toBe(false);
+    expect(amount(fj86Output.totalCostCurrent).toFixed(2)).toBe("93265.04"); // 66592.00 + 20102.04 + 6571.00
+
+    // The job list must show the exact same total as the detail page.
+    const rows = await listJewelleryJobs({ search: "ZL-JJOB-2026-000068" });
+    const listRow = rows.find((r) => r.id === job68Id)!;
+    expect(isUnavailable(listRow.totalIssuedCost)).toBe(false);
+    expect(amount(listRow.totalIssuedCost).toFixed(2)).toBe("179942.05");
+
+    // The finished-stock list must show the same carrying cost as the job
+    // detail's own finished-output line for the same piece.
+    const stockRows = await listFinishedJewelleryStock({ search: "ZL-FJ-2026-000086", includeCost: true });
+    const stockRow = stockRows.find((r) => r.id === fj86Id)!;
+    expect(isUnavailable(stockRow.inventoryCost!)).toBe(false);
+    expect(amount(stockRow.inventoryCost!).toFixed(2)).toBe(
+      amount(fj86Output.totalCostCurrent).toFixed(2)
+    );
+
+    // Calling it again must give the exact same figure — nothing accumulates.
+    const secondRead = (await getJewelleryJobDetail(job68Id))!;
+    expect(amount(secondRead.issuedMetalCost).toFixed(2)).toBe("159840.01");
+  }, 30_000);
+
+  it("Job 69's read model matches the documented replay math — including the returned-metal split", async () => {
+    const detail = (await getJewelleryJobDetail(job69Id))!;
+    expect(isUnavailable(detail.issuedMetalCost)).toBe(false);
+    // PHASE_8_REVALUATION_PREVIEW.md: 2.000g x Rs 15,918.4337/g = Rs 31,836.87.
+    expect(amount(detail.issuedMetalCost).toFixed(2)).toBe("31836.87");
+    expect(amount(detail.remainingWipCost).toFixed(2)).toBe("0.00");
+    const owner = serializeJobCostSummary(detail, true);
+    expect(owner.issuedMetalCost).toBe("31836.87");
+    expect(owner.issuedDiamondCost).toBe("11880.00"); // unchanged
+    expect(owner.totalIssuedCost).toBe("43716.87");
+
+    const fj87Output = detail.finishedOutputs.find((o) => o.id === fj87Id)!;
+    expect(fj87Output.totalCost.toFixed(2)).toBe("29623.63"); // original, unchanged
+    expect(amount(fj87Output.totalCostCurrent).toFixed(2)).toBe("43467.78"); // 29512.78 + 11880.00 + 2075.00
+
+    // The returned 0.146g is revalued too, at the same corrected pool rate —
+    // and that value is what feeds the usable pool's own +90,703.81 uplift,
+    // never counted a second time as part of what job 69 "kept".
+    const outcome = await replayPurityAtCurrentValues(prisma, "GOLD", purity24kId);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(outcome.movements.get(job69IssueOutId)!.newValue.toFixed(2)).toBe("31836.87");
+      expect(outcome.movements.get(job69ReturnInId)!.newValue.toFixed(2)).toBe("2324.09");
+    }
+
+    const rows = await listJewelleryJobs({ search: "ZL-JJOB-2026-000069" });
+    const listRow = rows.find((r) => r.id === job69Id)!;
+    expect(amount(listRow.totalIssuedCost).toFixed(2)).toBe("43716.87");
+  }, 30_000);
 
   it("makes the NEXT issue or adjustment use the corrected average, not the old one", async () => {
     // The whole point of the phase: a correction that moves the ledger but
@@ -1021,6 +1123,23 @@ describe("R1 and R2 as one cumulative production correction batch", () => {
     expect((await reconcileVoucherBalances(prisma)).ok).toBe(true);
   }, 120_000);
 
+  it("the Owner-facing read model immediately shows the ORIGINAL figures again after rollback", async () => {
+    const job68Detail = (await getJewelleryJobDetail(job68Id))!;
+    expect(amount(job68Detail.issuedMetalCost).toFixed(2)).toBe("72723.97");
+    expect(amount(job68Detail.remainingWipCost).toFixed(2)).toBe(BEFORE.job68Wip);
+    const fj86Output = job68Detail.finishedOutputs.find((o) => o.id === fj86Id)!;
+    expect(amount(fj86Output.totalCostCurrent).toFixed(2)).toBe("56971.05"); // back to the original totalCost
+
+    const job69Detail = (await getJewelleryJobDetail(job69Id))!;
+    expect(amount(job69Detail.issuedMetalCost).toFixed(2)).toBe("16902.51");
+    const fj87Output = job69Detail.finishedOutputs.find((o) => o.id === fj87Id)!;
+    expect(amount(fj87Output.totalCostCurrent).toFixed(2)).toBe("29623.63");
+
+    const rows = await listJewelleryJobs({ search: "ZL-JJOB-2026" });
+    expect(amount(rows.find((r) => r.id === job68Id)!.totalIssuedCost).toFixed(2)).toBe("92826.01");
+    expect(amount(rows.find((r) => r.id === job69Id)!.totalIssuedCost).toFixed(2)).toBe("28782.51");
+  }, 30_000);
+
   it("records the rollback as audited reversing corrections, deleting nothing", async () => {
     const rows = await listCorrections();
 
@@ -1097,4 +1216,145 @@ describe("R1 and R2 as one cumulative production correction batch", () => {
       )
     ).rejects.toThrow(/already been reversed/);
   }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// Phase 8B — a purity whose ledger cannot be replayed cleanly (here: an
+// ISSUE_CANCEL_IN, which metalReplay.ts explicitly refuses) must fail closed
+// on every Owner-facing read path, never fall back to a stored/delta
+// approximation, and stay invisible to Staff exactly as any other cost does.
+// ---------------------------------------------------------------------------
+describe("carrying cost fails closed when a revalued purity cannot be replayed", () => {
+  let purityId: string;
+  let jobId: string;
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeAll(async () => {
+    purityId = (
+      await prisma.metalPurity.upsert({
+        where: { metalType_displayName: { metalType: "GOLD", displayName: "Phase8B Replay Failure Karat" } },
+        create: { metalType: "GOLD", displayName: "Phase8B Replay Failure Karat", finenessPercent: "91.600", createdByUserId: ownerId },
+        update: { finenessPercent: "91.600" },
+      })
+    ).id;
+
+    const karigar = await prisma.party.upsert({
+      where: { id: "phase8b-replay-failure-karigar" },
+      create: { id: "phase8b-replay-failure-karigar", name: "Phase8B Replay Failure Karigar", type: "KARIGAR", createdByUserId: ownerId },
+      update: {},
+    });
+    const job = await prisma.jewelleryJob.create({
+      data: {
+        jobCode: `ZL-JJOB-REPLAYFAIL-${Date.now()}`,
+        jewelleryType: "RING",
+        designName: "Replay failure fixture",
+        karigarId: karigar.id,
+        issueDate: new Date("2026-09-01"),
+        status: "MATERIALS_ISSUED",
+        issuedMetalFineWeight: "5.000",
+        issuedMetalCost: "50000.00",
+        remainingWipCost: "50000.00",
+        createdByUserId: ownerId,
+      },
+    });
+    jobId = job.id;
+
+    const opening = await prisma.$transaction((tx) =>
+      postOpeningMetalStock(tx, {
+        metalType: "GOLD",
+        purityId,
+        grossWeight: "10.000",
+        costValue: "100000.00",
+        idempotencyKey: `phase8b-replay-failure-opening-${job.id}`,
+        ...FY,
+        createdByUserId: ownerId,
+      })
+    );
+    await prisma.metalStockMovement.create({
+      data: {
+        type: "ISSUE_OUT",
+        metalType: "GOLD",
+        purityId,
+        grossWeight: "5.000",
+        fineWeight: "4.580",
+        costValue: "50000.00",
+        sourceDocument: job.jobCode,
+        jewelleryJobId: job.id,
+        createdByUserId: ownerId,
+      },
+    });
+
+    // Give this purity an active POSTED revaluation, the same way R2 does —
+    // authored BEFORE the ledger is poisoned below, exactly like production:
+    // the correction posted cleanly in the past; only a later, unrelated
+    // event makes today's replay impossible.
+    const plan = await planOpeningStockRevaluation(prisma, {
+      movementId: opening.id,
+      newCostValue: "150000.00",
+      reason: "Phase8B replay-failure regression fixture",
+    });
+    await prisma.$transaction((tx) =>
+      postCorrection(tx, {
+        plan,
+        preparedByUserId: ownerId,
+        approvedByUserId: ownerId,
+        approverRole: "OWNER",
+        idempotencyKey: `phase8b-replay-failure-revaluation-${job.id}`,
+        ...FY,
+      })
+    );
+
+    // NOW poison the ledger — the shape metalReplay.ts explicitly refuses.
+    await prisma.metalStockMovement.create({
+      data: {
+        type: "ISSUE_CANCEL_IN",
+        metalType: "GOLD",
+        purityId,
+        grossWeight: "1.000",
+        fineWeight: "0.916",
+        costValue: "10000.00",
+        sourceDocument: "cancelled issue fixture",
+        createdByUserId: ownerId,
+      },
+    });
+  }, 60_000);
+
+  beforeEach(() => {
+    consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("fails closed rather than showing a stored or delta-approximated number", async () => {
+    const outcome = await replayPurityAtCurrentValues(prisma, "GOLD", purityId);
+    expect(outcome.ok).toBe(false);
+
+    const detail = (await getJewelleryJobDetail(jobId))!;
+    expect(isUnavailable(detail.issuedMetalCost)).toBe(true);
+    expect(detail.issuedMetalCost).toBe(CARRYING_COST_UNAVAILABLE);
+    expect(isUnavailable(detail.remainingWipCost)).toBe(true);
+    expect(isUnavailable(detail.totalIssuedCost)).toBe(true);
+
+    const rows = await listJewelleryJobs({ search: "ZL-JJOB-REPLAYFAIL" });
+    const listRow = rows.find((r) => r.id === jobId)!;
+    expect(isUnavailable(listRow.totalIssuedCost)).toBe(true);
+
+    // A sanitized diagnostic was logged (identifiers and a reason only).
+    expect(consoleErrorSpy).toHaveBeenCalled();
+    const logged = JSON.stringify(consoleErrorSpy.mock.calls);
+    expect(logged).not.toMatch(/postgres(ql)?:\/\//i);
+    expect(logged.toLowerCase()).not.toContain("password");
+  }, 30_000);
+
+  it("shows the Owner a clear message and shows Staff nothing at all", async () => {
+    const detail = (await getJewelleryJobDetail(jobId))!;
+    const owner = serializeJobCostSummary(detail, true);
+    expect(owner.issuedMetalCost).toBe("Current cost unavailable — reconciliation required");
+    expect(owner.totalIssuedCost).toBe("Current cost unavailable — reconciliation required");
+
+    const staff = serializeJobCostSummary(detail, false);
+    expect(staff.issuedMetalCost).toBeNull();
+    expect(staff.totalIssuedCost).toBeNull();
+  });
 });

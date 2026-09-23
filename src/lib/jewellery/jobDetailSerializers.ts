@@ -1,5 +1,6 @@
 import type { SerializedJobDetail } from "@/components/jewellery/JobDetailView";
 import type { JewelleryJobDetail } from "@/lib/jewellery/reports";
+import { formatCarryingAmount } from "@/lib/jewellery/carryingCost";
 import { ownerOnly } from "@/lib/security/ownerOnly";
 
 // Jewellery Job detail DTO pieces that carry cost. Every cost figure passes
@@ -12,10 +13,10 @@ export function serializeJobCostSummary(
   isOwner: boolean
 ): Pick<SerializedJobDetail, "issuedMetalCost" | "issuedDiamondCost" | "otherMaterialCost" | "totalIssuedCost"> {
   return {
-    issuedMetalCost: ownerOnly(isOwner, detail.issuedMetalCost.toFixed(2)),
+    issuedMetalCost: ownerOnly(isOwner, formatCarryingAmount(detail.issuedMetalCost)),
     issuedDiamondCost: ownerOnly(isOwner, detail.issuedDiamondCost.toFixed(2)),
     otherMaterialCost: ownerOnly(isOwner, detail.otherMaterialCost.toFixed(2)),
-    totalIssuedCost: ownerOnly(isOwner, detail.totalIssuedCost.toFixed(2)),
+    totalIssuedCost: ownerOnly(isOwner, formatCarryingAmount(detail.totalIssuedCost)),
   };
 }
 

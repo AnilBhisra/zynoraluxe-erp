@@ -28,6 +28,7 @@ import type { AvailablePacketOption, AvailablePolishedDiamondOption } from "@/co
 import type { PendingPacketOption } from "@/components/jewellery/ReceiveFinishedForm";
 import { listJobPacketLines, listPolishedPackets } from "@/lib/diamond/packetReports";
 import { listMetalAdjustments } from "@/lib/jewellery/adjustmentHistory";
+import { formatCarryingAmount } from "@/lib/jewellery/carryingCost";
 import { shapeLabel } from "@/lib/diamond/shapes";
 import type { MetalPurityOption } from "@/components/jewellery/ReceiveFinishedForm";
 import type { FinishedJewelleryStockStatus, JewelleryJobStatus } from "@/generated/prisma/enums";
@@ -203,7 +204,7 @@ async function JobsTabContent({
       targetFinishedWeight: detail.targetFinishedWeight ? detail.targetFinishedWeight.toFixed(3) : null,
       issuedMetalFineWeight: detail.issuedMetalFineWeight.toFixed(3),
       ...serializeJobCostSummary(detail, isOwner),
-      remainingWipCost: ownerOnly(isOwner, detail.remainingWipCost.toFixed(2)),
+      remainingWipCost: ownerOnly(isOwner, formatCarryingAmount(detail.remainingWipCost)),
       totalLabourCharge: ownerOnly(isOwner, detail.totalLabourCharge.toFixed(2)),
       receivedFineWeight: detail.receivedFineWeight.toFixed(3),
       returnedMetalFineWeight: detail.returnedMetalFineWeight.toFixed(3),
@@ -281,6 +282,7 @@ async function JobsTabContent({
           alloyAddedWeight: f.alloyAddedWeight.toFixed(3),
           alloyCost: ownerOnly(isOwner, f.alloyCost.toFixed(2)),
           totalCost: ownerOnly(isOwner, f.totalCost.toFixed(2)),
+          totalCostCurrent: ownerOnly(isOwner, formatCarryingAmount(f.totalCostCurrent)),
           qcStatus: f.qcStatus,
           photoUrl: await resolveJewelleryAssetUrl(f.photoAssetId),
         }))
@@ -337,7 +339,7 @@ async function JobsTabContent({
     status: j.status,
     issuedMetalFineWeight: j.issuedMetalFineWeight.toFixed(3),
     pendingFineWeight: j.pendingFineWeight.toFixed(3),
-    totalIssuedCost: ownerOnly(isOwner, j.totalIssuedCost.toFixed(2)),
+    totalIssuedCost: ownerOnly(isOwner, formatCarryingAmount(j.totalIssuedCost)),
   }));
 
   return (
@@ -464,7 +466,7 @@ async function FinishedTabContent({
       saleCode: r.saleCode,
       saleDate: r.saleDate ? r.saleDate.toISOString() : null,
       ...(isOwner
-        ? { inventoryCost: r.inventoryCost?.toFixed(2), costSheetNumber: r.costSheetNumber ?? null }
+        ? { inventoryCost: r.inventoryCost === undefined ? undefined : formatCarryingAmount(r.inventoryCost), costSheetNumber: r.costSheetNumber ?? null }
         : {}),
     }))
   );

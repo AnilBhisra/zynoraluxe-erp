@@ -4,6 +4,11 @@ const mocks = vi.hoisted(() => ({
   jewelleryJobFindUnique: vi.fn(),
   metalStockMovementFindMany: vi.fn(),
   stockMovementFindMany: vi.fn(),
+  // Phase 8B carrying-cost read model: this suite has no posted revaluation,
+  // so an empty result is enough to send every job through the fast,
+  // unaffected path (stored figures, unchanged) — see carryingCost.ts.
+  metalRevaluationFindMany: vi.fn().mockResolvedValue([]),
+  correctionFindFirst: vi.fn(),
 }));
 
 vi.mock("@/lib/db/prisma", () => ({
@@ -11,12 +16,23 @@ vi.mock("@/lib/db/prisma", () => ({
     jewelleryJob: { findUnique: mocks.jewelleryJobFindUnique },
     metalStockMovement: { findMany: mocks.metalStockMovementFindMany },
     stockMovement: { findMany: mocks.stockMovementFindMany },
+    metalRevaluation: { findMany: mocks.metalRevaluationFindMany },
+    correction: { findFirst: mocks.correctionFindFirst },
   },
 }));
 
 import { jobIssuedCosts } from "./jobIssuedCost";
 import { serializeJobCostSummary, serializeJobPacketLines } from "./jobDetailSerializers";
 import { getJewelleryJobDetail } from "./reports";
+import type { Decimal } from "@/lib/accounting/money";
+
+// This suite has no posted revaluation, so every carrying-cost figure takes
+// the fast, unaffected path and is always a real Decimal — never the
+// CARRYING_COST_UNAVAILABLE sentinel. Narrows the type for `.toFixed()`.
+function amount(v: Decimal | "UNAVAILABLE"): Decimal {
+  if (typeof v === "string") throw new Error(`expected a Decimal, got the unavailable sentinel`);
+  return v;
+}
 
 const D = new Date("2026-09-17T00:00:00.000Z");
 
@@ -145,14 +161,14 @@ describe("getJewelleryJobDetail loads packet lines", () => {
       ["ZL-PKT-2026-000002", "Round · 1.50MM · VS · F", 30, "3.000", "24784.85", true],
     ]);
     expect(detail!.issuedDiamondCost.toFixed(2)).toBe("34997.43");
-    expect(detail!.totalIssuedCost.toFixed(2)).toBe("175497.43");
+    expect(amount(detail!.totalIssuedCost).toFixed(2)).toBe("175497.43");
   });
 
   it("shows the acceptance run's exact figures after the direct packet issue: ₹10,212.58 diamond, ₹1,50,712.58 total", async () => {
     mocks.jewelleryJobFindUnique.mockResolvedValue(job());
     const detail = await getJewelleryJobDetail("job-1");
     expect(detail!.issuedDiamondCost.toFixed(2)).toBe("10212.58");
-    expect(detail!.totalIssuedCost.toFixed(2)).toBe("150712.58");
+    expect(amount(detail!.totalIssuedCost).toFixed(2)).toBe("150712.58");
   });
 });
 
