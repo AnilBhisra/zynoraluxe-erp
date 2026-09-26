@@ -1,7 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/lib/db/prisma";
-import { Decimal, round2, ZERO } from "@/lib/accounting/money";
+import { Decimal, type DecimalInput, round2, ZERO } from "@/lib/accounting/money";
 import { round3 } from "@/lib/diamond/allocation";
 import type {
   DiamondJobStatus,
@@ -9,6 +9,7 @@ import type {
   DiamondShape,
   ProcessChargeRateBasis,
   PolishedDiamondStatus,
+  RoughPieceKind,
   RoughPieceStatus,
 } from "@/generated/prisma/enums";
 
@@ -30,11 +31,33 @@ export function deriveRoughLotStatus(pieceStatuses: RoughPieceStatus[]): RoughLo
   return "PARTLY_ISSUED";
 }
 
+/** Where the material of a WITH_KARIGAR row actually stands right now — the
+ * job's own pending carat, never the row's issued carat, which does not
+ * shrink when a partial receipt comes back. */
+export type RoughPieceWithParty = {
+  jobCode: string;
+  partyName: string;
+  issuedCarat: Decimal;
+  pendingCarat: Decimal;
+};
+
 export type RoughPieceRow = {
   id: string;
   roughCode: string;
   lotCode: string | null;
   supplierName: string | null;
+  /** STONE = one individual stone; PARCEL = many stones in one row. */
+  kind: RoughPieceKind;
+  /** Stones in a parcel where recorded (current balance); null otherwise. */
+  pieceCount: number | null;
+  /** Immutable snapshot of a parcel as first recorded (null for a STONE). */
+  originalCarat: Decimal | null;
+  originalPieceCount: number | null;
+  originalCost: Decimal | null;
+  /** The parcel this row was split from, when it is an issued portion. */
+  parentRoughCode: string | null;
+  withParty: RoughPieceWithParty | null;
+  /** For a PARCEL, the CURRENT remaining carat; for a STONE, its carat. */
   carat: Decimal;
   allocatedCost: Decimal;
   costLocked: boolean;
@@ -45,6 +68,26 @@ export type RoughPieceRow = {
   returnedFromJobCode: string | null;
   createdAt: Date;
 };
+
+/** For each given rough row still with a Manufacturer/Karigar, the open job
+ * holding it and how much of that job is genuinely still pending. */
+async function withPartyByPieceId(pieceIds: string[]): Promise<Map<string, RoughPieceWithParty>> {
+  const result = new Map<string, RoughPieceWithParty>();
+  if (pieceIds.length === 0) return result;
+  const links = await prisma.diamondJobPiece.findMany({
+    where: { roughPieceId: { in: pieceIds }, job: { status: { in: ["ISSUED", "IN_PROGRESS", "PARTIALLY_RECEIVED"] } } },
+    include: { job: { include: { karigar: true } } },
+  });
+  for (const link of links) {
+    result.set(link.roughPieceId, {
+      jobCode: link.job.jobCode,
+      partyName: link.job.karigar.name,
+      issuedCarat: round3(link.job.issuedRoughCarat),
+      pendingCarat: unresolvedCarat(link.job),
+    });
+  }
+  return result;
+}
 
 export async function listRoughPieces(filters?: {
   status?: RoughPieceStatus;
@@ -67,11 +110,19 @@ export async function listRoughPieces(filters?: {
     take: 500,
   });
 
+  const withParty = await withPartyByPieceId(pieces.filter((p) => p.status === "WITH_KARIGAR").map((p) => p.id));
   return pieces.map((p) => ({
     id: p.id,
     roughCode: p.roughCode,
     lotCode: p.lot?.lotCode ?? null,
     supplierName: p.lot?.supplier.name ?? null,
+    kind: p.kind,
+    pieceCount: p.pieceCount ?? null,
+    originalCarat: p.originalCarat ? round3(p.originalCarat) : null,
+    originalPieceCount: p.originalPieceCount ?? null,
+    originalCost: p.originalCost ? round2(p.originalCost) : null,
+    parentRoughCode: null,
+    withParty: withParty.get(p.id) ?? null,
     carat: round3(p.carat),
     allocatedCost: round2(p.allocatedCost),
     costLocked: p.costLocked,
@@ -117,6 +168,9 @@ export async function listRoughLots(filters?: {
     orderBy: { purchaseDate: "desc" },
     take: 200,
   });
+  const withParty = await withPartyByPieceId(
+    lots.flatMap((l) => l.pieces.filter((p) => p.status === "WITH_KARIGAR").map((p) => p.id))
+  );
 
   const rows = lots.map((lot) => {
     const status = deriveRoughLotStatus(lot.pieces.map((p) => p.status));
@@ -130,7 +184,9 @@ export async function listRoughLots(filters?: {
       lotCode: lot.lotCode,
       purchaseDate: lot.purchaseDate,
       supplierName: lot.supplier.name,
-      piecesCount: lot.pieces.length,
+      // The purchase record's own count — split-off portions are extra rows
+      // in the list below, not extra pieces bought.
+      piecesCount: lot.piecesCount,
       totalRoughCarat: round3(lot.totalRoughCarat),
       totalPurchaseCost: round2(lot.totalPurchaseCost),
       status,
@@ -143,6 +199,13 @@ export async function listRoughLots(filters?: {
           roughCode: p.roughCode,
           lotCode: lot.lotCode,
           supplierName: lot.supplier.name,
+          kind: p.kind,
+          pieceCount: p.pieceCount ?? null,
+          originalCarat: p.originalCarat ? round3(p.originalCarat) : null,
+          originalPieceCount: p.originalPieceCount ?? null,
+          originalCost: p.originalCost ? round2(p.originalCost) : null,
+          parentRoughCode: p.parentPieceId ? (lot.pieces.find((q) => q.id === p.parentPieceId)?.roughCode ?? null) : null,
+          withParty: withParty.get(p.id) ?? null,
           carat: round3(p.carat),
           allocatedCost: round2(p.allocatedCost),
           costLocked: p.costLocked,
@@ -171,6 +234,24 @@ export async function getRoughStockSummary(): Promise<{
   const totalCarat = available.reduce((sum, p) => sum.plus(new Decimal(p.carat)), ZERO);
   const totalCost = available.reduce((sum, p) => sum.plus(new Decimal(p.allocatedCost)), ZERO);
   return { totalCarat: round3(totalCarat), totalCost: round2(totalCost), pieceCount: available.length };
+}
+
+/** Rough currently out with Manufacturers / Karigars: the carat still
+ * genuinely pending on open jobs and the WIP cost that carries. */
+export async function getRoughWithPartySummary(): Promise<{
+  pendingCarat: Decimal;
+  wipCost: Decimal;
+  openJobs: number;
+}> {
+  const open = await prisma.diamondJob.findMany({
+    where: { status: { in: ["ISSUED", "IN_PROGRESS", "PARTIALLY_RECEIVED"] } },
+    select: { status: true, issuedRoughCarat: true, receivedPolishedCarat: true, returnedRoughCarat: true, remainingWipCost: true },
+  });
+  return {
+    pendingCarat: round3(open.reduce((sum, j) => sum.plus(unresolvedCarat(j)), ZERO)),
+    wipCost: round2(open.reduce((sum, j) => sum.plus(new Decimal(j.remainingWipCost)), ZERO)),
+    openJobs: open.length,
+  };
 }
 
 export type PolishedDiamondRow = {
@@ -272,6 +353,19 @@ export type DiamondJobRow = {
   chargeRate: Decimal | null;
 };
 
+/** Carat genuinely still with the Manufacturer for an OPEN job. A completed
+ * job has resolved every carat (what is left over is recognised loss, not
+ * pending) and a cancelled job handed everything back, so both are zero. */
+function unresolvedCarat(j: {
+  status: DiamondJobStatus;
+  issuedRoughCarat: DecimalInput;
+  receivedPolishedCarat: DecimalInput;
+  returnedRoughCarat: DecimalInput;
+}): Decimal {
+  if (j.status === "CANCELLED" || j.status === "COMPLETED") return ZERO;
+  return round3(new Decimal(j.issuedRoughCarat).minus(j.receivedPolishedCarat).minus(j.returnedRoughCarat));
+}
+
 function toJobRow(j: {
   id: string;
   jobCode: string;
@@ -294,9 +388,7 @@ function toJobRow(j: {
   chargeRateBasis: ProcessChargeRateBasis | null;
   chargeRate: Decimal | null;
 }): DiamondJobRow {
-  const pendingCarat = round3(
-    new Decimal(j.issuedRoughCarat).minus(j.receivedPolishedCarat).minus(j.returnedRoughCarat)
-  );
+  const pendingCarat = unresolvedCarat(j);
   return {
     id: j.id,
     jobCode: j.jobCode,
@@ -312,8 +404,10 @@ function toJobRow(j: {
     returnedRoughCarat: round3(j.returnedRoughCarat),
     pendingCarat,
     status: j.status,
+    // Issue history is preserved; only what is CURRENTLY still in WIP is
+    // zeroed for a cancelled job (its WIP voucher was reversed).
     issuedCostValue: round2(j.issuedCostValue),
-    remainingWipCost: round2(j.remainingWipCost),
+    remainingWipCost: j.status === "CANCELLED" ? ZERO : round2(j.remainingWipCost),
     totalLabourCharge: round2(j.totalLabourCharge),
     processNameSnapshot: j.processNameSnapshot,
     processOutputKindSnapshot: j.processOutputKindSnapshot,
@@ -360,7 +454,9 @@ export type KarigarMaterialBalance = {
  * kept deliberately separate — see getKarigarMoneyBalance below. */
 export async function getKarigarMaterialBalances(): Promise<KarigarMaterialBalance[]> {
   const karigars = await prisma.party.findMany({
-    where: { type: "KARIGAR", isActive: true },
+    // A Manufacturer is issued rough exactly like a Karigar (the issue form
+    // offers both), so both must appear wherever material-with-party is shown.
+    where: { type: { in: ["KARIGAR", "MANUFACTURER"] }, isActive: true },
     orderBy: { name: "asc" },
   });
 
@@ -372,14 +468,7 @@ export async function getKarigarMaterialBalances(): Promise<KarigarMaterialBalan
   return karigars.map((k) => {
     const jobsForKarigar = openJobs.filter((j) => j.karigarId === k.id);
     const pendingCarat = round3(
-      jobsForKarigar.reduce(
-        (sum, j) =>
-          sum
-            .plus(new Decimal(j.issuedRoughCarat))
-            .minus(j.receivedPolishedCarat)
-            .minus(j.returnedRoughCarat),
-        ZERO
-      )
+      jobsForKarigar.reduce((sum, j) => sum.plus(unresolvedCarat(j)), ZERO)
     );
     const pendingPiecesCount = jobsForKarigar.reduce(
       (sum, j) => sum + (j.status === "ISSUED" || j.status === "IN_PROGRESS" ? j.pieces.length : 0),
@@ -459,7 +548,10 @@ export async function getDiamondJobDetail(jobId: string): Promise<DiamondJobDeta
     // issued-received-returned subtraction that shows "still pending"
     // while open becomes the final recognized loss once every issued
     // carat has been accounted for.
-    finalWeightLossCarat: job.status === "COMPLETED" ? row.pendingCarat : null,
+    finalWeightLossCarat:
+      job.status === "COMPLETED"
+        ? round3(new Decimal(job.issuedRoughCarat).minus(job.receivedPolishedCarat).minus(job.returnedRoughCarat))
+        : null,
     finalYieldPercent:
       job.status === "COMPLETED" && new Decimal(job.issuedRoughCarat).greaterThan(0)
         ? round3(new Decimal(job.receivedPolishedCarat).dividedBy(job.issuedRoughCarat).times(100))

@@ -28,6 +28,10 @@ export const SHAPE_ENUM = z.enum([
 export const CHARGE_RATE_BASIS_ENUM = z.enum(["FIXED", "PER_CARAT", "PER_PIECE"]);
 
 export const roughPieceDraftSchema = z.object({
+  // STONE = one individual stone (always issued whole); PARCEL = many stones
+  // bought as one row, which can later be issued in part by carat.
+  kind: z.enum(["STONE", "PARCEL"]).default("STONE"),
+  pieceCount: z.coerce.number().int("The number of stones must be a whole number.").positive("The number of stones must be at least 1.").optional(),
   carat: z.coerce.number().positive("Each piece's carat must be greater than zero."),
   lengthMm: z.coerce.number().nonnegative().optional(),
   widthMm: z.coerce.number().nonnegative().optional(),
@@ -68,7 +72,19 @@ export type RoughPurchaseInput = z.infer<typeof roughPurchaseSchema>;
 export const issueRoughSchema = z
   .object({
     karigarId: z.string().trim().min(1, "Choose a Karigar."),
-    roughPieceIds: z.array(z.string().trim().min(1)).min(1, "Select at least one rough piece."),
+    // Whole rows (individual stones, or a parcel issued in full).
+    roughPieceIds: z.array(z.string().trim().min(1)).default([]),
+    // Parcels issued by carat. The carat stays a string so the server can
+    // refuse more than 3 decimals instead of a float silently rounding it.
+    parcelIssues: z
+      .array(
+        z.object({
+          roughPieceId: z.string().trim().min(1),
+          carat: z.string().trim().min(1, "Enter the carat to issue from each parcel."),
+          pieceCount: z.coerce.number().int("The number of stones must be a whole number.").positive("The number of stones must be at least 1.").optional(),
+        })
+      )
+      .default([]),
     requiredShape: SHAPE_ENUM,
     customShapeName: optionalString(200),
     customShapeReferencePhotoAssetId: optionalString(300),
@@ -86,6 +102,10 @@ export const issueRoughSchema = z
     chargeRateBasis: CHARGE_RATE_BASIS_ENUM.optional(),
     chargeRate: z.coerce.number().min(0, "The charge rate cannot be negative.").optional(),
     idempotencyKey: z.string().trim().max(100).optional(),
+  })
+  .refine((data) => data.roughPieceIds.length + data.parcelIssues.length > 0, {
+    message: "Select at least one rough piece.",
+    path: ["roughPieceIds"],
   })
   .refine((data) => data.requiredShape !== "CUSTOM" || !!data.customShapeName, {
     message: "Custom shape name is required when the shape is Custom.",

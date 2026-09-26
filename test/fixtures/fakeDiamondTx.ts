@@ -45,6 +45,9 @@ export function createFakeDiamondTx() {
 
   const tx = {
     ...base.tx,
+    // Row locks are meaningless without concurrency; the real database
+    // proves them (src/lib/diamond/roughParcel.db.test.ts).
+    $queryRawUnsafe: async () => [],
     diamondProcess: {
       findUnique: async ({ where }: { where: { id?: string; name?: string } }) =>
         (where.id ? diamondProcesses.get(where.id) : [...diamondProcesses.values()].find((p) => p.name === where.name)) ?? null,
@@ -93,10 +96,11 @@ export function createFakeDiamondTx() {
       },
     },
     roughPiece: {
+      findUnique: async ({ where }: { where: { id: string } }) => roughPieces.get(where.id) ?? null,
       create: async ({ data }: { data: Row }) => {
         // Prisma schema defaults not applied by this fake — mirror the two
         // this code relies on but never sets explicitly (status, costLocked).
-        const row = { id: nextId("rgh"), status: "AVAILABLE", costLocked: false, ...data };
+        const row = { id: nextId("rgh"), status: "AVAILABLE", costLocked: false, kind: "STONE", pieceCount: null, ...data };
         roughPieces.set(row.id as string, row);
         return row;
       },
@@ -144,11 +148,14 @@ export function createFakeDiamondTx() {
         diamondJobs.set(row.id as string, row);
         return row;
       },
-      findUnique: async ({ where, include }: { where: { id: string }; include?: { pieces?: boolean } }) => {
-        const row = diamondJobs.get(where.id);
+      findUnique: async ({ where, include }: { where: { id?: string; idempotencyKey?: string }; include?: { pieces?: boolean } }) => {
+        const row = where.id
+          ? diamondJobs.get(where.id)
+          : [...diamondJobs.values()].find((j) => where.idempotencyKey != null && j.idempotencyKey === where.idempotencyKey);
         if (!row) return null;
+        const id = row.id as string;
         if (include?.pieces) {
-          return { ...row, pieces: [...diamondJobPieces.values()].filter((p) => p.jobId === where.id) };
+          return { ...row, pieces: [...diamondJobPieces.values()].filter((p) => p.jobId === id) };
         }
         return row;
       },

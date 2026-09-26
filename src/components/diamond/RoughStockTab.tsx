@@ -14,6 +14,20 @@ import type { PartyOption } from "@/components/accounting/PartySelect";
 export type SerializedRoughPiece = {
   id: string;
   roughCode: string;
+  /** STONE = one individual stone; PARCEL = many stones in one row. */
+  kind: "STONE" | "PARCEL";
+  /** Stones still in a parcel where recorded. */
+  pieceCount: number | null;
+  /** The parcel as first recorded — its carat and stone count never change. */
+  originalCarat: string | null;
+  originalPieceCount: number | null;
+  /** Owner-only. */
+  originalCost: string | null;
+  /** Set on a portion split off a parcel: the parcel it came from. */
+  parentRoughCode: string | null;
+  /** Set while this row is out on an open job: what is genuinely still pending. */
+  withParty: { jobCode: string; partyName: string; issuedCarat: string; pendingCarat: string } | null;
+  /** For a parcel, the carat REMAINING in it now. */
   carat: string;
   /** Owner-only — null for Staff (redacted on the server). */
   allocatedCost: string | null;
@@ -49,9 +63,10 @@ const STATUS_LABELS: Record<string, string> = {
   AVAILABLE: "Available",
   PARTLY_ISSUED: "Partly Issued",
   FULLY_ISSUED: "Fully Issued",
-  WITH_KARIGAR: "With Karigar",
+  WITH_KARIGAR: "With Manufacturer / Karigar",
   COMPLETED: "Completed",
   CANCELLED: "Cancelled",
+  MERGED_BACK: "Issue cancelled — merged back",
 };
 
 function StatusPill({ status }: { status: string }) {
@@ -221,11 +236,46 @@ export function RoughStockTab({
                                 />
                               ) : null}
                             </td>
-                            <td className="px-3 py-2 font-medium text-zinc-800 dark:text-zinc-200">{piece.roughCode}</td>
-                            <td className="px-3 py-2">{piece.carat}ct</td>
-                            {isOwner ? <td className="px-3 py-2">{formatMoney(piece.allocatedCost)}</td> : null}
+                            <td className="px-3 py-2 font-medium text-zinc-800 dark:text-zinc-200">
+                              {piece.roughCode}
+                              <span className="ml-2 rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                                {piece.kind === "PARCEL" ? (piece.parentRoughCode ? "Issued portion" : "Parcel") : "Stone"}
+                              </span>
+                              {piece.parentRoughCode ? (
+                                <span className="block text-xs font-normal text-zinc-500 dark:text-zinc-400">
+                                  split from {piece.parentRoughCode}
+                                </span>
+                              ) : null}
+                            </td>
                             <td className="px-3 py-2">
-                              <StatusPill status={piece.status} />
+                              {piece.carat}ct
+                              {piece.kind === "PARCEL" && piece.pieceCount != null ? (
+                                <span className="ml-1 text-xs text-zinc-500 dark:text-zinc-400">· {piece.pieceCount} stones</span>
+                              ) : null}
+                              {piece.kind === "PARCEL" && !piece.parentRoughCode && piece.originalCarat && piece.originalCarat !== piece.carat ? (
+                                <span className="block text-xs text-zinc-500 dark:text-zinc-400">
+                                  remaining of {piece.originalCarat}ct bought
+                                </span>
+                              ) : null}
+                            </td>
+                            {isOwner ? (
+                              <td className="px-3 py-2">
+                                {formatMoney(piece.allocatedCost)}
+                                {piece.kind === "PARCEL" && !piece.parentRoughCode && piece.originalCost && piece.originalCost !== piece.allocatedCost ? (
+                                  <span className="block text-xs text-zinc-500 dark:text-zinc-400">
+                                    of {formatMoney(piece.originalCost)} bought
+                                  </span>
+                                ) : null}
+                              </td>
+                            ) : null}
+                            <td className="px-3 py-2">
+                              <StatusPill status={piece.status === "CANCELLED" && piece.parentRoughCode ? "MERGED_BACK" : piece.status} />
+                              {piece.withParty ? (
+                                <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
+                                  {piece.withParty.partyName} · {piece.withParty.jobCode}: {piece.withParty.pendingCarat}ct still pending of{" "}
+                                  {piece.withParty.issuedCarat}ct issued
+                                </span>
+                              ) : null}
                             </td>
                             <td className="px-3 py-2 text-xs text-zinc-500 dark:text-zinc-400">
                               {[piece.colorEstimate, piece.clarityNote].filter(Boolean).join(" · ") || "—"}

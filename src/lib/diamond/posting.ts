@@ -29,11 +29,54 @@ type Tx = Prisma.TransactionClient;
 
 type FyInput = { fyStartMonth: number; fyStartDay: number };
 
+/**
+ * Takes a row-level lock (SELECT … FOR UPDATE) on the given rows, in id
+ * order so two transactions locking overlapping sets can never deadlock.
+ * Issue, cancel and receive all read-then-write balances that another
+ * request could change in between; without this two concurrent issues could
+ * each pass the same "enough carat left" check and overdraw a parcel. The
+ * lock is held until the surrounding transaction commits or rolls back.
+ * `table` is always a literal from this file (never user input); the ids are
+ * bound as parameters.
+ */
+async function lockRows(tx: Tx, table: "rough_pieces" | "diamond_jobs", ids: string[]) {
+  const unique = [...new Set(ids)].sort();
+  if (unique.length === 0) return;
+  const placeholders = unique.map((_, i) => `$${i + 1}`).join(", ");
+  await tx.$queryRawUnsafe(`SELECT id FROM "${table}" WHERE id IN (${placeholders}) ORDER BY id FOR UPDATE`, ...unique);
+}
+
+/** A carat quantity typed by a person: a real, positive number with at most
+ * 3 decimals. Anything else is refused rather than silently rounded. */
+function parseCaratQuantity(value: DecimalInput, label: string): Decimal {
+  let parsed: Decimal;
+  try {
+    parsed = new Decimal(value);
+  } catch {
+    throw new PostingError(`${label} is not a valid number.`);
+  }
+  if (!parsed.isFinite()) throw new PostingError(`${label} is not a valid number.`);
+  if (!parsed.greaterThan(0)) throw new PostingError(`${label} must be greater than zero.`);
+  if (parsed.decimalPlaces() > 3) throw new PostingError(`${label} can have at most 3 decimal places.`);
+  return parsed;
+}
+
+function validateStoneCount(count: number | null | undefined, label: string): number | null {
+  if (count == null) return null;
+  if (!Number.isInteger(count) || count < 1) throw new PostingError(`${label} must be a whole number of at least 1.`);
+  return count;
+}
+
 // ---------------------------------------------------------------------------
 // Rough purchase (creates the lot + every piece + the accounting voucher)
 // ---------------------------------------------------------------------------
 
 export type RoughPieceDraft = {
+  /** STONE (default) = one individual stone, always issued whole. PARCEL = a
+   * multi-stone parcel bought as one row, which can be issued in part. */
+  kind?: "STONE" | "PARCEL";
+  /** Stones in a parcel, where the Owner counted them. Never for a STONE. */
+  pieceCount?: number | null;
   carat: DecimalInput;
   lengthMm?: DecimalInput | null;
   widthMm?: DecimalInput | null;
@@ -83,6 +126,16 @@ export async function createRoughLotWithPieces(
   if (!totalCarat.greaterThan(0)) {
     throw new PostingError("Total carat must be greater than zero.");
   }
+
+  // Only a PARCEL may carry a stone count, and only a PARCEL can later be
+  // issued in part — an individual stone is never silently treated as one.
+  const pieceCounts = input.pieces.map((p) => {
+    const count = validateStoneCount(p.pieceCount, "The number of stones");
+    if ((p.kind ?? "STONE") === "STONE" && count != null) {
+      throw new PostingError("An individual stone cannot have a stone count — record it as a parcel instead.");
+    }
+    return count;
+  });
 
   const allManual = input.pieces.every((p) => p.manualAllocatedCost != null);
   let allocatedCosts: Decimal[];
@@ -203,10 +256,18 @@ export async function createRoughLotWithPieces(
   for (let i = 0; i < input.pieces.length; i++) {
     const draft = input.pieces[i];
     const roughCode = await nextDiamondCode(tx, "ROUGH_PIECE");
+    const isParcel = (draft.kind ?? "STONE") === "PARCEL";
     const piece = await tx.roughPiece.create({
       data: {
         roughCode,
         lotId: lot.id,
+        kind: isParcel ? "PARCEL" : "STONE",
+        pieceCount: pieceCounts[i],
+        // Immutable snapshot of the parcel as bought — the live carat / cost /
+        // count above shrink as portions are issued and grow back on cancel.
+        originalCarat: isParcel ? round3(draft.carat).toFixed(3) : null,
+        originalPieceCount: isParcel ? pieceCounts[i] : null,
+        originalCost: isParcel ? allocatedCosts[i].toFixed(2) : null,
         carat: round3(draft.carat).toFixed(3),
         lengthMm: draft.lengthMm != null ? new Decimal(draft.lengthMm).toFixed(3) : null,
         widthMm: draft.widthMm != null ? new Decimal(draft.widthMm).toFixed(3) : null,
@@ -224,7 +285,7 @@ export async function createRoughLotWithPieces(
       data: {
         type: "ROUGH_PURCHASE_IN",
         roughPieceId: piece.id,
-        pieces: 1,
+        pieces: pieceCounts[i] ?? 1,
         carat: piece.carat,
         costValue: piece.allocatedCost,
         sourceDocument: lotCode,
@@ -240,11 +301,32 @@ export async function createRoughLotWithPieces(
 // Issue rough to Karigar
 // ---------------------------------------------------------------------------
 
+/** A partial issue from one PARCEL: how much of it goes out. */
+export type ParcelIssueInput = {
+  roughPieceId: string;
+  /** Carat to issue — at most 3 decimals, more than zero, no more than the parcel's remaining carat. */
+  carat: DecimalInput;
+  /** Stones going out. Required for a partial issue when the parcel's stone count was recorded; refused when it was not. */
+  pieceCount?: number | null;
+};
+
+/** One rough row (or the issued portion of a parcel) that goes into a job. */
+type PlannedIssue = {
+  row: { id: string; roughCode: string; lotId: string | null; colorEstimate: string | null; clarityNote: string | null; carat: unknown; allocatedCost: unknown; pieceCount: number | null };
+  carat: Decimal;
+  cost: Decimal;
+  count: number | null;
+  split: { remainingCarat: Decimal; remainingCost: Decimal; remainingCount: number | null } | null;
+};
+
 export async function issueRoughToKarigar(
   tx: Tx,
   input: FyInput & {
     karigarId: string;
-    roughPieceIds: string[];
+    /** Whole rows to issue: individual stones, or a parcel issued in full. */
+    roughPieceIds?: string[];
+    /** Parcels issued by carat — a partial issue splits the issued portion off. */
+    parcelIssues?: ParcelIssueInput[];
     requiredShape: DiamondShape;
     customShapeName?: string | null;
     customShapeReferencePhotoAssetId?: string | null;
@@ -265,12 +347,28 @@ export async function issueRoughToKarigar(
     createdByUserId: string;
   }
 ) {
-  if (input.roughPieceIds.length === 0) {
+  const wholeIds = input.roughPieceIds ?? [];
+  const parcelIssues = input.parcelIssues ?? [];
+  if (wholeIds.length === 0 && parcelIssues.length === 0) {
     throw new PostingError("Select at least one rough piece to issue.");
   }
-  const uniqueIds = [...new Set(input.roughPieceIds)];
-  if (uniqueIds.length !== input.roughPieceIds.length) {
+  const requestedIds = [...wholeIds, ...parcelIssues.map((p) => p.roughPieceId)];
+  const uniqueIds = [...new Set(requestedIds)];
+  if (uniqueIds.length !== requestedIds.length) {
     throw new PostingError("The same rough piece was selected more than once.");
+  }
+
+  // Lock every requested row BEFORE reading its balance: whoever gets here
+  // second waits for the first to commit, then sees the reduced balance (or
+  // the already-created job) instead of both passing the same check.
+  await lockRows(tx, "rough_pieces", uniqueIds);
+
+  // Idempotent: a repeat of an already-committed issue (double click, retry)
+  // hands back the job it created rather than issuing again. Checked after
+  // the lock so a concurrent duplicate that was waiting sees the winner.
+  if (input.idempotencyKey) {
+    const existing = await tx.diamondJob.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
+    if (existing) return existing;
   }
 
   const pieces = await tx.roughPiece.findMany({ where: { id: { in: uniqueIds } } });
@@ -283,6 +381,85 @@ export async function issueRoughToKarigar(
         `Rough piece ${piece.roughCode} is not available to issue (current status: ${piece.status}).`
       );
     }
+  }
+  const pieceById = new Map(pieces.map((p) => [p.id, p]));
+
+  // ---- Plan what actually goes out: whole rows, and parcel portions ----
+  const plan: PlannedIssue[] = [];
+  for (const id of wholeIds) {
+    const piece = pieceById.get(id)!;
+    plan.push({
+      row: piece,
+      carat: new Decimal(piece.carat),
+      cost: new Decimal(piece.allocatedCost),
+      count: piece.pieceCount ?? null,
+      split: null,
+    });
+  }
+  for (const request of parcelIssues) {
+    const piece = pieceById.get(request.roughPieceId)!;
+    if (piece.kind !== "PARCEL") {
+      throw new PostingError(
+        `Rough piece ${piece.roughCode} is an individual stone — it can only be issued whole, not by carat.`
+      );
+    }
+    const wanted = parseCaratQuantity(request.carat, `Carat to issue from ${piece.roughCode}`);
+    const remaining = new Decimal(piece.carat);
+    if (wanted.greaterThan(remaining)) {
+      throw new PostingError(
+        `Cannot issue ${wanted.toFixed(3)}ct from parcel ${piece.roughCode} — only ${remaining.toFixed(3)}ct remain in it.`
+      );
+    }
+    const requestedCount = validateStoneCount(request.pieceCount, `The number of stones for ${piece.roughCode}`);
+
+    if (wanted.equals(remaining)) {
+      // The whole remaining parcel goes out — no split, no child row.
+      if (requestedCount != null && requestedCount !== (piece.pieceCount ?? null)) {
+        throw new PostingError(
+          piece.pieceCount == null
+            ? `Parcel ${piece.roughCode} has no recorded stone count, so a count cannot be issued from it.`
+            : `Issuing all ${remaining.toFixed(3)}ct of ${piece.roughCode} means all ${piece.pieceCount} stones, not ${requestedCount}.`
+        );
+      }
+      plan.push({ row: piece, carat: remaining, cost: new Decimal(piece.allocatedCost), count: piece.pieceCount ?? null, split: null });
+      continue;
+    }
+
+    let issuedCount: number | null = null;
+    let remainingCount: number | null = null;
+    if (piece.pieceCount != null) {
+      if (requestedCount == null) {
+        throw new PostingError(
+          `Enter how many stones you are issuing from ${piece.roughCode} — its ${piece.pieceCount} stones are recorded.`
+        );
+      }
+      if (requestedCount >= piece.pieceCount) {
+        throw new PostingError(
+          `Cannot issue ${requestedCount} stones from ${piece.roughCode} while keeping ${remaining.minus(wanted).toFixed(3)}ct — only ${piece.pieceCount} stones remain, and at least one must stay with the rest.`
+        );
+      }
+      issuedCount = requestedCount;
+      remainingCount = piece.pieceCount - requestedCount;
+    } else if (requestedCount != null) {
+      throw new PostingError(`Parcel ${piece.roughCode} has no recorded stone count, so a count cannot be issued from it.`);
+    }
+
+    // Exact proportional split: the issued share is rounded once, and the
+    // remainder is whatever is left — the two always sum to the parcel's cost.
+    const parcelCost = new Decimal(piece.allocatedCost);
+    const issuedShare = round2(parcelCost.times(wanted).dividedBy(remaining));
+    if (parcelCost.greaterThan(0) && !issuedShare.greaterThan(0)) {
+      throw new PostingError(
+        `${wanted.toFixed(3)}ct of parcel ${piece.roughCode} carries less than ₹0.01 of cost — issue a larger quantity.`
+      );
+    }
+    plan.push({
+      row: piece,
+      carat: wanted,
+      cost: issuedShare,
+      count: issuedCount,
+      split: { remainingCarat: remaining.minus(wanted), remainingCost: parcelCost.minus(issuedShare), remainingCount },
+    });
   }
 
   // ---- Phase 7: Manufacturer process + agreed charge rate ----
@@ -300,8 +477,10 @@ export async function issueRoughToKarigar(
     throw new PostingError("Choose how the process charge is calculated (fixed, per carat or per piece).");
   }
 
-  const issuedRoughCarat = pieces.reduce((sum, p) => sum.plus(new Decimal(p.carat)), ZERO);
-  const issuedCostValue = pieces.reduce((sum, p) => sum.plus(new Decimal(p.allocatedCost)), ZERO);
+  const issuedRoughCarat = plan.reduce((sum, p) => sum.plus(p.carat), ZERO);
+  const issuedCostValue = plan.reduce((sum, p) => sum.plus(p.cost), ZERO);
+  // A row without a recorded stone count counts as one piece.
+  const issuedPiecesCount = plan.reduce((sum, p) => sum + (p.count ?? 1), 0);
 
   const jobCode = await nextDiamondCode(tx, "DIAMOND_JOB");
 
@@ -359,7 +538,7 @@ export async function issueRoughToKarigar(
       processOutputKindSnapshot: diamondProcess?.outputKind ?? null,
       chargeRateBasis: input.chargeRateBasis ?? null,
       chargeRate: chargeRate ? chargeRate.toFixed(4) : null,
-      issuedPiecesCount: pieces.length,
+      issuedPiecesCount,
       issuedRoughCarat: round3(issuedRoughCarat).toFixed(3),
       issuedCostValue: issuedCostValue.toFixed(2),
       remainingWipCost: issuedCostValue.toFixed(2),
@@ -369,27 +548,91 @@ export async function issueRoughToKarigar(
     },
   });
 
-  for (const piece of pieces) {
+  for (const item of plan) {
+    let issuedRowId = item.row.id;
+
+    if (item.split) {
+      // Partial parcel issue: split the issued portion off into its own row
+      // (linked to the parcel by parentPieceId) and reduce the parcel. Nothing
+      // is created or destroyed — the two rows always sum to the parcel as it
+      // was — so the original purchase stays reconstructable.
+      const childCode = await nextDiamondCode(tx, "ROUGH_PIECE");
+      const child = await tx.roughPiece.create({
+        data: {
+          roughCode: childCode,
+          lotId: item.row.lotId,
+          kind: "PARCEL",
+          pieceCount: item.count,
+          originalCarat: item.carat.toFixed(3),
+          originalPieceCount: item.count,
+          originalCost: item.cost.toFixed(2),
+          parentPieceId: item.row.id,
+          carat: item.carat.toFixed(3),
+          allocatedCost: item.cost.toFixed(2),
+          colorEstimate: item.row.colorEstimate ?? null,
+          clarityNote: item.row.clarityNote ?? null,
+          internalNote: `Issued portion of parcel ${item.row.roughCode} — job ${jobCode}`,
+          status: "WITH_KARIGAR",
+          costLocked: true,
+          createdByUserId: input.createdByUserId,
+        },
+      });
+      await tx.roughPiece.update({
+        where: { id: item.row.id },
+        data: {
+          carat: item.split.remainingCarat.toFixed(3),
+          allocatedCost: item.split.remainingCost.toFixed(2),
+          pieceCount: item.split.remainingCount,
+        },
+      });
+      await tx.stockMovement.create({
+        data: {
+          type: "ROUGH_PARCEL_SPLIT_OUT",
+          roughPieceId: item.row.id,
+          diamondJobId: job.id,
+          pieces: item.count ?? 0,
+          carat: item.carat.toFixed(3),
+          costValue: item.cost.toFixed(2),
+          sourceDocument: jobCode,
+          createdByUserId: input.createdByUserId,
+        },
+      });
+      await tx.stockMovement.create({
+        data: {
+          type: "ROUGH_PARCEL_SPLIT_IN",
+          roughPieceId: child.id,
+          diamondJobId: job.id,
+          pieces: item.count ?? 0,
+          carat: item.carat.toFixed(3),
+          costValue: item.cost.toFixed(2),
+          sourceDocument: jobCode,
+          createdByUserId: input.createdByUserId,
+        },
+      });
+      issuedRowId = child.id;
+    } else {
+      await tx.roughPiece.update({
+        where: { id: item.row.id },
+        data: { status: "WITH_KARIGAR", costLocked: true },
+      });
+    }
+
     await tx.diamondJobPiece.create({
       data: {
         jobId: job.id,
-        roughPieceId: piece.id,
-        caratAtIssue: piece.carat,
-        costAtIssue: piece.allocatedCost,
+        roughPieceId: issuedRowId,
+        caratAtIssue: item.carat.toFixed(3),
+        costAtIssue: item.cost.toFixed(2),
       },
-    });
-    await tx.roughPiece.update({
-      where: { id: piece.id },
-      data: { status: "WITH_KARIGAR", costLocked: true },
     });
     await tx.stockMovement.create({
       data: {
         type: "ROUGH_ISSUE_OUT",
-        roughPieceId: piece.id,
+        roughPieceId: issuedRowId,
         diamondJobId: job.id,
-        pieces: 1,
-        carat: piece.carat,
-        costValue: piece.allocatedCost,
+        pieces: item.count ?? 1,
+        carat: item.carat.toFixed(3),
+        costValue: item.cost.toFixed(2),
         sourceDocument: jobCode,
         createdByUserId: input.createdByUserId,
       },
@@ -407,6 +650,11 @@ export async function cancelDiamondJob(
   tx: Tx,
   input: FyInput & { jobId: string; cancelledByUserId: string; cancellationReason: string }
 ) {
+  // Lock the job first: a cancel racing a receipt (or a second cancel) waits
+  // here and then sees the job's real status, so a receipt can never slip in
+  // beneath a cancel and the reversal can only ever happen once.
+  await lockRows(tx, "diamond_jobs", [input.jobId]);
+
   const job = await tx.diamondJob.findUnique({
     where: { id: input.jobId },
     include: { pieces: true },
@@ -422,6 +670,24 @@ export async function cancelDiamondJob(
     throw new PostingError("This job already has received material; it cannot be cancelled.");
   }
 
+  // Lock the issued rows AND any parcel they were split from, then read them
+  // fresh: a parcel portion is merged back into its parent's live balance.
+  const linkedIds = job.pieces.map((l) => l.roughPieceId);
+  const firstRead = await tx.roughPiece.findMany({ where: { id: { in: linkedIds } } });
+  const parentIds = firstRead.map((p) => p.parentPieceId).filter((id): id is string => !!id);
+  await lockRows(tx, "rough_pieces", [...linkedIds, ...parentIds]);
+  const rows = await tx.roughPiece.findMany({ where: { id: { in: [...linkedIds, ...parentIds] } } });
+  const rowById = new Map(rows.map((r) => [r.id, r]));
+
+  for (const link of job.pieces) {
+    const piece = rowById.get(link.roughPieceId);
+    if (!piece || piece.status !== "WITH_KARIGAR") {
+      throw new PostingError(
+        `Rough piece ${piece?.roughCode ?? link.roughPieceId} is no longer with the Manufacturer (status ${piece?.status ?? "missing"}) — this job cannot be cancelled safely.`
+      );
+    }
+  }
+
   if (job.wipVoucherId) {
     await cancelVoucher(tx, {
       voucherId: job.wipVoucherId,
@@ -433,19 +699,63 @@ export async function cancelDiamondJob(
   }
 
   for (const link of job.pieces) {
-    await tx.roughPiece.update({ where: { id: link.roughPieceId }, data: { status: "AVAILABLE" } });
+    const piece = rowById.get(link.roughPieceId)!;
+    const parent = piece.parentPieceId ? rowById.get(piece.parentPieceId) : undefined;
+    const pieceCount = piece.pieceCount ?? null;
+
     await tx.stockMovement.create({
       data: {
         type: "ROUGH_ISSUE_CANCEL_IN",
         roughPieceId: link.roughPieceId,
         diamondJobId: job.id,
-        pieces: 1,
+        pieces: pieceCount ?? 1,
         carat: link.caratAtIssue,
         costValue: link.costAtIssue,
         sourceDocument: job.jobCode,
         createdByUserId: input.cancelledByUserId,
       },
     });
+
+    if (parent && parent.status === "AVAILABLE") {
+      // Restore exactly what was issued, once, into the parcel it came from.
+      await tx.roughPiece.update({
+        where: { id: parent.id },
+        data: {
+          carat: round3(new Decimal(parent.carat).plus(link.caratAtIssue)).toFixed(3),
+          allocatedCost: round2(new Decimal(parent.allocatedCost).plus(link.costAtIssue)).toFixed(2),
+          pieceCount: parent.pieceCount != null && pieceCount != null ? parent.pieceCount + pieceCount : (parent.pieceCount ?? null),
+        },
+      });
+      await tx.roughPiece.update({ where: { id: piece.id }, data: { status: "CANCELLED" } });
+      await tx.stockMovement.create({
+        data: {
+          type: "ROUGH_PARCEL_MERGE_OUT",
+          roughPieceId: piece.id,
+          diamondJobId: job.id,
+          pieces: pieceCount ?? 0,
+          carat: link.caratAtIssue,
+          costValue: link.costAtIssue,
+          sourceDocument: job.jobCode,
+          createdByUserId: input.cancelledByUserId,
+        },
+      });
+      await tx.stockMovement.create({
+        data: {
+          type: "ROUGH_PARCEL_MERGE_IN",
+          roughPieceId: parent.id,
+          diamondJobId: job.id,
+          pieces: pieceCount ?? 0,
+          carat: link.caratAtIssue,
+          costValue: link.costAtIssue,
+          sourceDocument: job.jobCode,
+          createdByUserId: input.cancelledByUserId,
+        },
+      });
+    } else {
+      // A whole row (or a parcel portion whose parent has itself since gone
+      // out to another job): back to Available exactly as issued.
+      await tx.roughPiece.update({ where: { id: link.roughPieceId }, data: { status: "AVAILABLE" } });
+    }
   }
 
   return tx.diamondJob.update({
@@ -455,6 +765,9 @@ export async function cancelDiamondJob(
       cancelledAt: new Date(),
       cancelledByUserId: input.cancelledByUserId,
       cancellationReason: input.cancellationReason,
+      // The WIP voucher is reversed above, so nothing is left in WIP. The
+      // issued carat / cost columns are untouched — they are the history.
+      remainingWipCost: "0.00",
     },
   });
 }
@@ -504,6 +817,9 @@ export async function receivePolishedDiamonds(
     createdByUserId: string;
   }
 ) {
+  // Serialise against a concurrent cancel or a second receipt on the same job:
+  // the pending carat below is read-then-written.
+  await lockRows(tx, "diamond_jobs", [input.jobId]);
   const job = await tx.diamondJob.findUnique({ where: { id: input.jobId } });
   if (!job) throw new PostingError("Job not found.");
   if (job.status === "CANCELLED") throw new PostingError("This job has been cancelled.");
@@ -834,6 +1150,9 @@ export async function receiveProcessedRough(
     createdByUserId: string;
   }
 ) {
+  // Serialise against a concurrent cancel or a second receipt on the same job:
+  // the pending carat below is read-then-written.
+  await lockRows(tx, "diamond_jobs", [input.jobId]);
   const job = await tx.diamondJob.findUnique({ where: { id: input.jobId } });
   if (!job) throw new PostingError("Job not found.");
   if (job.status === "CANCELLED") throw new PostingError("This job has been cancelled.");

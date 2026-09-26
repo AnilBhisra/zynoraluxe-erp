@@ -176,6 +176,8 @@ export async function createRoughPurchase(
         idempotencyKey: data.idempotencyKey || null,
         createdByUserId: user.id,
         pieces: data.pieces.map((p) => ({
+          kind: p.kind,
+          pieceCount: p.pieceCount ?? null,
           carat: p.carat,
           lengthMm: p.lengthMm ?? null,
           widthMm: p.widthMm ?? null,
@@ -214,6 +216,7 @@ export async function issueRoughAction(
   const parsed = issueRoughSchema.safeParse({
     karigarId: formData.get("karigarId"),
     roughPieceIds: readJsonArray(formData, "roughPieceIdsJson"),
+    parcelIssues: readJsonArray(formData, "parcelIssuesJson"),
     requiredShape: formData.get("requiredShape"),
     customShapeName: formData.get("customShapeName") || "",
     customShapeReferencePhotoAssetId: formData.get("customShapeReferencePhotoAssetId") || "",
@@ -248,12 +251,14 @@ export async function issueRoughAction(
   }
 
   try {
-    const job = await prisma.$transaction((tx) =>
+    const job = await prisma.$transaction(
+      (tx) =>
       diamondPosting.issueRoughToKarigar(tx, {
         fyStartMonth: fy.fyStartMonth,
         fyStartDay: fy.fyStartDay,
         karigarId: data.karigarId,
         roughPieceIds: data.roughPieceIds,
+        parcelIssues: data.parcelIssues,
         requiredShape: data.requiredShape,
         customShapeName: data.customShapeName || null,
         customShapeReferencePhotoAssetId: data.customShapeReferencePhotoAssetId || null,
@@ -271,7 +276,12 @@ export async function issueRoughAction(
         chargeRate: data.chargeRate ?? null,
         idempotencyKey: data.idempotencyKey || null,
         createdByUserId: user.id,
-      })
+      }),
+      // Locks the selected rough rows, splits parcels and posts the WIP
+      // voucher — comfortably inside the default on a fast connection, but
+      // the same headroom the sale and costing actions already give
+      // themselves over a remote pooled Postgres.
+      { timeout: 20000 }
     );
     revalidateDiamond();
     return { success: true, code: job.jobCode };
@@ -402,14 +412,18 @@ export async function cancelDiamondJobAction(
   const fy = await getCompanyFySettings();
 
   try {
-    await prisma.$transaction((tx) =>
-      diamondPosting.cancelDiamondJob(tx, {
-        fyStartMonth: fy.fyStartMonth,
-        fyStartDay: fy.fyStartDay,
-        jobId: parsed.data.jobId,
-        cancelledByUserId: user.id,
-        cancellationReason: parsed.data.cancellationReason,
-      })
+    await prisma.$transaction(
+      (tx) =>
+        diamondPosting.cancelDiamondJob(tx, {
+          fyStartMonth: fy.fyStartMonth,
+          fyStartDay: fy.fyStartDay,
+          jobId: parsed.data.jobId,
+          cancelledByUserId: user.id,
+          cancellationReason: parsed.data.cancellationReason,
+        }),
+      // Locks the job and its rough rows and reverses the WIP voucher; same
+      // allowance as the issue action.
+      { timeout: 20000 }
     );
   } catch (error) {
     if (error instanceof diamondPosting.PostingError) return { error: error.message };

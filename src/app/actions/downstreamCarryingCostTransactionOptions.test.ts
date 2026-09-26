@@ -17,6 +17,7 @@ import { describe, expect, it } from "vitest";
  */
 const FINISHED_SALES_ACTIONS = path.join(process.cwd(), "src/app/actions/finishedSales.ts");
 const COSTING_ACTIONS = path.join(process.cwd(), "src/app/actions/costing.ts");
+const DIAMOND_ACTIONS = path.join(process.cwd(), "src/app/actions/diamond.ts");
 
 function read(file: string) {
   return fs.readFileSync(file, "utf8");
@@ -54,5 +55,15 @@ describe("write paths that now replay carrying cost inside their transaction", (
 
   it("createFinishedJewellerySaleAction (unchanged this session) still keeps its own allowance", () => {
     assertHasTimeoutPast5s(read(FINISHED_SALES_ACTIONS), "createFinishedJewellerySaleAction");
+  });
+});
+
+describe("rough parcel issue and cancel take row locks and split rows inside their transaction", () => {
+  it("issueRoughAction allows well past the 5s default", () => {
+    assertHasTimeoutPast5s(read(DIAMOND_ACTIONS), "issueRoughAction");
+  });
+
+  it("cancelDiamondJobAction allows well past the 5s default", () => {
+    assertHasTimeoutPast5s(read(DIAMOND_ACTIONS), "cancelDiamondJobAction");
   });
 });

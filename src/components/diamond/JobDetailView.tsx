@@ -65,6 +65,10 @@ const MOVEMENT_LABELS: Record<string, string> = {
   ROUGH_ISSUE_CANCEL_IN: "Issue cancelled — returned to stock",
   ROUGH_CONSUMED_OUT: "Rough consumed (polished + loss)",
   ROUGH_RETURN_IN: "Rough returned (unused or processed)",
+  ROUGH_PARCEL_SPLIT_OUT: "Parcel: issued portion taken out of the parcel",
+  ROUGH_PARCEL_SPLIT_IN: "Parcel: issued portion recorded as its own row",
+  ROUGH_PARCEL_MERGE_OUT: "Parcel: issued portion taken back out (cancel)",
+  ROUGH_PARCEL_MERGE_IN: "Parcel: issued portion merged back into the parcel",
   POLISHED_RECEIVE_IN: "Polished received",
   POLISHED_RECUT_OUT: "Marked for recut",
 };

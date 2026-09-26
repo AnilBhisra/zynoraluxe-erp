@@ -14,6 +14,10 @@ type PaymentAccountOption = { id: string; name: string; method: string };
 type GstRateOption = { id: string; label: string; ratePercent: string };
 
 type PieceDraft = {
+  /** STONE = one individual stone; PARCEL = many stones bought as one row
+   * (can later be issued in part, by carat). */
+  kind: "STONE" | "PARCEL";
+  pieceCount: string;
   carat: string;
   lengthMm: string;
   widthMm: string;
@@ -27,6 +31,8 @@ type PieceDraft = {
 
 function emptyPiece(): PieceDraft {
   return {
+    kind: "STONE",
+    pieceCount: "",
     carat: "",
     lengthMm: "",
     widthMm: "",
@@ -102,6 +108,8 @@ export function RoughPurchaseForm({
   }
 
   const piecesForSubmit = pieces.map((p) => ({
+    kind: p.kind,
+    pieceCount: p.kind === "PARCEL" && p.pieceCount ? p.pieceCount : undefined,
     carat: p.carat,
     lengthMm: p.lengthMm || undefined,
     widthMm: p.widthMm || undefined,
@@ -185,6 +193,29 @@ export function RoughPurchaseForm({
 
         {pieces.map((piece, index) => (
           <div key={index} className="rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-3">
+            <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-4">
+              <select
+                aria-label="Rough type"
+                value={piece.kind}
+                onChange={(e) => updatePiece(index, { kind: e.target.value as PieceDraft["kind"], pieceCount: "" })}
+                className="h-10 rounded-lg border border-zinc-300 bg-white px-2 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
+              >
+                <option value="STONE">Individual stone (issued whole)</option>
+                <option value="PARCEL">Parcel of many stones (can be issued in part)</option>
+              </select>
+              {piece.kind === "PARCEL" ? (
+                <input
+                  aria-label="Number of stones"
+                  type="number"
+                  step="1"
+                  min="1"
+                  placeholder="Number of stones (optional)"
+                  value={piece.pieceCount}
+                  onChange={(e) => updatePiece(index, { pieceCount: e.target.value })}
+                  className="h-10 rounded-lg border border-zinc-300 bg-white px-2.5 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
+                />
+              ) : null}
+            </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
               <input
                 aria-label="Carat"

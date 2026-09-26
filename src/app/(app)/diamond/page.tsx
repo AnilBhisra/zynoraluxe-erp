@@ -8,6 +8,7 @@ import {
   getDiamondJobDetail,
   getKarigarMaterialBalances,
   getRoughStockSummary,
+  getRoughWithPartySummary,
   getPolishedStockSummary,
   listDiamondJobs,
   listPolishedDiamonds,
@@ -137,12 +138,13 @@ export default async function DiamondPage({ searchParams }: { searchParams: Prom
 }
 
 async function RoughStockTabContent({ search, isOwner }: { search: string; isOwner: boolean }) {
-  const [lots, suppliers, paymentAccounts, gstRates, summary] = await Promise.all([
+  const [lots, suppliers, paymentAccounts, gstRates, summary, withParty] = await Promise.all([
     listRoughLots({ search: search || undefined }),
     prisma.party.findMany({ where: { type: "SUPPLIER", isActive: true }, orderBy: { name: "asc" } }),
     prisma.paymentAccount.findMany({ where: { isActive: true }, orderBy: { name: "asc" } }),
     prisma.gstRate.findMany({ where: { isActive: true }, orderBy: { ratePercent: "asc" } }),
     getRoughStockSummary(),
+    getRoughWithPartySummary(),
   ]);
 
   const serializedLots: SerializedRoughLot[] = await Promise.all(
@@ -161,6 +163,20 @@ async function RoughStockTabContent({ search, isOwner }: { search: string; isOwn
         lot.pieces.map(async (p) => ({
           id: p.id,
           roughCode: p.roughCode,
+          kind: p.kind,
+          pieceCount: p.pieceCount,
+          originalCarat: p.originalCarat ? p.originalCarat.toFixed(3) : null,
+          originalPieceCount: p.originalPieceCount,
+          originalCost: p.originalCost ? ownerOnly(isOwner, p.originalCost.toFixed(2)) : null,
+          parentRoughCode: p.parentRoughCode,
+          withParty: p.withParty
+            ? {
+                jobCode: p.withParty.jobCode,
+                partyName: p.withParty.partyName,
+                issuedCarat: p.withParty.issuedCarat.toFixed(3),
+                pendingCarat: p.withParty.pendingCarat.toFixed(3),
+              }
+            : null,
           carat: p.carat.toFixed(3),
           allocatedCost: ownerOnly(isOwner, p.allocatedCost.toFixed(2)),
           costLocked: p.costLocked,
@@ -177,8 +193,14 @@ async function RoughStockTabContent({ search, isOwner }: { search: string; isOwn
   return (
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <SummaryStat label="Available rough" value={`${summary.totalCarat.toFixed(3)}ct`} sub={`${summary.pieceCount} pieces`} />
+        <SummaryStat label="Available rough" value={`${summary.totalCarat.toFixed(3)}ct`} sub={`${summary.pieceCount} row${summary.pieceCount === 1 ? "" : "s"} (stones and parcels)`} />
         {isOwner ? <SummaryStat label="Available rough cost" value={`₹${summary.totalCost.toFixed(2)}`} /> : null}
+        <SummaryStat
+          label="With Manufacturers / Karigars (still pending)"
+          value={`${withParty.pendingCarat.toFixed(3)}ct`}
+          sub={`${withParty.openJobs} open job${withParty.openJobs === 1 ? "" : "s"}`}
+        />
+        {isOwner ? <SummaryStat label="Rough cost still in WIP" value={`₹${withParty.wipCost.toFixed(2)}`} /> : null}
       </div>
       <RoughStockTab
         lots={serializedLots}
@@ -298,6 +320,8 @@ async function JobsTabContent({
     id: p.id,
     roughCode: p.roughCode,
     lotCode: p.lotCode,
+    kind: p.kind,
+    pieceCount: p.pieceCount,
     carat: p.carat.toFixed(3),
     allocatedCost: ownerOnly(isOwner, p.allocatedCost.toFixed(2)),
   }));
@@ -306,7 +330,7 @@ async function JobsTabContent({
     <div className="flex flex-col gap-6">
       {karigarBalances.length > 0 ? (
         <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
-          <h3 className="mb-3 text-sm font-semibold text-zinc-700 dark:text-zinc-300">Material with each Karigar</h3>
+          <h3 className="mb-3 text-sm font-semibold text-zinc-700 dark:text-zinc-300">Material with each Karigar / Manufacturer</h3>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             {karigarBalances.map((k) => (
               <div key={k.karigarId} className="rounded-lg border border-[var(--border)] bg-[var(--surface-muted)] p-3">

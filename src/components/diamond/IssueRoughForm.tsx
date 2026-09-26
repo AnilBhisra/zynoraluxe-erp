@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useMemo, useState } from "react";
+import { Fragment, useActionState, useEffect, useMemo, useState } from "react";
 
 import { issueRoughAction } from "@/app/actions/diamond";
 import { Field } from "@/components/ui/Field";
@@ -15,10 +15,27 @@ export type AvailablePieceOption = {
   id: string;
   roughCode: string;
   lotCode: string | null;
+  /** For a parcel, the carat still remaining in it. */
   carat: string;
+  /** STONE is always issued whole; a PARCEL can be issued by carat. */
+  kind: "STONE" | "PARCEL";
+  /** Stones still in a parcel, where recorded. */
+  pieceCount: number | null;
   /** Owner-only — null for Staff (redacted on the server). */
   allocatedCost: string | null;
 };
+
+/** Non-authoritative preview of what a partial parcel issue leaves behind and
+ * carries out — the server does the exact allocation. */
+function parcelPreview(p: AvailablePieceOption, isOwner: boolean, caratInput: string | undefined): string {
+  const carat = Number(caratInput ?? p.carat) || 0;
+  const left = Math.max(Number(p.carat) - carat, 0);
+  const cost =
+    isOwner && p.allocatedCost != null && Number(p.carat) > 0
+      ? ` · about ₹${((Number(p.allocatedCost) * carat) / Number(p.carat)).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} of cost goes out`
+      : "";
+  return `${left.toFixed(3)}ct stays in stock${cost}`;
+}
 
 /** Phase 7 — an active Manufacturer process offered at issue. */
 export type ProcessOption = { id: string; name: string; outputKind: "ROUGH" | "POLISHED"; defaultRateBasis: "FIXED" | "PER_CARAT" | "PER_PIECE" };
@@ -38,6 +55,9 @@ export function IssueRoughForm({
 }) {
   const [state, formAction, pending] = useActionState(issueRoughAction, undefined);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  // What to issue from each selected PARCEL (its carat, and stones where the
+  // parcel's count is recorded). Individual stones are always issued whole.
+  const [parcelInputs, setParcelInputs] = useState<Record<string, { carat: string; count: string }>>({});
   const [requiredShape, setRequiredShape] = useState("ROUND");
   const [showMore, setShowMore] = useState(false);
   const [customShapeReferencePhotoAssetId, setCustomShapeReferencePhotoAssetId] = useState<string | null>(null);
@@ -61,10 +81,30 @@ export function IssueRoughForm({
   }, [pieceSearch, availablePieces]);
 
   const selectedPieces = availablePieces.filter((p) => selectedIds.includes(p.id));
-  const totalCarat = selectedPieces.reduce((sum, p) => sum + Number(p.carat), 0);
+  const issuedCaratOf = (p: AvailablePieceOption) =>
+    p.kind === "PARCEL" ? Number(parcelInputs[p.id]?.carat ?? p.carat) || 0 : Number(p.carat);
+  const totalCarat = selectedPieces.reduce((sum, p) => sum + issuedCaratOf(p), 0);
+  const stoneIds = selectedPieces.filter((p) => p.kind !== "PARCEL").map((p) => p.id);
+  const parcelIssues = selectedPieces
+    .filter((p) => p.kind === "PARCEL")
+    .map((p) => {
+      const input = parcelInputs[p.id] ?? { carat: p.carat, count: "" };
+      return { roughPieceId: p.id, carat: input.carat, pieceCount: input.count || undefined };
+    });
 
   function toggle(id: string) {
+    const piece = availablePieces.find((p) => p.id === id);
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+    if (piece?.kind === "PARCEL" && !parcelInputs[id]) {
+      // Default to the whole parcel; the Owner types a smaller carat to issue part of it.
+      setParcelInputs((prev) => ({
+        ...prev,
+        [id]: { carat: piece.carat, count: piece.pieceCount != null ? String(piece.pieceCount) : "" },
+      }));
+    }
+  }
+  function setParcelInput(id: string, patch: Partial<{ carat: string; count: string }>) {
+    setParcelInputs((prev) => ({ ...prev, [id]: { carat: prev[id]?.carat ?? "", count: prev[id]?.count ?? "", ...patch } }));
   }
 
   function confirmBeforeSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -87,7 +127,8 @@ export function IssueRoughForm({
       noValidate
     >
       <input type="hidden" name="idempotencyKey" value={idempotencyKey} />
-      <input type="hidden" name="roughPieceIdsJson" value={JSON.stringify(selectedIds)} />
+      <input type="hidden" name="roughPieceIdsJson" value={JSON.stringify(stoneIds)} />
+      <input type="hidden" name="parcelIssuesJson" value={JSON.stringify(parcelIssues)} />
       <input
         type="hidden"
         name="customShapeReferencePhotoAssetId"
@@ -179,8 +220,8 @@ export function IssueRoughForm({
             <table className="w-full text-sm">
               <tbody className="divide-y divide-[var(--border)]">
                 {filteredPieces.map((p) => (
+                  <Fragment key={p.id}>
                   <tr
-                    key={p.id}
                     className="cursor-pointer hover:bg-[var(--surface-muted)]"
                     onClick={() => toggle(p.id)}
                   >
@@ -193,15 +234,62 @@ export function IssueRoughForm({
                         className="h-4 w-4 rounded border-zinc-300"
                       />
                     </td>
-                    <td className="px-3 py-2 font-medium text-zinc-800 dark:text-zinc-200">{p.roughCode}</td>
+                    <td className="px-3 py-2 font-medium text-zinc-800 dark:text-zinc-200">
+                      {p.roughCode}
+                      <span className="ml-2 rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                        {p.kind === "PARCEL" ? "Parcel" : "Stone"}
+                      </span>
+                    </td>
                     <td className="px-3 py-2 text-xs text-zinc-500 dark:text-zinc-400">{p.lotCode ?? "—"}</td>
-                    <td className="px-3 py-2">{p.carat}ct</td>
+                    <td className="px-3 py-2">
+                      {p.carat}ct
+                      {p.kind === "PARCEL" && p.pieceCount != null ? (
+                        <span className="ml-1 text-xs text-zinc-500 dark:text-zinc-400">· {p.pieceCount} stones</span>
+                      ) : null}
+                    </td>
                     {isOwner ? (
                       <td className="px-3 py-2 text-xs text-zinc-500 dark:text-zinc-400">
                         ₹{Number(p.allocatedCost).toFixed(2)}
                       </td>
                     ) : null}
                   </tr>
+                  {p.kind === "PARCEL" && selectedIds.includes(p.id) ? (
+                    <tr className="bg-[var(--surface-muted)]">
+                      <td />
+                      <td colSpan={isOwner ? 4 : 3} className="px-3 py-3">
+                        <div className="flex flex-wrap items-end gap-3">
+                          <label className="flex flex-col gap-1 text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                            Carat to issue
+                            <input
+                              aria-label={`Carat to issue from ${p.roughCode}`}
+                              type="number"
+                              step="0.001"
+                              min="0"
+                              value={parcelInputs[p.id]?.carat ?? p.carat}
+                              onChange={(e) => setParcelInput(p.id, { carat: e.target.value })}
+                              className="h-10 w-36 rounded-lg border border-zinc-300 bg-white px-2.5 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
+                            />
+                          </label>
+                          {p.pieceCount != null ? (
+                            <label className="flex flex-col gap-1 text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                              Stones to issue
+                              <input
+                                aria-label={`Stones to issue from ${p.roughCode}`}
+                                type="number"
+                                step="1"
+                                min="1"
+                                value={parcelInputs[p.id]?.count ?? ""}
+                                onChange={(e) => setParcelInput(p.id, { count: e.target.value })}
+                                className="h-10 w-32 rounded-lg border border-zinc-300 bg-white px-2.5 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
+                              />
+                            </label>
+                          ) : null}
+                          <p className="pb-2 text-xs text-zinc-500 dark:text-zinc-400">{parcelPreview(p, isOwner, parcelInputs[p.id]?.carat)}</p>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+                  </Fragment>
                 ))}
               </tbody>
             </table>

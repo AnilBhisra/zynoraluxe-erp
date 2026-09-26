@@ -550,6 +550,16 @@ enum RateBasis {
 // so only 4 real states exist at the piece level. The master plan's
 // "Partly Issued"/"Fully Issued" labels are a derived LOT-level rollup —
 // see getRoughLotStatus() in src/lib/diamond/reports.ts.
+// A rough row is either one individual stone or a PARCEL of many stones
+// bought together as one row. Only a parcel can be issued in part (by carat,
+// and by stone count where recorded); an individual stone is always issued
+// whole. Every row that existed before this enum was added is STONE — the
+// default — so no historical row is ever reinterpreted as a parcel.
+enum RoughPieceKind {
+  STONE
+  PARCEL
+}
+
 enum RoughPieceStatus {
   AVAILABLE
   WITH_KARIGAR
@@ -690,6 +700,23 @@ model RoughPiece {
   costLocked    Boolean          @default(false)
   status        RoughPieceStatus @default(AVAILABLE)
 
+  // Parcel support. For a PARCEL, `carat` / `allocatedCost` / `pieceCount`
+  // are the CURRENT remaining balance — a partial issue splits the issued
+  // portion off into a child parcel row (parentPieceId) and reduces these;
+  // cancelling that issue before any receipt merges it back. The original*
+  // columns are the immutable snapshot taken when the row was first created,
+  // so the original purchase is always recoverable. pieceCount is the number
+  // of stones where the Owner recorded it (null = not recorded; always null
+  // for a STONE).
+  kind               RoughPieceKind @default(STONE)
+  pieceCount         Int?
+  originalCarat      Decimal?       @db.Decimal(10, 3)
+  originalPieceCount Int?
+  originalCost       Decimal?       @db.Decimal(14, 2)
+  parentPieceId      String?
+  parentPiece        RoughPiece?    @relation("ParcelSplit", fields: [parentPieceId], references: [id])
+  childPieces        RoughPiece[]   @relation("ParcelSplit")
+
   createdByUserId String
   createdBy       User   @relation("RoughPieceCreatedBy", fields: [createdByUserId], references: [id])
 
@@ -701,6 +728,7 @@ model RoughPiece {
 
   @@index([lotId])
   @@index([status])
+  @@index([parentPieceId])
   @@map("rough_pieces")
 }
 
@@ -913,6 +941,12 @@ enum StockMovementType {
   ROUGH_ISSUE_CANCEL_IN
   ROUGH_CONSUMED_OUT
   ROUGH_RETURN_IN
+  // Parcel split / merge-back: a pure reclassification between a parcel and
+  // its issued portion, always posted as an equal OUT + IN pair.
+  ROUGH_PARCEL_SPLIT_OUT
+  ROUGH_PARCEL_SPLIT_IN
+  ROUGH_PARCEL_MERGE_OUT
+  ROUGH_PARCEL_MERGE_IN
   POLISHED_RECEIVE_IN
   POLISHED_RECUT_OUT
   JEWELLERY_ISSUE_OUT
