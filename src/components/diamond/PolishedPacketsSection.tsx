@@ -25,6 +25,13 @@ export type SerializedPacket = {
   certNumber: string | null;
   purchaseCode: string | null;
   supplierName: string | null;
+  /** Lineage of a manufactured parcel: job, receipt and rough lot(s). */
+  sourceJobCode: string | null;
+  sourceReceiptCode: string | null;
+  sourceLotCodes: string[];
+  /** When an Owner converted a single-stone record into this parcel. */
+  convertedFromCode: string | null;
+  convertedReason: string | null;
   pieces: number;
   carat: string;
   /** Owner-only — null for Staff (redacted on the server). */
@@ -153,7 +160,7 @@ export function PolishedPacketsSection({
 
       {view === "grouped" ? (
         groups.length === 0 ? (
-          <EmptyState title="No polished packets in stock" description="Record a Polished Purchase to add packet stock." />
+          <EmptyState title="No polished packets in stock" description="Record a Polished Purchase, or receive a parcel of many stones from a Manufacturer job." />
         ) : (
           <div className="overflow-x-auto rounded-xl border border-[var(--border)]">
             <table className="w-full min-w-[36rem] text-left text-sm">
@@ -205,6 +212,17 @@ export function PolishedPacketsSection({
                   {p.purchaseCode ? ` · ${p.purchaseCode}` : ""}
                   {p.supplierName ? ` · Party / Supplier: ${p.supplierName}` : ""}
                 </p>
+                {p.sourceJobCode ? (
+                  <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                    Parcel of many stones · made in job {p.sourceJobCode}
+                    {p.sourceReceiptCode ? `, receipt ${p.sourceReceiptCode}` : ""}
+                    {p.sourceLotCodes.length > 0 ? ` · from rough lot ${p.sourceLotCodes.join(", ")}` : ""}
+                    {p.convertedFromCode ? ` · converted from ${p.convertedFromCode}` : ""}
+                  </p>
+                ) : null}
+                {p.convertedReason ? (
+                  <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Conversion reason (audited): {p.convertedReason}</p>
+                ) : null}
                 {isOwner ? <AdjustPacketForm packetId={p.id} packetCode={p.packetCode} /> : null}
               </li>
             ))}

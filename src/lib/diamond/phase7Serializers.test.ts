@@ -21,6 +21,7 @@ const packetRow = {
   id: "pkt-1", packetCode: "ZL-PKT-1", provenance: "PURCHASED" as const, mergeKey: "k", shape: "ROUND" as const, customShapeName: null,
   sizeLabel: "1.00MM", quality: "VS", colour: "F", lab: null, certificateStatus: "NOT_CERTIFIED" as const, certNumber: null,
   status: "ACTIVE" as const, purchaseCode: "ZL-PP-1", supplierName: "Supplier", pieces: 10, carat: "1.000", costValue: "11111.11",
+  sourceJobCode: null, sourceReceiptCode: null, sourceLotCodes: [] as string[], convertedFromCode: null, convertedReason: null,
 };
 
 const detail = {

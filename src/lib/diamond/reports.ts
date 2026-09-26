@@ -270,6 +270,9 @@ export type PolishedDiamondRow = {
   status: PolishedDiamondStatus;
   photoAssetId: string | null;
   certFileAssetId: string | null;
+  /** Set once an Owner converted this single-stone record into a parcel packet. */
+  convertedToPacketCode: string | null;
+  convertedReason: string | null;
   createdAt: Date;
 };
 
@@ -289,7 +292,10 @@ export async function listPolishedDiamonds(filters?: {
           ]
         : undefined,
     },
-    include: { job: { include: { pieces: { include: { roughPiece: { include: { lot: true } } } } } } },
+    include: {
+      job: { include: { pieces: { include: { roughPiece: { include: { lot: true } } } } } },
+      convertedToPacket: { select: { packetCode: true } },
+    },
     orderBy: { createdAt: "desc" },
     take: 500,
   });
@@ -310,6 +316,8 @@ export async function listPolishedDiamonds(filters?: {
     status: o.status,
     photoAssetId: o.photoAssetId,
     certFileAssetId: o.certFileAssetId,
+    convertedToPacketCode: o.convertedToPacket?.packetCode ?? null,
+    convertedReason: o.convertedReason,
     createdAt: o.createdAt,
   }));
 }

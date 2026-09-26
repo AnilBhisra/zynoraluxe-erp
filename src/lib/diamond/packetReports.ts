@@ -39,6 +39,14 @@ export type PolishedPacketRow = {
   status: PolishedPacketStatus;
   purchaseCode: string | null;
   supplierName: string | null;
+  /** Lineage of a manufactured parcel: the Manufacturer job, its receipt, and
+   * the rough lot(s) the job's rough came from. Empty/null for purchased packets. */
+  sourceJobCode: string | null;
+  sourceReceiptCode: string | null;
+  sourceLotCodes: string[];
+  /** Set when an Owner converted a single-stone record into this parcel. */
+  convertedFromCode: string | null;
+  convertedReason: string | null;
   pieces: number;
   carat: string;
   costValue: string;
@@ -56,6 +64,9 @@ export async function listPolishedPackets(filters?: { search?: string; includeEm
             OR: [
               { packetCode: { contains: search, mode: "insensitive" } },
               { sizeLabel: { contains: search, mode: "insensitive" } },
+              { sourceDiamondJob: { jobCode: { contains: search, mode: "insensitive" } } },
+              { sourceReceipt: { receiptCode: { contains: search, mode: "insensitive" } } },
+              { convertedFromPolishedDiamond: { polishedCode: { contains: search, mode: "insensitive" } } },
               { certNumber: { contains: search, mode: "insensitive" } },
               { purchaseLine: { purchase: { purchaseCode: { contains: search, mode: "insensitive" } } } },
               { purchaseLine: { purchase: { supplier: { name: { contains: search, mode: "insensitive" } } } } },
@@ -66,6 +77,11 @@ export async function listPolishedPackets(filters?: { search?: string; includeEm
     include: {
       movements: { select: { type: true, pieces: true, carat: true, costValue: true } },
       purchaseLine: { include: { purchase: { select: { purchaseCode: true, supplier: { select: { name: true } } } } } },
+      sourceDiamondJob: {
+        select: { jobCode: true, pieces: { select: { roughPiece: { select: { lot: { select: { lotCode: true } } } } } } },
+      },
+      sourceReceipt: { select: { receiptCode: true } },
+      convertedFromPolishedDiamond: { select: { polishedCode: true, convertedReason: true } },
     },
     orderBy: { createdAt: "desc" },
     take: 500,
@@ -91,6 +107,13 @@ export async function listPolishedPackets(filters?: { search?: string; includeEm
       status: p.status,
       purchaseCode: p.purchaseLine?.purchase.purchaseCode ?? null,
       supplierName: p.purchaseLine?.purchase.supplier.name ?? null,
+      sourceJobCode: p.sourceDiamondJob?.jobCode ?? null,
+      sourceReceiptCode: p.sourceReceipt?.receiptCode ?? null,
+      sourceLotCodes: [
+        ...new Set((p.sourceDiamondJob?.pieces ?? []).map((l) => l.roughPiece.lot?.lotCode).filter((c): c is string => !!c)),
+      ].sort(),
+      convertedFromCode: p.convertedFromPolishedDiamond?.polishedCode ?? null,
+      convertedReason: p.convertedFromPolishedDiamond?.convertedReason ?? null,
       ...balance,
     };
   });

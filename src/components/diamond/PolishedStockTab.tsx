@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { ConvertToParcelForm } from "@/components/diamond/ConvertToParcelForm";
 import { RecutForm } from "@/components/diamond/RecutForm";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { shapeLabel } from "@/lib/diamond/shapes";
@@ -21,6 +22,9 @@ export type SerializedPolishedDiamond = {
   /** Owner-only — null for Staff (redacted on the server). */
   allocatedCost: string | null;
   costPerCarat: string | null;
+  /** Set once an Owner converted this single-stone record into a parcel packet. */
+  convertedToPacketCode: string | null;
+  convertedReason: string | null;
   status: string;
   photoUrl: string | null;
   certFileUrl: string | null;
@@ -29,6 +33,7 @@ export type SerializedPolishedDiamond = {
 const STATUS_LABELS: Record<string, string> = {
   AVAILABLE: "Available",
   RECUT: "Recut",
+  CONVERTED_TO_PARCEL: "Converted to parcel",
 };
 
 const CERT_LABELS: Record<string, string> = {
@@ -102,6 +107,9 @@ export function PolishedStockTab({
                     <div className="flex items-center gap-2">
                       <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">{p.polishedCode}</p>
                       <StatusPill status={p.status} />
+                      <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                        Single stone
+                      </span>
                     </div>
                     <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
                       {shapeLabel(p.shape)} · {p.carat}ct · Job {p.jobCode}
@@ -142,7 +150,16 @@ export function PolishedStockTab({
                         View certificate
                       </a>
                     ) : null}
+                    {p.convertedToPacketCode ? (
+                      <span>
+                        Converted to parcel {p.convertedToPacketCode}
+                        {p.convertedReason ? ` — ${p.convertedReason}` : ""}
+                      </span>
+                    ) : null}
                     {isOwner && p.status === "AVAILABLE" ? <RecutForm polishedDiamondId={p.id} polishedCode={p.polishedCode} /> : null}
+                    {isOwner && p.status === "AVAILABLE" && p.certificateStatus === "NOT_CERTIFIED" ? (
+                      <ConvertToParcelForm polishedDiamondId={p.id} polishedCode={p.polishedCode} carat={p.carat} />
+                    ) : null}
                   </div>
                 ) : null}
               </li>

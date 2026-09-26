@@ -114,6 +114,13 @@ export const issueRoughSchema = z
 export type IssueRoughInput = z.infer<typeof issueRoughSchema>;
 
 export const polishedOutputDraftSchema = z.object({
+  // A single stone (always issued whole) or a parcel of many stones (issued
+  // in part through the packet ledger). The server enforces the rules that
+  // tie the two together: a stone count only on a parcel, at least 2, and no
+  // certificate on a parcel.
+  kind: z.enum(["STONE", "PARCEL"]).default("STONE"),
+  pieceCount: z.coerce.number().int("The number of stones must be a whole number.").positive("The number of stones must be at least 1.").optional(),
+  sizeLabel: optionalString(100),
   shape: SHAPE_ENUM,
   carat: z.coerce.number().positive("Each output's carat must be greater than zero."),
   lengthMm: z.coerce.number().nonnegative().optional(),
@@ -153,6 +160,13 @@ export const cancelJobSchema = z.object({
 
 export const markJobInProgressSchema = z.object({
   jobId: z.string().trim().min(1),
+});
+
+export const convertPolishedToParcelSchema = z.object({
+  polishedDiamondId: z.string().trim().min(1),
+  pieceCount: z.coerce.number().int("The number of stones must be a whole number.").min(2, "A parcel holds at least 2 stones."),
+  sizeLabel: optionalString(100),
+  reason: z.string().trim().min(10, "Say why this record is a parcel (at least 10 characters) — it is kept in the audit trail.").max(500),
 });
 
 export const recutPolishedSchema = z.object({

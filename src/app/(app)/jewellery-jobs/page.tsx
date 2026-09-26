@@ -161,7 +161,16 @@ async function JobsTabContent({
       .map((p) => ({
         id: p.id,
         packetCode: p.packetCode,
-        label: [shapeLabel(p.shape), p.sizeLabel, p.quality, p.colour].filter(Boolean).join(" · "),
+        label: [
+          shapeLabel(p.shape),
+          p.sizeLabel,
+          p.quality,
+          p.colour,
+          p.sourceJobCode ? `from ${p.sourceJobCode}` : null,
+          p.convertedFromCode ? `was ${p.convertedFromCode}` : null,
+        ]
+          .filter(Boolean)
+          .join(" · "),
         pieces: p.pieces,
         carat: p.carat,
       }));

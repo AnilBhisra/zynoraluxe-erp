@@ -20,6 +20,7 @@ import {
 } from "@/lib/accounting/posting";
 import { cancelVoucher } from "@/lib/accounting/posting";
 import { allocateProportionally, round3 } from "@/lib/diamond/allocation";
+import { buildPacketMergeKey } from "@/lib/diamond/packets";
 import { nextDiamondCode } from "@/lib/diamond/numbering";
 import { computeProcessCharge } from "@/lib/diamond/processCharge";
 
@@ -777,6 +778,14 @@ export async function cancelDiamondJob(
 // ---------------------------------------------------------------------------
 
 export type PolishedOutputDraft = {
+  /** STONE (default) = one individual polished stone, always issued whole.
+   * PARCEL = many stones received together; recorded as a packet so a
+   * Jewellery Job can take part of it (by carat and stone count). */
+  kind?: "STONE" | "PARCEL";
+  /** Stones in the parcel — required (at least 2) for a PARCEL, never for a STONE. */
+  pieceCount?: number | null;
+  /** Parcel size wording for the packet ("2.0 mm", "0.10-0.12 ct"); defaults to "Unsized". */
+  sizeLabel?: string | null;
   shape: DiamondShape;
   carat: DecimalInput;
   lengthMm?: DecimalInput | null;
@@ -839,6 +848,26 @@ export async function receivePolishedDiamonds(
   if (!totalPolishedCarat.greaterThan(0)) {
     throw new PostingError("Total polished carat must be greater than zero.");
   }
+
+  // A single stone and a parcel are different things and must be said so at
+  // receipt: only a parcel carries a stone count, only a parcel can later be
+  // issued in part, and a certified stone is by nature a single stone.
+  const outputCounts = input.outputs.map((o, i) => {
+    const kind = o.kind ?? "STONE";
+    const label = `Polished output ${i + 1}`;
+    if (kind === "STONE") {
+      if (o.pieceCount != null) throw new PostingError(`${label} is a single stone, so it cannot have a stone count — record it as a parcel instead.`);
+      return null;
+    }
+    if (!Number.isInteger(o.pieceCount ?? NaN) || (o.pieceCount as number) < 2) {
+      throw new PostingError(`${label} is a parcel — enter how many stones it holds (at least 2). A single stone should be recorded as a single stone.`);
+    }
+    const certified = (o.certificateStatus ?? "NOT_CERTIFIED") !== "NOT_CERTIFIED" || !!o.certNumber || !!o.certLab || !!o.certFileAssetId;
+    if (certified) throw new PostingError(`${label} is a parcel, which cannot carry a certificate — a certified stone is recorded as a single stone.`);
+    if (!round3(o.carat).greaterThan(0)) throw new PostingError(`${label} must have a carat greater than zero.`);
+    return o.pieceCount as number;
+  });
+  const totalStones = outputCounts.reduce<number>((sum, c) => sum + (c ?? 1), 0);
   const returnedRoughCarat = round3(input.returnedRoughCarat ?? 0);
   if (returnedRoughCarat.isNegative()) {
     throw new PostingError("Returned rough carat cannot be negative.");
@@ -877,7 +906,7 @@ export async function receivePolishedDiamonds(
         basis: job.chargeRateBasis,
         rate: new Decimal(job.chargeRate ?? 0).toFixed(4),
         carat: totalPolishedCarat.toFixed(3),
-        pieces: input.outputs.length,
+        pieces: totalStones,
         isFinal: isFinalReceiptForJob,
       })
     );
@@ -978,7 +1007,7 @@ export async function receivePolishedDiamonds(
       receiptCode,
       jobId: job.id,
       receiveDate: input.receiveDate,
-      polishedCount: input.outputs.length,
+      polishedCount: totalStones,
       totalPolishedCarat: totalPolishedCarat.toFixed(3),
       returnedRoughCarat: returnedRoughCarat.toFixed(3),
       weightLossCarat: weightLossCarat.toFixed(3),
@@ -993,11 +1022,78 @@ export async function receivePolishedDiamonds(
   });
 
   const createdOutputs = [];
+  const createdParcels = [];
   for (let i = 0; i < input.outputs.length; i++) {
     const draft = input.outputs[i];
-    const polishedCode = await nextDiamondCode(tx, "POLISHED_DIAMOND");
     const allocatedCost = allocation.find((a) => a.key === String(i))!.amount;
     const caratDec = round3(draft.carat);
+    const stoneCount = outputCounts[i];
+
+    if (stoneCount != null) {
+      // PARCEL: kept on the packet ledger, whose partial-issue, return and
+      // cancellation rules (exact proportional cost, drains to zero) already
+      // exist. Lineage: this job, this receipt (and, through the job, the
+      // rough lot it was bought in).
+      const packetCode = await nextDiamondCode(tx, "POLISHED_PACKET");
+      const sizeLabel = draft.sizeLabel?.trim() || "Unsized";
+      const packet = await tx.polishedPacket.create({
+        data: {
+          packetCode,
+          provenance: "MANUFACTURED_FROM_ROUGH",
+          mergeKey: buildPacketMergeKey({
+            shape: draft.shape,
+            sizeLabel,
+            quality: draft.clarity ?? null,
+            colour: draft.color ?? null,
+            lab: null,
+            certificateStatus: "NOT_CERTIFIED",
+            provenance: "MANUFACTURED_FROM_ROUGH",
+            currencyCode: "INR",
+          }),
+          shape: draft.shape,
+          sizeLabel,
+          measurements:
+            draft.lengthMm != null || draft.widthMm != null || draft.heightMm != null
+              ? [draft.lengthMm, draft.widthMm, draft.heightMm].map((v) => (v != null ? new Decimal(v).toFixed(3) : "—")).join(" × ") + " mm"
+              : null,
+          quality: draft.clarity ?? null,
+          colour: draft.color ?? null,
+          certificateStatus: "NOT_CERTIFIED",
+          photoAssetId: draft.photoAssetId ?? null,
+          currencyCode: "INR",
+          sourceDiamondJobId: job.id,
+          sourceReceiptId: receipt.id,
+          notes: `Manufactured parcel from job ${job.jobCode}, receipt ${receiptCode}`,
+          createdByUserId: input.createdByUserId,
+        },
+      });
+      await tx.polishedPacketMovement.create({
+        data: {
+          type: "MANUFACTURE_IN",
+          packetId: packet.id,
+          pieces: stoneCount,
+          carat: caratDec.toFixed(3),
+          costValue: allocatedCost.toFixed(2),
+          sourceDocument: receiptCode,
+          createdByUserId: input.createdByUserId,
+        },
+      });
+      await tx.stockMovement.create({
+        data: {
+          type: "POLISHED_RECEIVE_IN",
+          diamondJobId: job.id,
+          pieces: stoneCount,
+          carat: caratDec.toFixed(3),
+          costValue: allocatedCost.toFixed(2),
+          sourceDocument: receiptCode,
+          createdByUserId: input.createdByUserId,
+        },
+      });
+      createdParcels.push(packet);
+      continue;
+    }
+
+    const polishedCode = await nextDiamondCode(tx, "POLISHED_DIAMOND");
     const output = await tx.polishedDiamond.create({
       data: {
         polishedCode,
@@ -1118,7 +1214,7 @@ export async function receivePolishedDiamonds(
     });
   }
 
-  return { receipt, outputs: createdOutputs, job: updatedJob };
+  return { receipt, outputs: createdOutputs, parcels: createdParcels, job: updatedJob };
 }
 
 // ---------------------------------------------------------------------------

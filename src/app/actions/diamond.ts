@@ -9,6 +9,7 @@ import { requireOwner, requireUser } from "@/lib/auth/dal";
 import { getCompanyFySettings } from "@/lib/accounting/company";
 import { parseDateOnly } from "@/lib/accounting/financialYear";
 import * as diamondPosting from "@/lib/diamond/posting";
+import * as parcelConversion from "@/lib/diamond/polishedParcelConversion";
 import * as polishedPurchasePosting from "@/lib/diamond/polishedPurchase";
 import * as packetProcessPosting from "@/lib/diamond/packetProcess";
 import * as packetAdjustmentPosting from "@/lib/diamond/packetAdjustment";
@@ -23,6 +24,7 @@ import {
   cancelJobSchema,
   cancelPacketProcessJobSchema,
   cancelPolishedPurchaseSchema,
+  convertPolishedToParcelSchema,
   diamondProcessSchema,
   issueRoughSchema,
   markJobInProgressSchema,
@@ -347,6 +349,9 @@ export async function receivePolishedAction(
         idempotencyKey: data.idempotencyKey || null,
         createdByUserId: user.id,
         outputs: data.outputs.map((o) => ({
+          kind: o.kind,
+          pieceCount: o.pieceCount ?? null,
+          sizeLabel: o.sizeLabel || null,
           shape: o.shape,
           carat: o.carat,
           lengthMm: o.lengthMm ?? null,
@@ -438,6 +443,48 @@ export async function cancelDiamondJobAction(
 // ---------------------------------------------------------------------------
 // Recut (Owner-only)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Owner-only, audited: an existing single-stone polished record that really is
+// a parcel of many stones becomes a parcel packet (issuable in part)
+// ---------------------------------------------------------------------------
+
+export async function convertPolishedToParcelAction(
+  _prevState: DiamondFormState,
+  formData: FormData
+): Promise<DiamondFormState> {
+  const user = await requireOwner();
+
+  const parsed = convertPolishedToParcelSchema.safeParse({
+    polishedDiamondId: formData.get("polishedDiamondId"),
+    pieceCount: formData.get("pieceCount"),
+    sizeLabel: formData.get("sizeLabel") || "",
+    reason: formData.get("reason"),
+  });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
+  }
+
+  try {
+    const result = await prisma.$transaction(
+      (tx) =>
+        parcelConversion.convertPolishedDiamondToParcel(tx, {
+          polishedDiamondId: parsed.data.polishedDiamondId,
+          pieceCount: parsed.data.pieceCount,
+          sizeLabel: parsed.data.sizeLabel || null,
+          reason: parsed.data.reason,
+          convertedByUserId: user.id,
+        }),
+      { timeout: 20000 }
+    );
+    revalidateDiamond();
+    return { success: true, code: result.packet.packetCode };
+  } catch (error) {
+    if (error instanceof parcelConversion.PostingError) return { error: error.message };
+    console.error("convertPolishedToParcelAction failed:", error);
+    return { error: "Could not convert this record. Please try again." };
+  }
+}
 
 export async function recutPolishedAction(
   _prevState: DiamondFormState,

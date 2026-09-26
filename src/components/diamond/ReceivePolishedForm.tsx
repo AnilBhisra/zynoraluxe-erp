@@ -10,6 +10,11 @@ import { PhotoUploadField } from "@/components/diamond/PhotoUploadField";
 import { STANDARD_SHAPES } from "@/lib/diamond/shapes";
 
 type OutputDraft = {
+  /** STONE = one individual polished stone (always issued whole); PARCEL = many
+   * stones received together, which a Jewellery Job can take in part. */
+  kind: "STONE" | "PARCEL";
+  pieceCount: string;
+  sizeLabel: string;
   shape: string;
   carat: string;
   color: string;
@@ -24,6 +29,9 @@ type OutputDraft = {
 
 function emptyOutput(shape: string): OutputDraft {
   return {
+    kind: "STONE",
+    pieceCount: "",
+    sizeLabel: "",
     shape,
     carat: "",
     color: "",
@@ -88,25 +96,32 @@ export function ReceivePolishedForm({
       event.preventDefault();
       return;
     }
+    const parcels = outputs.filter((o) => o.kind === "PARCEL");
+    const parcelNote = parcels.length
+      ? ` ${parcels.length} parcel(s) of many stones will be stored as packets in Polished Diamond stock.`
+      : "";
     const summary = willComplete
       ? `This will COMPLETE job ${jobCode}. Polished: ${totalPolishedCarat.toFixed(3)}ct, Returned: ${returnedCarat.toFixed(3)}ct, Weight loss: ${previewLoss.toFixed(3)}ct.`
       : `Partial receipt for job ${jobCode}. Polished: ${totalPolishedCarat.toFixed(3)}ct, Returned: ${returnedCarat.toFixed(3)}ct. ${gap.toFixed(3)}ct remains with the Karigar.`;
-    if (!window.confirm(`${summary}\n\nSave this receipt?`)) {
+    if (!window.confirm(`${summary}${parcelNote}\n\nSave this receipt?`)) {
       event.preventDefault();
     }
   }
 
   const outputsForSubmit = outputs.map((o) => ({
+    kind: o.kind,
+    pieceCount: o.kind === "PARCEL" && o.pieceCount ? o.pieceCount : undefined,
+    sizeLabel: o.kind === "PARCEL" && o.sizeLabel ? o.sizeLabel : undefined,
     shape: o.shape,
     carat: o.carat,
     color: o.color || undefined,
     clarity: o.clarity || undefined,
     cutGrade: o.cutGrade || undefined,
-    certificateStatus: o.certificateStatus,
-    certLab: o.certLab || undefined,
-    certNumber: o.certNumber || undefined,
+    certificateStatus: o.kind === "PARCEL" ? "NOT_CERTIFIED" : o.certificateStatus,
+    certLab: o.kind === "PARCEL" ? undefined : o.certLab || undefined,
+    certNumber: o.kind === "PARCEL" ? undefined : o.certNumber || undefined,
     photoAssetId: o.photoAssetId || undefined,
-    certFileAssetId: o.certFileAssetId || undefined,
+    certFileAssetId: o.kind === "PARCEL" ? undefined : o.certFileAssetId || undefined,
   }));
 
   return (
@@ -135,6 +150,45 @@ export function ReceivePolishedForm({
         <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Polished diamonds received</h3>
         {outputs.map((output, index) => (
           <div key={index} className="rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-3">
+            <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-4">
+              <select
+                aria-label="Polished type"
+                value={output.kind}
+                onChange={(e) =>
+                  updateOutput(index, {
+                    kind: e.target.value as OutputDraft["kind"],
+                    pieceCount: "",
+                    sizeLabel: "",
+                    certificateStatus: "NOT_CERTIFIED",
+                  })
+                }
+                className="h-10 rounded-lg border border-zinc-300 bg-white px-2 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
+              >
+                <option value="STONE">Single stone (issued whole)</option>
+                <option value="PARCEL">Parcel of many stones (can be issued in part)</option>
+              </select>
+              {output.kind === "PARCEL" ? (
+                <>
+                  <input
+                    aria-label="Number of stones"
+                    type="number"
+                    step="1"
+                    min="2"
+                    placeholder="Number of stones (required)"
+                    value={output.pieceCount}
+                    onChange={(e) => updateOutput(index, { pieceCount: e.target.value })}
+                    className="h-10 rounded-lg border border-zinc-300 bg-white px-2.5 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
+                  />
+                  <input
+                    aria-label="Parcel size"
+                    placeholder="Size (optional, e.g. 1.5 mm)"
+                    value={output.sizeLabel}
+                    onChange={(e) => updateOutput(index, { sizeLabel: e.target.value })}
+                    className="h-10 rounded-lg border border-zinc-300 bg-white px-2.5 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
+                  />
+                </>
+              ) : null}
+            </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
               <select
                 aria-label="Shape"
@@ -174,6 +228,12 @@ export function ReceivePolishedForm({
               />
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-3">
+              {output.kind === "PARCEL" ? (
+                <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                  A parcel is stored as a packet in Polished Diamond stock and cannot carry a certificate.
+                </span>
+              ) : null}
+              {output.kind === "STONE" ? (
               <select
                 aria-label="Certificate status"
                 value={output.certificateStatus}
@@ -184,7 +244,8 @@ export function ReceivePolishedForm({
                 <option value="INTERNAL_GRADE">Internal grade</option>
                 <option value="CERTIFIED">Certified</option>
               </select>
-              {output.certificateStatus === "CERTIFIED" ? (
+              ) : null}
+              {output.kind === "STONE" && output.certificateStatus === "CERTIFIED" ? (
                 <>
                   <input
                     aria-label="Cert lab"

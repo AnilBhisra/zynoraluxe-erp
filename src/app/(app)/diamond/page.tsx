@@ -388,6 +388,8 @@ async function PolishedStockTabContent({ search, isOwner }: { search: string; is
       certificateStatus: p.certificateStatus,
       allocatedCost: ownerOnly(isOwner, p.allocatedCost.toFixed(2)),
       costPerCarat: ownerOnly(isOwner, p.costPerCarat.toFixed(2)),
+      convertedToPacketCode: p.convertedToPacketCode,
+      convertedReason: p.convertedReason,
       status: p.status,
       photoUrl: await resolveDiamondAssetUrl(p.photoAssetId),
       certFileUrl: await resolveDiamondAssetUrl(p.certFileAssetId),

@@ -73,6 +73,7 @@ model User {
   polishedDiamondsCreated    PolishedDiamond[] @relation("PolishedDiamondCreatedBy")
   polishedDiamondsRecut      PolishedDiamond[] @relation("PolishedDiamondRecutBy")
   polishedDiamondsMarkedLost PolishedDiamond[] @relation("PolishedDiamondDamagedLostBy")
+  polishedDiamondsConverted  PolishedDiamond[] @relation("PolishedDiamondConvertedBy")
   stockMovementsCreated      StockMovement[]   @relation("StockMovementCreatedBy")
 
   metalPuritiesCreated       MetalPurity[]                @relation("MetalPurityCreatedBy")
@@ -589,6 +590,8 @@ enum CertificateStatus {
 // (additive enum values — existing AVAILABLE/RECUT rows are unaffected).
 enum PolishedDiamondStatus {
   AVAILABLE
+  // Retired by an audited conversion into a parcel packet — never a stone in stock.
+  CONVERTED_TO_PARCEL
   RECUT
   ISSUED_TO_JEWELLERY
   SET_IN_JEWELLERY
@@ -824,6 +827,9 @@ model DiamondJob {
   stockMovements   StockMovement[]
   returnedPieces   RoughPiece[]      @relation("JobReturnedPieces")
   polishedDiamonds PolishedDiamond[]
+  // Manufactured polished parcels this job's receipts produced (kept as
+  // packets so they can be issued in part); see PolishedPacket.
+  sourcedPackets   PolishedPacket[]  @relation("PolishedPacketSourceJob")
 
   @@index([karigarId])
   @@index([status])
@@ -864,6 +870,7 @@ model PolishedReceipt {
   createdAt DateTime @default(now())
 
   outputs        PolishedDiamond[]
+  sourcedPackets PolishedPacket[]  @relation("PolishedPacketSourceReceipt")
   returnedPieces RoughPiece[]      @relation("ReceiptReturnedPieces")
 
   @@index([jobId])
@@ -910,6 +917,16 @@ model PolishedDiamond {
   recutBy       User?     @relation("PolishedDiamondRecutBy", fields: [recutByUserId], references: [id])
   recutReason   String?
 
+  // Audited Owner conversion of a single-stone row that actually represents
+  // a parcel of many stones: the row is retired (CONVERTED_TO_PARCEL) and its
+  // carat + current cost move into a PolishedPacket, which can be issued in
+  // part. Never done implicitly — see convertPolishedDiamondToParcel.
+  convertedAt       DateTime?
+  convertedByUserId String?
+  convertedBy       User?           @relation("PolishedDiamondConvertedBy", fields: [convertedByUserId], references: [id])
+  convertedReason   String?
+  convertedToPacket PolishedPacket? @relation("PolishedDiamondConversion")
+
   // Phase 4: Owner-only abnormal-loss classification during a Jewellery
   // Receipt reconciliation — never set from Phase 3 alone.
   damagedLostAt       DateTime?
@@ -948,6 +965,8 @@ enum StockMovementType {
   ROUGH_PARCEL_MERGE_OUT
   ROUGH_PARCEL_MERGE_IN
   POLISHED_RECEIVE_IN
+  // A single-stone row retired into a parcel packet (equal IN sits on the packet ledger).
+  POLISHED_CONVERTED_OUT
   POLISHED_RECUT_OUT
   JEWELLERY_ISSUE_OUT
   JEWELLERY_ISSUE_CANCEL_IN
@@ -2367,6 +2386,10 @@ enum PolishedPacketMovementType {
   PROCESS_ISSUE_OUT
   PROCESS_ISSUE_CANCEL_IN
   PROCESS_RETURN_IN
+  /// A manufactured parcel entering stock on a Manufacturer polished receipt.
+  MANUFACTURE_IN
+  /// A single-stone row converted (audited) into this parcel packet.
+  CONVERSION_IN
   JEWELLERY_ISSUE_OUT
   JEWELLERY_ISSUE_CANCEL_IN
   JEWELLERY_RETURN_IN
@@ -2513,6 +2536,19 @@ model PolishedPacket {
   parentPacket   PolishedPacket?  @relation("PacketParent", fields: [parentPacketId], references: [id])
   childPackets   PolishedPacket[] @relation("PacketParent")
 
+  /// Lineage of a parcel manufactured from rough: the Manufacturer job and the
+  /// exact receipt that produced it (and, through the job, the rough lot it
+  /// was bought in). Null for purchased packets.
+  sourceDiamondJobId String?
+  sourceDiamondJob   DiamondJob?      @relation("PolishedPacketSourceJob", fields: [sourceDiamondJobId], references: [id])
+  sourceReceiptId    String?
+  sourceReceipt      PolishedReceipt? @relation("PolishedPacketSourceReceipt", fields: [sourceReceiptId], references: [id])
+
+  /// Set when this packet came from an audited conversion of a single-stone
+  /// polished row (that row stays, retired, as the audit trail).
+  convertedFromPolishedDiamondId String?          @unique
+  convertedFromPolishedDiamond   PolishedDiamond? @relation("PolishedDiamondConversion", fields: [convertedFromPolishedDiamondId], references: [id])
+
   /// Set when a Job Manufacturer return created this packet.
   sourcePacketProcessJobId String?
   sourcePacketProcessJob   PacketProcessJob? @relation("PacketProcessJobCreatedPackets", fields: [sourcePacketProcessJobId], references: [id])
@@ -2533,6 +2569,8 @@ model PolishedPacket {
   @@index([mergeKey])
   @@index([status])
   @@index([provenance])
+  @@index([sourceDiamondJobId])
+  @@index([sourceReceiptId])
   @@map("polished_packets")
 }
 
