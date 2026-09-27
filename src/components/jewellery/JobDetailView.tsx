@@ -22,6 +22,7 @@ import type { ReceiptChargePanel } from "@/lib/jewellery/receiptChargePanels";
 import { MetalTransferPanel } from "@/components/jewellery/MetalTransferPanel";
 import type { MetalTransferPanel as MetalTransferPanelData } from "@/lib/jewellery/metalTransferPanels";
 import { FixJobStatusButton } from "@/components/jewellery/FixJobStatusButton";
+import { CompleteReconciledJobButton } from "@/components/jewellery/CompleteReconciledJobButton";
 import { Button } from "@/components/ui/Button";
 import { jewelleryTypeLabel } from "@/lib/jewellery/types";
 import { formatThousandths, toThousandths } from "@/lib/jewellery/metalMath";
@@ -273,6 +274,9 @@ export function JobDetailView({
             {canCancel ? <CancelJobForm jobId={job.id} jobCode={job.jobCode} /> : null}
             {isOwner && transferPanel?.statusLooksInconsistent ? (
               <FixJobStatusButton jobId={job.id} currentStatus={job.status} onDone={() => router.refresh()} />
+            ) : null}
+            {isOwner && transferPanel?.canCompleteWithoutReceipt ? (
+              <CompleteReconciledJobButton jobId={job.id} onDone={() => router.refresh()} />
             ) : null}
           </div>
         </div>

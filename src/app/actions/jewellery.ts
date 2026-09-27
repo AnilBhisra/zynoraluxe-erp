@@ -16,6 +16,7 @@ import {
 } from "@/lib/storage/jewelleryMedia";
 import {
   cancelJewelleryJobSchema,
+  completeReconciledJobSchema,
   createJewelleryJobSchema,
   issueMaterialsSchema,
   markJobInProgressSchema,
@@ -286,6 +287,36 @@ export async function recomputeJobStatusAction(
     if (error instanceof jewelleryPosting.PostingError) return { error: error.message };
     console.error("recomputeJobStatusAction failed:", error);
     return { error: "Could not fix this job's status. Please try again." };
+  }
+}
+
+/**
+ * Owner-only. Marks a job Completed with no new receipt — for a job whose
+ * last unresolved metal left by a job-to-job transfer rather than a receipt,
+ * so it never passed through Receive Finished Jewellery's own completion
+ * gate. Touches only `status` and a note; every material must already be
+ * fully accounted for, re-checked inside the transaction.
+ */
+export async function completeReconciledJobAction(
+  _prevState: JewelleryFormState,
+  formData: FormData
+): Promise<JewelleryFormState> {
+  const owner = await requireOwner();
+  const parsed = completeReconciledJobSchema.safeParse({
+    jobId: formData.get("jobId"),
+    reason: formData.get("reason"),
+  });
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
+  try {
+    await prisma.$transaction((tx) =>
+      jewelleryPosting.completeReconciledJob(tx, { jobId: parsed.data.jobId, reason: parsed.data.reason, userId: owner.id })
+    );
+    revalidateJewellery();
+    return { success: true };
+  } catch (error) {
+    if (error instanceof jewelleryPosting.PostingError) return { error: error.message };
+    console.error("completeReconciledJobAction failed:", error);
+    return { error: "Could not complete this job. Please try again." };
   }
 }
 

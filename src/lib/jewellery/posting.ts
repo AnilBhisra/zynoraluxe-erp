@@ -1478,6 +1478,92 @@ export async function recomputeInconsistentJobStatus(
 }
 
 // ---------------------------------------------------------------------------
+// Complete a fully-reconciled job with NO new receipt (e.g. its last unresolved
+// metal left by transfer, not by a receipt)
+// ---------------------------------------------------------------------------
+
+export type JobReconciliationCheck = { ok: true } | { ok: false; reason: string };
+
+/**
+ * The single, re-checkable rule for "may this job be marked Completed right
+ * now, with no further receipt": every material this job ever took in has an
+ * accounted-for outcome — nothing pending, nothing mid-resolution. Read-only;
+ * used both to gate the UI button and, again, inside the locked posting
+ * transaction (never trust a value read before the lock).
+ */
+export async function assessJobReconciliation(tx: Tx, jobId: string): Promise<JobReconciliationCheck> {
+  const job = await tx.jewelleryJob.findUnique({ where: { id: jobId } });
+  if (!job) return { ok: false, reason: "Job not found." };
+  if (job.status === "COMPLETED") return { ok: false, reason: "This job is already completed." };
+  if (job.status === "CANCELLED") return { ok: false, reason: "This job has been cancelled." };
+  if (job.status === "DRAFT") return { ok: false, reason: "No materials have been issued to this job yet." };
+
+  const pending = pendingFineWeightOf(job);
+  if (!pending.isZero()) {
+    return { ok: false, reason: `${job.jobCode} still has ${pending.toFixed(3)}g fine metal pending with the Karigar.` };
+  }
+  if (!new Decimal(job.remainingWipCost).isZero()) {
+    return { ok: false, reason: `${job.jobCode} still carries ₹${new Decimal(job.remainingWipCost).toFixed(2)} of unresolved metal WIP cost.` };
+  }
+  const alloyPending = round3(
+    new Decimal(job.issuedAlloyGrossWeight).minus(job.consumedAlloyGrossWeight).minus(job.returnedAlloyGrossWeight)
+  );
+  if (!alloyPending.isZero() || !new Decimal(job.remainingAlloyWipCost).isZero()) {
+    return { ok: false, reason: `${job.jobCode} still has ${alloyPending.toFixed(3)}g of Company Copper/Alloy unresolved.` };
+  }
+
+  const unresolvedDiamond = await tx.jewelleryDiamondIssueLine.findFirst({ where: { jobId, resolvedAs: null } });
+  if (unresolvedDiamond) {
+    return { ok: false, reason: `${job.jobCode} still has a polished diamond issued to it with no outcome recorded (set, returned, or damaged/lost).` };
+  }
+
+  const packetLines = await tx.jewelleryPacketIssueLine.findMany({ where: { jobId } });
+  for (const l of packetLines) {
+    const piecesLeft = l.piecesAtIssue - l.setPieces - l.returnedPieces - l.damagedPieces;
+    const caratLeft = new Decimal(l.caratAtIssue).minus(l.setCarat).minus(l.returnedCarat).minus(l.damagedCarat);
+    if (piecesLeft !== 0 || !caratLeft.isZero()) {
+      return {
+        ok: false,
+        reason: `${job.jobCode} still has ${piecesLeft} piece(s) / ${caratLeft.toFixed(3)}ct of a Polished Diamond packet unresolved.`,
+      };
+    }
+  }
+
+  return { ok: true };
+}
+
+/**
+ * Marks a job Completed with NO new receipt, NO voucher and NO change to any
+ * quantity or cost — for the one case Receive Finished Jewellery cannot
+ * reach: a job whose last unresolved metal left by a job-to-job TRANSFER (see
+ * metalTransfer.ts), not by a receipt, so it never passed through the
+ * `markJobComplete` gate that normally sets this status. Refuses, with the
+ * specific reason, unless `assessJobReconciliation` finds every material this
+ * job took in fully accounted for — re-checked here under the job's own row
+ * lock, never trusting an earlier read.
+ */
+export async function completeReconciledJob(tx: Tx, input: { jobId: string; reason: string; userId: string }) {
+  const reason = input.reason?.trim() ?? "";
+  if (reason.length < 10) {
+    throw new PostingError("Say why this job is being completed without a new receipt (at least 10 characters) — the reason is kept on the job.");
+  }
+  const locked = await tx.$queryRawUnsafe<{ id: string }[]>(`SELECT id FROM "jewellery_jobs" WHERE id = $1 FOR UPDATE`, input.jobId);
+  if (locked.length === 0) throw new PostingError("Job not found.");
+
+  const check = await assessJobReconciliation(tx, input.jobId);
+  if (!check.ok) throw new PostingError(check.reason);
+
+  const job = await tx.jewelleryJob.findUniqueOrThrow({ where: { id: input.jobId } });
+  return tx.jewelleryJob.update({
+    where: { id: job.id },
+    data: {
+      status: "COMPLETED",
+      notes: `${job.notes ? job.notes + "\n" : ""}[Marked Completed by Owner without a new receipt — every material is fully accounted for — ${reason}]`,
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Receive Finished Jewellery (partial-receipt-safe, multi-output,
 // multi-material reconciliation)
 // ---------------------------------------------------------------------------

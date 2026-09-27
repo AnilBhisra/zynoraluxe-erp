@@ -3,6 +3,7 @@ import "server-only";
 import { Decimal } from "@/lib/accounting/money";
 import { prisma } from "@/lib/db/prisma";
 import { listEligibleDestinationJobs, listSourcePurityOptions, type SourcePurityOption } from "@/lib/jewellery/metalTransfer";
+import { assessJobReconciliation } from "@/lib/jewellery/posting";
 
 export type EligibleDestinationJob = { id: string; jobCode: string; designName: string; status: string };
 
@@ -31,6 +32,8 @@ export type MetalTransferPanel = {
   transfersIn: MetalTransferRecord[];
   /** True when this job's status looks inconsistent with its own receipts — offers "Fix job status". */
   statusLooksInconsistent: boolean;
+  /** True when every material this job took in is fully accounted for but it is not yet Completed — offers "Complete reconciled job". */
+  canCompleteWithoutReceipt: boolean;
 };
 
 async function reverseBlockReason(destinationJobId: string, metalType: string, purityId: string, fineWeight: Decimal, costValue: Decimal): Promise<string | null> {
@@ -55,7 +58,7 @@ async function reverseBlockReason(destinationJobId: string, metalType: string, p
  */
 export async function getMetalTransferPanel(jobId: string): Promise<MetalTransferPanel> {
   const job = await prisma.jewelleryJob.findUniqueOrThrow({ where: { id: jobId } });
-  const [sourceOptions, eligibleDestinations, transfersOutRaw, transfersInRaw, receiptCount] = await Promise.all([
+  const [sourceOptions, eligibleDestinations, transfersOutRaw, transfersInRaw, receiptCount, reconciliation] = await Promise.all([
     listSourcePurityOptions(prisma, jobId),
     listEligibleDestinationJobs(prisma, { sourceJobId: jobId, karigarId: job.karigarId }),
     prisma.jewelleryMetalTransfer.findMany({
@@ -77,6 +80,7 @@ export async function getMetalTransferPanel(jobId: string): Promise<MetalTransfe
       },
     }),
     prisma.jewelleryReceipt.count({ where: { jobId } }),
+    assessJobReconciliation(prisma, jobId),
   ]);
 
   const toRecord = async (
@@ -114,5 +118,6 @@ export async function getMetalTransferPanel(jobId: string): Promise<MetalTransfe
     transfersOut,
     transfersIn,
     statusLooksInconsistent: (job.status === "MATERIALS_ISSUED" || job.status === "IN_PROGRESS") && receiptCount > 0,
+    canCompleteWithoutReceipt: reconciliation.ok,
   };
 }

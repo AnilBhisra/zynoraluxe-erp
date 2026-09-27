@@ -256,6 +256,12 @@ export const recomputeJobStatusSchema = z.object({
   reason: z.string().trim().min(10, "Say why this job's status looks wrong (at least 10 characters)."),
 });
 
+/** Owner-only: mark a fully-reconciled job Completed without a new receipt. */
+export const completeReconciledJobSchema = z.object({
+  jobId: z.string().trim().min(1),
+  reason: z.string().trim().min(10, "Say why this job is being completed without a new receipt (at least 10 characters)."),
+});
+
 // ---------------------------------------------------------------------------
 // Owner-authorized cost allocation override
 // ---------------------------------------------------------------------------

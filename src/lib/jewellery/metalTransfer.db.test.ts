@@ -21,7 +21,9 @@ import {
 } from "@/lib/jewellery/metalTransfer";
 import { getMetalTransferPanel } from "@/lib/jewellery/metalTransferPanels";
 import {
+  assessJobReconciliation,
   cancelJewelleryJob,
+  completeReconciledJob,
   createJewelleryJob,
   issueMaterialsToJewelleryJob,
   pendingFineWeightOf,
@@ -30,6 +32,7 @@ import {
   recomputeInconsistentJobStatus,
   setJewelleryJobNeedsCorrection,
 } from "@/lib/jewellery/posting";
+import { createRoughLotWithPieces, issueRoughToKarigar, receivePolishedDiamonds } from "@/lib/diamond/posting";
 import { getJewelleryJobDetail } from "@/lib/jewellery/reports";
 import { planOpeningStockRevaluation } from "@/lib/corrections/openingStockCorrection";
 import { postCorrection } from "@/lib/corrections/engine";
@@ -681,6 +684,153 @@ describe("timing", () => {
     expect(postMs).toBeLessThan(5_000);
     expect(reverseMs).toBeLessThan(5_000);
   });
+});
+
+// ---------------------------------------------------------------------------
+// 9. Complete a fully-reconciled job with no new receipt
+// ---------------------------------------------------------------------------
+describe("complete a fully-reconciled job without a new receipt", () => {
+  it("the exact real scenario: a job whose last metal left by transfer (not a receipt) can be marked Completed, touching nothing else", async () => {
+    const a = await makeJob("Reconcile A", 10);
+    const b = await makeJob("Reconcile B", 0, { statusOnly: true });
+    // A receipt happens first (some of A's own metal), then the REMAINDER
+    // leaves by transfer — mirrors the real case: a receipt already exists,
+    // but the job never passed through Receive Finished Jewellery's own
+    // completion gate because the LAST unresolved gram left by transfer.
+    await prisma.$transaction(
+      (tx) =>
+        receiveFinishedJewellery(tx, {
+          ...FY, jobId: a.id, receiveDate: DATE,
+          outputs: [{ jewelleryType: "RING", quantity: 1, netMetalWeight: Number((4 / 0.916).toFixed(3)), metalType: "GOLD", purityId, diamondIds: [], qcStatus: "PASSED" }],
+          diamondResolutions: [], returnedMetalLines: [], scrapMetalLines: [], karigarAddedFineWeight: 0, karigarAddedCost: 0,
+          labourCharge: 0, makingCharge: 0, settingCharge: 0, platingCharge: 0, otherExpense: 0, markJobComplete: false,
+          isAbnormalLoss: false, damagedLostByUserId: ownerId, idempotencyKey: key("reconcile-rcv"), createdByUserId: ownerId,
+        }),
+      TX
+    );
+    expect((await jobRow(a.id)).status).toBe("PARTIALLY_RECEIVED");
+    await transfer(a.id, b.id, "6"); // the rest leaves by transfer, not a receipt
+
+    const before = await jobRow(a.id);
+    expect(before.status).toBe("PARTIALLY_RECEIVED");
+    expect(pendingFineWeightOf(before).toFixed(3)).toBe("0.000");
+    expect(before.remainingWipCost.toFixed(2)).toBe("0.00");
+
+    const check = await assessJobReconciliation(prisma, a.id);
+    expect(check.ok).toBe(true);
+
+    await expect(
+      prisma.$transaction((tx) => completeReconciledJob(tx, { jobId: a.id, reason: "short", userId: ownerId }), TX)
+    ).rejects.toThrow(/at least 10 characters/);
+
+    await prisma.$transaction(
+      (tx) => completeReconciledJob(tx, { jobId: a.id, reason: "The remaining gold left by transfer to Job B, not a receipt", userId: ownerId }),
+      TX
+    );
+    const after = await jobRow(a.id);
+    expect(after.status).toBe("COMPLETED");
+    expect(after.notes).toMatch(/Marked Completed by Owner without a new receipt/);
+    // Nothing else moved: same quantities and cost as immediately before.
+    for (const field of ["receivedFineWeight", "transferredOutFineWeight", "remainingWipCost", "issuedMetalCost", "totalLabourCharge"] as const) {
+      expect(after[field].toString()).toBe(before[field].toString());
+    }
+    expect(await prisma.finishedJewellery.count({ where: { jobId: a.id } })).toBe(1); // no second receipt/piece created
+
+    // Refused a second time — already completed.
+    await expect(
+      prisma.$transaction((tx) => completeReconciledJob(tx, { jobId: a.id, reason: "trying again for no reason at all", userId: ownerId }), TX)
+    ).rejects.toThrow(/already completed/);
+  });
+
+  it("refuses while metal is still pending, or WIP cost has not zeroed, naming the job", async () => {
+    const a = await makeJob("Reconcile pending A", 10);
+    const b = await makeJob("Reconcile pending B", 0, { statusOnly: true });
+    await transfer(a.id, b.id, "4"); // only part — 6g fine still pending on A
+    const check = await assessJobReconciliation(prisma, a.id);
+    expect(check.ok).toBe(false);
+    if (!check.ok) expect(check.reason).toMatch(/6\.000g fine metal pending/);
+    await expect(
+      prisma.$transaction((tx) => completeReconciledJob(tx, { jobId: a.id, reason: "trying while metal is still pending here", userId: ownerId }), TX)
+    ).rejects.toThrow(/still has 6\.000g fine metal pending/);
+    expect((await jobRow(a.id)).status).not.toBe("COMPLETED");
+  });
+
+  it("refuses while a polished diamond issued to the job has no recorded outcome, and succeeds once it does", async () => {
+    // A real polished diamond, reused via the same rough -> Karigar -> receive
+    // pipeline the diamond module's own tests use — this test exercises
+    // assessJobReconciliation's OWN check, not the diamond receipt flow
+    // itself (already covered elsewhere), so the line's resolution is set
+    // directly rather than through a full jewellery receipt with outputs.
+    const supplierId = (await prisma.party.create({ data: { name: "Reconcile Diamond Supplier", type: "SUPPLIER", createdByUserId: ownerId } })).id;
+    const manufacturerId = (await prisma.party.create({ data: { name: "Reconcile Diamond Manufacturer", type: "MANUFACTURER", createdByUserId: ownerId } })).id;
+    const lot = await prisma.$transaction(
+      (tx) => createRoughLotWithPieces(tx, { fyStartMonth: 4, fyStartDay: 1, purchaseDate: DATE, supplierId, purchaseRate: 800, rateBasis: "PER_CARAT", currencyCode: "INR", exchangeRate: 1, totalPurchaseCost: "8000.00", gstTreatment: "NONE", idempotencyKey: key("reconcile-rough"), createdByUserId: ownerId, pieces: [{ carat: "2.000" }] }),
+      TX
+    );
+    const piece = await prisma.roughPiece.findFirstOrThrow({ where: { lotId: lot.id } });
+    const diamondJob = await prisma.$transaction(
+      (tx) => issueRoughToKarigar(tx, { fyStartMonth: 4, fyStartDay: 1, karigarId: manufacturerId, roughPieceIds: [piece.id], requiredShape: "ROUND", issueDate: DATE, idempotencyKey: key("reconcile-rough-issue"), createdByUserId: ownerId }),
+      TX
+    );
+    const received = await prisma.$transaction(
+      (tx) => receivePolishedDiamonds(tx, { fyStartMonth: 4, fyStartDay: 1, jobId: diamondJob.id, receiveDate: DATE, returnedRoughCarat: 0, labourCharge: 500, shape: "ROUND", markJobComplete: true, idempotencyKey: key("reconcile-polished"), createdByUserId: ownerId, outputs: [{ shape: "ROUND", carat: "1.500" }] }),
+      TX
+    );
+    const stone = received.outputs[0];
+
+    const a = await makeJob("Reconcile diamond A", 0, { statusOnly: true });
+    const bJob = await makeJob("Reconcile diamond B", 0, { statusOnly: true });
+    await prisma.$transaction(
+      (tx) =>
+        issueMaterialsToJewelleryJob(tx, {
+          ...FY, jobId: a.id, issueDate: DATE,
+          metalLines: [{ metalType: "GOLD", purityId, grossWeight: String((5 / 0.916).toFixed(3)) }],
+          polishedDiamondIds: [stone.id], otherMaterialLines: [], idempotencyKey: key("reconcile-diamond-issue"), createdByUserId: ownerId,
+        }),
+      TX
+    );
+    await transfer(a.id, bJob.id, "5"); // zero out the metal side entirely
+
+    const check1 = await assessJobReconciliation(prisma, a.id);
+    expect(check1.ok).toBe(false);
+    if (!check1.ok) expect(check1.reason).toMatch(/no outcome recorded/);
+    await expect(
+      prisma.$transaction((tx) => completeReconciledJob(tx, { jobId: a.id, reason: "trying while the diamond is unresolved", userId: ownerId }), TX)
+    ).rejects.toThrow(/no outcome recorded/);
+
+    await prisma.jewelleryDiamondIssueLine.updateMany({ where: { jobId: a.id, polishedDiamondId: stone.id }, data: { resolvedAs: "RETURNED", resolvedAt: DATE } });
+    const check2 = await assessJobReconciliation(prisma, a.id);
+    expect(check2.ok).toBe(true);
+    await prisma.$transaction(
+      (tx) => completeReconciledJob(tx, { jobId: a.id, reason: "The diamond was returned and the metal transferred", userId: ownerId }),
+      TX
+    );
+    expect((await jobRow(a.id)).status).toBe("COMPLETED");
+  });
+
+  it("refuses for a job already Completed, Cancelled, or still Draft, and two simultaneous completions leave exactly one winner", async () => {
+    const completed = await makeJob("Reconcile already done", 3);
+    await transfer(completed.id, (await makeJob("Reconcile sink", 0, { statusOnly: true })).id, "3");
+    await prisma.$transaction((tx) => completeReconciledJob(tx, { jobId: completed.id, reason: "Completing this job for the test fixture", userId: ownerId }), TX);
+    await expect(
+      prisma.$transaction((tx) => completeReconciledJob(tx, { jobId: completed.id, reason: "trying again on an already-completed job", userId: ownerId }), TX)
+    ).rejects.toThrow(/already completed/);
+
+    const draft = await prisma.$transaction(
+      (tx) => createJewelleryJob(tx, { jewelleryType: "RING", designName: "Reconcile draft", karigarId, issueDate: DATE, quantity: 1, createdByUserId: ownerId, idempotencyKey: key("reconcile-draft") }),
+      TX
+    );
+    await expect(
+      prisma.$transaction((tx) => completeReconciledJob(tx, { jobId: draft.id, reason: "trying on a job still in draft status", userId: ownerId }), TX)
+    ).rejects.toThrow(/No materials have been issued/);
+
+    const race = await makeJob("Reconcile race", 5);
+    await transfer(race.id, (await makeJob("Reconcile race sink", 0, { statusOnly: true })).id, "5");
+    const complete = (reason: string) => prisma.$transaction((tx) => completeReconciledJob(tx, { jobId: race.id, reason, userId: ownerId }), TX);
+    const results = await Promise.allSettled([complete("First simultaneous completion attempt"), complete("Second simultaneous completion attempt")]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect((await jobRow(race.id)).status).toBe("COMPLETED");
+  }, 30_000);
 });
 
 // silence unused-import checks for helpers only referenced conditionally above
