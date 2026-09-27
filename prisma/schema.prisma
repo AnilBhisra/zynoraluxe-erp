@@ -1238,8 +1238,9 @@ enum JewelleryJobStatus {
 // the kind of ambiguity these codes exist to prevent. See
 // src/lib/jewellery/numbering.ts.
 model JewelleryJob {
-  id      String @id @default(cuid())
-  jobCode String @unique
+  id                       String                             @id @default(cuid())
+  receiptChargeCorrections JewelleryReceiptChargeCorrection[]
+  jobCode                  String                             @unique
 
   customerId        String?
   customer          Party?  @relation("JewelleryJobCustomer", fields: [customerId], references: [id])
@@ -1421,11 +1422,12 @@ model JewelleryOtherMaterialLine {
 }
 
 model JewelleryReceipt {
-  id          String       @id @default(cuid())
-  receiptCode String       @unique
-  jobId       String
-  job         JewelleryJob @relation(fields: [jobId], references: [id])
-  receiveDate DateTime
+  id                String                             @id @default(cuid())
+  chargeCorrections JewelleryReceiptChargeCorrection[]
+  receiptCode       String                             @unique
+  jobId             String
+  job               JewelleryJob                       @relation(fields: [jobId], references: [id])
+  receiveDate       DateTime
 
   returnedMetalGrossWeight Decimal @default(0) @db.Decimal(10, 3)
   returnedMetalFineWeight  Decimal @default(0) @db.Decimal(10, 3)
@@ -1495,8 +1497,9 @@ enum QcStatus {
 // Completed jewellery output. Phase 6 connects this to Sale/Stock/COGS —
 // see `status` and the FinishedJewelleryStockMovement ledger below.
 model FinishedJewellery {
-  id           String @id @default(cuid())
-  finishedCode String @unique
+  id                    String                                 @id @default(cuid())
+  chargeCorrectionLines JewelleryReceiptChargeCorrectionLine[]
+  finishedCode          String                                 @unique
 
   receiptId String
   receipt   JewelleryReceipt @relation(fields: [receiptId], references: [id])
@@ -2945,6 +2948,10 @@ enum CorrectionMode {
   /// Posted AND used downstream — the original stands; a compensating
   /// revaluation restates value everywhere the original value travelled.
   REVALUE
+  /// Adds Karigar charges (labour/making/setting/plating/other) that were left
+  /// out of a jewellery receipt. The original receipt and its voucher stand; a
+  /// compensating voucher and linked correction rows carry the addition.
+  ADD_CHARGES
 }
 
 enum CorrectionState {
@@ -2975,17 +2982,19 @@ enum MetalRevaluationTarget {
 }
 
 model Correction {
-  id             String               @id @default(cuid())
-  correctionCode String               @unique
-  entityType     CorrectionEntityType
+  id                      String                            @id @default(cuid())
+  /// Set when this is an ADD_CHARGES correction (missing receipt charges).
+  receiptChargeCorrection JewelleryReceiptChargeCorrection?
+  correctionCode          String                            @unique
+  entityType              CorrectionEntityType
   /// Primary key of the corrected record, in its own table. Deliberately a
   /// plain string rather than a FK per entity type: a correction must be
   /// able to outlive schema churn in any one module, and the table is
   /// named by CorrectionImpact rows.
-  entityId       String
-  entityLabel    String
-  mode           CorrectionMode
-  state          CorrectionState      @default(DRAFT)
+  entityId                String
+  entityLabel             String
+  mode                    CorrectionMode
+  state                   CorrectionState                   @default(DRAFT)
 
   reason String
 
@@ -3018,8 +3027,8 @@ model Correction {
   /// CUMULATIVE membership: several corrections that are each required and
   /// each stay posted and active. Both the ledger backfill (R1) and the
   /// revaluation (R2) of one opening entry belong to one batch.
-  batchId String?
-  batch   CorrectionBatch? @relation(fields: [batchId], references: [id])
+  batchId   String?
+  batch     CorrectionBatch? @relation(fields: [batchId], references: [id])
   /// 1-based position in the batch; steps are applied in order.
   batchStep Int?
 
@@ -3075,7 +3084,7 @@ model MetalRevaluation {
   target    MetalRevaluationTarget
   metalType MetalType
   purityId  String
-  purity    MetalPurity @relation(fields: [purityId], references: [id])
+  purity    MetalPurity            @relation(fields: [purityId], references: [id])
 
   grossWeight Decimal @db.Decimal(10, 3)
   fineWeight  Decimal @db.Decimal(10, 3)
@@ -3135,4 +3144,65 @@ enum CorrectionBatchState {
   OPEN
   /// Every required step is posted; all of them remain active.
   COMPLETE
+}
+
+/// Missing Karigar charges added to ONE jewellery receipt after it was saved.
+/// The receipt's own charge fields and its original voucher are never edited;
+/// this row (and its per-piece lines) records what was added, in each charge
+/// category, and is "active" exactly while its Correction is POSTED.
+model JewelleryReceiptChargeCorrection {
+  id String @id @default(cuid())
+
+  correctionId String     @unique
+  correction   Correction @relation(fields: [correctionId], references: [id])
+
+  receiptId String
+  receipt   JewelleryReceipt @relation(fields: [receiptId], references: [id])
+
+  jobId String
+  job   JewelleryJob @relation(fields: [jobId], references: [id])
+
+  labourCharge  Decimal @default(0) @db.Decimal(14, 2)
+  makingCharge  Decimal @default(0) @db.Decimal(14, 2)
+  settingCharge Decimal @default(0) @db.Decimal(14, 2)
+  platingCharge Decimal @default(0) @db.Decimal(14, 2)
+  otherExpense  Decimal @default(0) @db.Decimal(14, 2)
+  totalCharge   Decimal @db.Decimal(14, 2)
+
+  lines JewelleryReceiptChargeCorrectionLine[]
+
+  createdAt DateTime @default(now())
+
+  @@index([receiptId])
+  @@index([jobId])
+  @@map("jewellery_receipt_charge_corrections")
+}
+
+/// The share of one ADD_CHARGES correction carried by one finished piece,
+/// with the piece's labour/total cost before and after so the effect can be
+/// undone exactly, and audited exactly.
+model JewelleryReceiptChargeCorrectionLine {
+  id String @id @default(cuid())
+
+  chargeCorrectionId String
+  chargeCorrection   JewelleryReceiptChargeCorrection @relation(fields: [chargeCorrectionId], references: [id], onDelete: Cascade, map: "jrccl_chargeCorrectionId_fkey")
+
+  finishedJewelleryId String
+  finishedJewellery   FinishedJewellery @relation(fields: [finishedJewelleryId], references: [id], map: "jrccl_finishedJewelleryId_fkey")
+
+  labourCharge  Decimal @default(0) @db.Decimal(14, 2)
+  makingCharge  Decimal @default(0) @db.Decimal(14, 2)
+  settingCharge Decimal @default(0) @db.Decimal(14, 2)
+  platingCharge Decimal @default(0) @db.Decimal(14, 2)
+  otherExpense  Decimal @default(0) @db.Decimal(14, 2)
+  totalCharge   Decimal @db.Decimal(14, 2)
+
+  oldLabourAllocated Decimal @db.Decimal(14, 2)
+  newLabourAllocated Decimal @db.Decimal(14, 2)
+  oldTotalCost       Decimal @db.Decimal(14, 2)
+  newTotalCost       Decimal @db.Decimal(14, 2)
+
+  @@index([chargeCorrectionId], map: "jrccl_chargeCorrectionId_idx")
+  @@index([finishedJewelleryId], map: "jrccl_finishedJewelleryId_idx")
+  @@map("jewellery_receipt_charge_correction_lines")
 }

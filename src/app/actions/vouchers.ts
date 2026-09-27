@@ -458,6 +458,21 @@ export async function cancelVoucherAction(
   if (target?.voucherType === "JEWELLERY_RECEIPT") {
     return { error: "Jewellery receipts cannot be cancelled in Phase 4." };
   }
+  // A missing-charges correction also moved the finished piece's cost and the
+  // job's charge total; cancelling only its voucher here would leave those out
+  // of step with the ledger. It is undone from the receipt, which reverses all
+  // of it together (and only while the pieces are still Available and unsold).
+  if (target?.voucherType === "CORRECTION") {
+    const chargeCorrection = await prisma.correction.findFirst({
+      where: { correctionVoucherId: parsed.data.voucherId, mode: "ADD_CHARGES" },
+      select: { id: true },
+    });
+    if (chargeCorrection) {
+      return {
+        error: "This voucher belongs to a missing-charges correction — reverse it from the receipt on the Jewellery Job page instead, so the piece cost and Karigar payable stay in sync.",
+      };
+    }
+  }
   // A Rough Purchase or Metal Purchase also posts as a plain "PURCHASE"
   // voucher (there is no dedicated voucher type for either) — without this
   // check, cancelling it here would reverse the accounting while leaving

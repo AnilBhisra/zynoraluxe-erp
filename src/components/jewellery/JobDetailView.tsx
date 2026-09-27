@@ -17,6 +17,8 @@ import {
 } from "@/components/jewellery/ReceiveFinishedForm";
 import { CancelJobForm } from "@/components/jewellery/CancelJobForm";
 import { OverrideAllocationForm } from "@/components/jewellery/OverrideAllocationForm";
+import { ReceiptChargesPanel } from "@/components/jewellery/ReceiptChargesPanel";
+import type { ReceiptChargePanel } from "@/lib/jewellery/receiptChargePanels";
 import { Button } from "@/components/ui/Button";
 import { jewelleryTypeLabel } from "@/lib/jewellery/types";
 import { formatThousandths, toThousandths } from "@/lib/jewellery/metalMath";
@@ -120,6 +122,8 @@ export type SerializedJobDetail = {
     alloyAddedWeight: string;
     returnedAlloyGrossWeight: string;
     totalCharges: string | null;
+    /** Owner-only: sum of active missing-charge corrections added since the receipt was saved. */
+    chargesAddedLater: string | null;
     karigarAlloyCost: string | null;
     unabsorbedCost: string | null;
   }[];
@@ -188,6 +192,7 @@ export function JobDetailView({
   availableDiamonds,
   availablePackets = [],
   pendingPackets = [],
+  chargePanels = null,
 }: {
   job: SerializedJobDetail;
   isOwner: boolean;
@@ -195,6 +200,8 @@ export function JobDetailView({
   availableDiamonds: AvailablePolishedDiamondOption[];
   availablePackets?: AvailablePacketOption[];
   pendingPackets?: PendingPacketOption[];
+  /** Owner-only; null/undefined for Staff. */
+  chargePanels?: ReceiptChargePanel[] | null;
 }) {
   const router = useRouter();
   const [showIssueForm, setShowIssueForm] = useState(false);
@@ -456,6 +463,7 @@ export function JobDetailView({
                     {isOwner ? (
                       <td className="px-3 py-2">
                         ₹{r.totalCharges}
+                        {r.chargesAddedLater && Number(r.chargesAddedLater) > 0 ? ` + ₹${r.chargesAddedLater} added by correction` : ""}
                         {r.karigarAlloyCost && Number(r.karigarAlloyCost) > 0 ? ` + ₹${r.karigarAlloyCost} alloy` : ""}
                         {r.unabsorbedCost && Number(r.unabsorbedCost) > 0 ? ` (₹${r.unabsorbedCost} expensed)` : ""}
                       </td>
@@ -466,6 +474,10 @@ export function JobDetailView({
             </table>
           </div>
         </div>
+      ) : null}
+
+      {isOwner && chargePanels && chargePanels.length > 0 ? (
+        <ReceiptChargesPanel panels={chargePanels} onDone={() => router.refresh()} />
       ) : null}
 
       {job.finishedOutputs.length > 0 ? (

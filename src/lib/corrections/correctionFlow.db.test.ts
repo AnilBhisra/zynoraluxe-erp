@@ -56,6 +56,7 @@ import {
   verifyCorrection,
   verifyCorrectionBatch,
 } from "./verify";
+import { assertDisposableTestDb } from "../../../test/setup/dbGuard";
 
 /** Every carrying-cost figure in this suite is a real Decimal, never the
  * fail-closed sentinel — narrows the type for `.toFixed()`. */
@@ -105,10 +106,10 @@ async function clearBusinessData() {
 }
 
 beforeAll(async () => {
-  const [{ db }] = await prisma.$queryRawUnsafe<{ db: string }[]>("select current_database() as db");
-  if (db !== "zynoraluxe_phase7_test") {
-    throw new Error(`refusing to run against ${db}; the isolated test database is required`);
-  }
+  const [who] = await prisma.$queryRawUnsafe<{ db: string; usr: string; port: number }[]>(
+    "select current_database() as db, current_user as usr, inet_server_port() as port"
+  );
+  assertDisposableTestDb(who);
   const owner = await prisma.user.findFirstOrThrow({ where: { role: "OWNER" } });
   ownerId = owner.id;
   for (const p of await prisma.metalPurity.findMany()) purityIdByName.set(p.displayName, p.id);

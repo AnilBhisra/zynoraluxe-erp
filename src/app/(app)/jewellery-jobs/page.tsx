@@ -20,6 +20,7 @@ import { ownerOnly } from "@/lib/security/ownerOnly";
 import { serializeJobCostSummary, serializeJobPacketLines } from "@/lib/jewellery/jobDetailSerializers";
 import { JobsTab, type SerializedJewelleryJob } from "@/components/jewellery/JobsTab";
 import { JobDetailView, type SerializedJobDetail } from "@/components/jewellery/JobDetailView";
+import { getReceiptChargePanels } from "@/lib/jewellery/receiptChargePanels";
 import { MetalStockTab, type SerializedMetalStockBucket, type SerializedMetalPurchase } from "@/components/jewellery/MetalStockTab";
 import { FinishedStockTab, type SerializedFinishedStockRow } from "@/components/jewellery/FinishedStockTab";
 import { FinishedSalesManager, type SerializedFinishedSale } from "@/components/jewellery/FinishedSalesManager";
@@ -150,11 +151,14 @@ async function JobsTabContent({
     if (!detail) {
       return <p className="text-sm text-zinc-500 dark:text-zinc-400">Job not found.</p>;
     }
-    const [availableDiamondsRaw, packetRows, jobPacketLines] = await Promise.all([
+    const [availableDiamondsRaw, packetRows, jobPacketLines, chargePanels] = await Promise.all([
       listPolishedDiamonds({ status: "AVAILABLE" }),
       listPolishedPackets(),
       listJobPacketLines(detail.id),
+      // Cost data: never fetched for Staff.
+      isOwner ? getReceiptChargePanels(detail.id) : Promise.resolve(null),
     ]);
+    const addedLaterByReceipt = new Map((chargePanels ?? []).map((p) => [p.receiptId, p.addedLaterTotal]));
     // Packet quantities only — no packet cost ever reaches these props.
     const availablePackets: AvailablePacketOption[] = packetRows
       .filter((p) => p.pieces > 0 || p.carat !== "0.000")
@@ -274,6 +278,7 @@ async function JobsTabContent({
           isOwner,
           r.labourCharge.plus(r.makingCharge).plus(r.settingCharge).plus(r.platingCharge).plus(r.otherExpense).toFixed(2)
         ),
+        chargesAddedLater: isOwner ? (addedLaterByReceipt.get(r.id) ?? "0.00") : null,
         karigarAlloyCost: ownerOnly(isOwner, r.karigarAlloyCost.toFixed(2)),
         unabsorbedCost: ownerOnly(isOwner, r.unabsorbedCost.toFixed(2)),
       })),
@@ -314,6 +319,7 @@ async function JobsTabContent({
         availableDiamonds={availableDiamonds}
         availablePackets={availablePackets}
         pendingPackets={pendingPackets}
+        chargePanels={chargePanels}
       />
     );
   }

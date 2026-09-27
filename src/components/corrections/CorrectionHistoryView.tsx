@@ -6,6 +6,7 @@ const MODE_LABELS: Record<string, string> = {
   EDIT_DRAFT: "Draft edited",
   REVERSE_REPOST: "Reversed and reposted",
   REVALUE: "Revalued",
+  ADD_CHARGES: "Missing charges added",
 };
 
 const STATE_LABELS: Record<string, string> = {

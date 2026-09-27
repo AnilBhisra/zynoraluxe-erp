@@ -33,6 +33,7 @@ import {
   receiveFinishedJewellery,
 } from "@/lib/jewellery/posting";
 import { CLEAR_BUSINESS_DATA_SQL } from "../../../test/setup/businessTables";
+import { assertDisposableTestDb } from "../../../test/setup/dbGuard";
 
 const FY = { fyStartMonth: 4, fyStartDay: 1 };
 const DATE = new Date("2026-09-25T00:00:00.000Z");
@@ -52,10 +53,10 @@ async function clearAll() {
 }
 
 beforeAll(async () => {
-  const [{ db, usr }] = await prisma.$queryRawUnsafe<{ db: string; usr: string }[]>("select current_database() db, current_user usr");
-  if (db !== "zynoraluxe_phase7_test" || usr !== "zynoraluxe_phase7_user") {
-    throw new Error(`refusing to run against ${db}/${usr}; the isolated test database is required`);
-  }
+  const [who] = await prisma.$queryRawUnsafe<{ db: string; usr: string; port: number }[]>(
+    "select current_database() db, current_user usr, inet_server_port() port"
+  );
+  assertDisposableTestDb(who);
   ownerId = (await prisma.user.findFirstOrThrow({ where: { role: "OWNER" } })).id;
   await clearAll();
 
