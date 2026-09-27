@@ -250,6 +250,12 @@ export const needsCorrectionSchema = z.object({
   flag: booleanFlag,
 });
 
+/** Owner-only repair for a job whose status has drifted out of sync with its own data. */
+export const recomputeJobStatusSchema = z.object({
+  jobId: z.string().trim().min(1),
+  reason: z.string().trim().min(10, "Say why this job's status looks wrong (at least 10 characters)."),
+});
+
 // ---------------------------------------------------------------------------
 // Owner-authorized cost allocation override
 // ---------------------------------------------------------------------------

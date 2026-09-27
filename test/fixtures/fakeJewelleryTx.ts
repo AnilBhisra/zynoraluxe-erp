@@ -264,6 +264,14 @@ export function createFakeJewelleryTx() {
         return rows.filter((r) => matchesWhere(r, where));
       },
     },
+    // No fixture test exercises a job-to-job metal transfer yet — this fake
+    // only needs to answer "none exist" so cancelJewelleryJob's transfer
+    // guard (added alongside the metal-transfer feature) never crashes here.
+    jewelleryMetalTransfer: {
+      findFirst: async () => null,
+      findMany: async () => [],
+      count: async () => 0,
+    },
     jewelleryDiamondIssueLine: {
       create: async ({ data }: { data: Row }) => {
         const row = { id: nextId("jdil"), resolvedAs: null, ...data };

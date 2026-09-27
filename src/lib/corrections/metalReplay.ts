@@ -33,7 +33,9 @@ export type ReplayMovementType =
   | "CONSUMED_OUT"
   | "ISSUE_CANCEL_IN"
   | "SCRAP_ADJUSTMENT_IN"
-  | "SCRAP_ADJUSTMENT_OUT";
+  | "SCRAP_ADJUSTMENT_OUT"
+  | "JOB_TRANSFER_OUT"
+  | "JOB_TRANSFER_IN";
 
 export type ReplayMovement = {
   id: string;
@@ -214,6 +216,44 @@ export function replayMetalValues(input: ReplayInput): ReplayResult {
         pool.value = round2(pool.value.minus(newValue));
         oldPool.gross = oldPool.gross.minus(gross);
         oldPool.value = round2(oldPool.value.minus(d(m.costValue)));
+        const job = jobState(m.jewelleryJobId);
+        job.issuedFine = job.issuedFine.plus(fine);
+        job.pendingFine = job.pendingFine.plus(fine);
+        job.wipValue = round2(job.wipValue.plus(newValue));
+        job.oldWipValue = round2(job.oldWipValue.plus(d(m.costValue)));
+        record(m.id, m.costValue, newValue);
+        break;
+      }
+
+      // A job-to-job metal transfer: value leaves the source job's own WIP
+      // pool at ITS OWN average rate (never the warehouse pool average — the
+      // warehouse pool is untouched), and the paired IN takes exactly that
+      // restated value, same convention as ADJUSTMENT_OUT/ADJUSTMENT_IN.
+      case "JOB_TRANSFER_OUT": {
+        if (!m.jewelleryJobId) throw new ReplayError("A job transfer has no source job — cannot replay it.");
+        const job = jobState(m.jewelleryJobId);
+        if (!job.pendingFine.greaterThan(0) || fine.greaterThan(job.pendingFine)) {
+          throw new ReplayError(
+            `Job transfer ${m.sourceDocument} moves more fine weight than its source job had pending at that point — cannot replay it.`
+          );
+        }
+        // Transferring the WHOLE remaining pending amount takes the whole
+        // remaining value, exactly like a job's final receipt — never a
+        // ratio that could leave a rounding residue behind.
+        const newValue = fine.equals(job.pendingFine)
+          ? job.wipValue
+          : round2(job.wipValue.times(fine).dividedBy(job.pendingFine));
+        job.pendingFine = job.pendingFine.minus(fine);
+        job.wipValue = round2(job.wipValue.minus(newValue));
+        job.oldWipValue = round2(job.oldWipValue.minus(d(m.costValue)));
+        transferValue.set(m.sourceDocument, newValue);
+        record(m.id, m.costValue, newValue);
+        break;
+      }
+
+      case "JOB_TRANSFER_IN": {
+        if (!m.jewelleryJobId) throw new ReplayError("A job transfer has no destination job — cannot replay it.");
+        const newValue = transferValue.get(m.sourceDocument) ?? d(m.costValue);
         const job = jobState(m.jewelleryJobId);
         job.issuedFine = job.issuedFine.plus(fine);
         job.pendingFine = job.pendingFine.plus(fine);

@@ -22,6 +22,7 @@ import {
   needsCorrectionSchema,
   overrideFinishedAllocationSchema,
   receiveFinishedJewellerySchema,
+  recomputeJobStatusSchema,
 } from "@/lib/validation/jewellery";
 
 export type JewelleryFormState = { error?: string; success?: boolean; code?: string } | undefined;
@@ -257,6 +258,35 @@ export async function setJewelleryJobNeedsCorrectionAction(formData: FormData): 
     console.error("setJewelleryJobNeedsCorrectionAction failed:", error);
   }
   revalidateJewellery();
+}
+
+/**
+ * Owner-only repair for a job whose status has visibly drifted out of sync
+ * with its own data (in practice: a job the Needs-Correction clear bug reset
+ * to an earlier stage than it actually was in). Touches only `status` and
+ * appends an audit line to `notes` — no quantity, cost or voucher changes.
+ */
+export async function recomputeJobStatusAction(
+  _prevState: JewelleryFormState,
+  formData: FormData
+): Promise<JewelleryFormState> {
+  const owner = await requireOwner();
+  const parsed = recomputeJobStatusSchema.safeParse({
+    jobId: formData.get("jobId"),
+    reason: formData.get("reason"),
+  });
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
+  try {
+    await prisma.$transaction((tx) =>
+      jewelleryPosting.recomputeInconsistentJobStatus(tx, { jobId: parsed.data.jobId, reason: parsed.data.reason, userId: owner.id })
+    );
+    revalidateJewellery();
+    return { success: true };
+  } catch (error) {
+    if (error instanceof jewelleryPosting.PostingError) return { error: error.message };
+    console.error("recomputeJobStatusAction failed:", error);
+    return { error: "Could not fix this job's status. Please try again." };
+  }
 }
 
 // ---------------------------------------------------------------------------

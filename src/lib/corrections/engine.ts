@@ -41,6 +41,13 @@ export type PostCorrectionInput = {
   supersedesCorrectionId?: string | null;
   /** CUMULATIVE link: this correction is one required step of a batch. */
   batch?: { batchId: string; step: number } | null;
+  /**
+   * The correction's own human-readable code, when it posts no voucher (a
+   * voucher's number is the code otherwise, as always). Ignored the moment
+   * `plan.ledgerLines` is non-empty. Without this, a zero-voucher correction
+   * would keep the internal placeholder `draftCode()` forever.
+   */
+  correctionCodeOverride?: string;
 };
 
 function assertBalanced(plan: CorrectionPlan): Decimal {
@@ -156,7 +163,7 @@ export async function postCorrection(tx: Tx, input: PostCorrectionInput) {
 
   const date = input.date ?? new Date();
   let correctionVoucherId: string | null = null;
-  let correctionCode = draftCode();
+  let correctionCode = input.correctionCodeOverride ?? draftCode();
 
   if (plan.ledgerLines.length > 0) {
     const voucher = await createVoucherHeader(
@@ -423,6 +430,11 @@ export async function reverseCorrection(
     approvedByUserId: string;
     fyStartMonth: number;
     fyStartDay: number;
+    /**
+     * The reversal's own human-readable code, needed only when the original
+     * posted no voucher (a mirror voucher's number is the code otherwise).
+     */
+    correctionCodeOverride?: string;
   }
 ) {
   if (input.approverRole !== "OWNER") {
@@ -441,21 +453,30 @@ export async function reverseCorrection(
   if (original.state !== "POSTED") {
     throw new CorrectionError("Only a posted correction can be reversed.");
   }
-  if (!original.correctionVoucherId) {
-    throw new CorrectionError("This correction posted no voucher, so there is nothing to reverse.");
-  }
 
-  const reversalVoucher = await cancelVoucher(tx, {
-    voucherId: original.correctionVoucherId,
-    cancelledByUserId: input.approvedByUserId,
-    cancellationReason: input.reason.trim(),
-    fyStartMonth: input.fyStartMonth,
-    fyStartDay: input.fyStartDay,
-  });
+  // A correction that posted no voucher (e.g. a job-to-job metal transfer,
+  // which never moves the ledger) has nothing for cancelVoucher to mirror —
+  // the caller applies its own domain-level undo in this SAME transaction
+  // instead, and this function only records the audited reversal.
+  let reversalVoucherId: string | null = null;
+  let correctionCode = input.correctionCodeOverride ?? draftCode();
+  if (original.correctionVoucherId) {
+    const reversalVoucher = await cancelVoucher(tx, {
+      voucherId: original.correctionVoucherId,
+      cancelledByUserId: input.approvedByUserId,
+      cancellationReason: input.reason.trim(),
+      fyStartMonth: input.fyStartMonth,
+      fyStartDay: input.fyStartDay,
+    });
+    reversalVoucherId = reversalVoucher.id;
+    correctionCode = reversalVoucher.voucherNumber;
+  }
+  const reversedVoucherNumber = original.correctionVoucher?.voucherNumber ?? null;
+  const reversedAmount = original.correctionVoucher?.amount.toFixed(2) ?? null;
 
   const reversal = await tx.correction.create({
     data: {
-      correctionCode: reversalVoucher.voucherNumber,
+      correctionCode,
       entityType: original.entityType,
       entityId: original.entityId,
       entityLabel: original.entityLabel,
@@ -464,11 +485,13 @@ export async function reverseCorrection(
       reason: input.reason.trim(),
       originalSnapshot: {
         reversedCorrectionCode: original.correctionCode,
-        reversedVoucher: original.correctionVoucher?.voucherNumber ?? null,
-        amount: original.correctionVoucher?.amount.toFixed(2) ?? null,
+        reversedVoucher: reversedVoucherNumber,
+        amount: reversedAmount,
       } as Prisma.InputJsonValue,
       correctedSnapshot: {
-        note: "Mirror entries posted; the original correction is marked REVERSED and no longer counts.",
+        note: original.correctionVoucherId
+          ? "Mirror entries posted; the original correction is marked REVERSED and no longer counts."
+          : "No voucher to mirror (the original posted none); the original correction is marked REVERSED and no longer counts.",
       } as Prisma.InputJsonValue,
       impactPreview: {
         mode: "REVERSAL",
@@ -478,7 +501,7 @@ export async function reverseCorrection(
       preparedByUserId: input.approvedByUserId,
       approvedByUserId: input.approvedByUserId,
       postedAt: new Date(),
-      correctionVoucherId: reversalVoucher.id,
+      correctionVoucherId: reversalVoucherId,
     },
   });
 

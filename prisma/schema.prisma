@@ -108,6 +108,8 @@ model User {
   packetProcessReceiptsCreated   PacketProcessReceipt[]   @relation("PacketProcessReceiptCreatedBy")
   packetProcessJobLinesClosed    PacketProcessJobLine[]   @relation("PacketProcessJobLineClosedBy")
 
+  metalTransfersCreated JewelleryMetalTransfer[] @relation("MetalTransferCreatedBy")
+
   // Phase 8 — a correction is PREPARED by anyone with access to the module
   // (Staff included) but may only be APPROVED/POSTED by an Owner.
   correctionsPrepared Correction[]      @relation("CorrectionPreparedBy")
@@ -1075,6 +1077,7 @@ model MetalPurity {
   finishedJewellery   FinishedJewellery[]
   costSheetMetalLines CostSheetMetalLine[]
   metalRevaluations   MetalRevaluation[]
+  metalTransfers      JewelleryMetalTransfer[]
 
   @@unique([metalType, displayName])
   @@map("metal_purities")
@@ -1152,6 +1155,14 @@ enum MetalStockMovementType {
   // moving it back out needs its own type so the two pools stay auditable.
   SCRAP_ADJUSTMENT_IN
   SCRAP_ADJUSTMENT_OUT
+  // Job-to-job metal transfer: informational job-ledger rows only, exactly
+  // like CONSUMED_OUT — the metal never left or re-entered the warehouse
+  // pool, so neither type carries a usable/scrap pool effect (see
+  // METAL_POOL_EFFECT in src/lib/jewellery/metalMath.ts). Paired by a shared
+  // sourceDocument (the transfer code), same convention as
+  // ADJUSTMENT_OUT/ADJUSTMENT_IN.
+  JOB_TRANSFER_OUT
+  JOB_TRANSFER_IN
 }
 
 // Immutable, weight-based audit ledger — metal is fungible (unlike
@@ -1265,7 +1276,11 @@ model JewelleryJob {
   targetFinishedWeight Decimal?     @db.Decimal(10, 3)
   specialInstructions  String?
 
-  status JewelleryJobStatus @default(DRAFT)
+  status                      JewelleryJobStatus  @default(DRAFT)
+  // Set only while status is NEEDS_CORRECTION: the status this job actually
+  // had before being flagged, so clearing the flag restores it exactly
+  // instead of guessing — see setJewelleryJobNeedsCorrection.
+  statusBeforeNeedsCorrection JewelleryJobStatus?
 
   // Cumulative snapshots at issue time (never recomputed later).
   issuedMetalFineWeight   Decimal @default(0) @db.Decimal(10, 3)
@@ -1300,6 +1315,16 @@ model JewelleryJob {
   remainingWipCost  Decimal @default(0) @db.Decimal(14, 2)
   totalLabourCharge Decimal @default(0) @db.Decimal(14, 2)
 
+  // Audited job-to-job reallocation of unresolved fine-bearing metal (never a
+  // fresh warehouse issue and never a physical return — see
+  // src/lib/jewellery/metalTransfer.ts). Both pairs are cumulative and feed
+  // pendingFineWeightOf(); remainingWipCost itself is debited/credited
+  // directly by the same transfer, exactly as a receipt already does.
+  transferredOutFineWeight Decimal @default(0) @db.Decimal(10, 3)
+  transferredOutCost       Decimal @default(0) @db.Decimal(14, 2)
+  transferredInFineWeight  Decimal @default(0) @db.Decimal(10, 3)
+  transferredInCost        Decimal @default(0) @db.Decimal(14, 2)
+
   cancelledAt        DateTime?
   cancelledByUserId  String?
   cancelledBy        User?     @relation("JewelleryJobCancelledBy", fields: [cancelledByUserId], references: [id])
@@ -1329,6 +1354,8 @@ model JewelleryJob {
   metalStockMovements       MetalStockMovement[]
   stockMovements            StockMovement[]
   metalRevaluations         MetalRevaluation[]
+  metalTransfersOut         JewelleryMetalTransfer[]     @relation("MetalTransferSource")
+  metalTransfersIn          JewelleryMetalTransfer[]     @relation("MetalTransferDestination")
 
   @@index([karigarId])
   @@index([customerId])
@@ -1353,11 +1380,70 @@ model JewelleryMetalIssueLine {
   fineWeight              Decimal     @db.Decimal(10, 3)
   costValue               Decimal     @db.Decimal(14, 2)
 
+  // Set only for a line created by a job-to-job metal transfer rather than a
+  // real warehouse issue — never counted as a fresh Metal Inventory draw
+  // (see cancelJewelleryJob and metalTransfer.ts, both of which check this).
+  sourceTransferId String?
+  sourceTransfer   JewelleryMetalTransfer? @relation(fields: [sourceTransferId], references: [id])
+
   issueDate DateTime
   createdAt DateTime @default(now())
 
   @@index([jobId])
+  @@index([sourceTransferId])
   @@map("jewellery_metal_issue_lines")
+}
+
+/// Job-to-job reallocation of unresolved fine-bearing metal between two
+/// Jewellery Jobs of the SAME Karigar, audited through the Correction table
+/// (mode METAL_TRANSFER). No voucher is posted — the same Jewellery WIP
+/// account already carries the value for both jobs — so this is a pure memo
+/// reclassification, not a warehouse issue and not a physical return.
+model JewelleryMetalTransfer {
+  id           String @id @default(cuid())
+  transferCode String @unique
+
+  correctionId String     @unique
+  correction   Correction @relation(fields: [correctionId], references: [id])
+
+  sourceJobId String
+  sourceJob   JewelleryJob @relation("MetalTransferSource", fields: [sourceJobId], references: [id])
+
+  destinationJobId String
+  destinationJob   JewelleryJob @relation("MetalTransferDestination", fields: [destinationJobId], references: [id])
+
+  metalType               MetalType
+  purityId                String
+  purity                  MetalPurity @relation(fields: [purityId], references: [id])
+  // Preserved from the source job's own issue line(s) — never recomputed
+  // from the destination's purity, which may not exist yet.
+  finenessPercentSnapshot Decimal     @db.Decimal(6, 3)
+
+  // Gross is the fine-weight equivalent at finenessPercentSnapshot, stored so
+  // a reader is never left to reconstruct it — fine is the value that
+  // actually moves the WIP pool.
+  grossWeight Decimal @db.Decimal(10, 3)
+  fineWeight  Decimal @db.Decimal(10, 3)
+  costValue   Decimal @db.Decimal(14, 2)
+
+  reason String
+
+  // The new line this transfer created on the destination job (null only if
+  // the destination already had a matching line and none needed creating —
+  // in practice always set, kept nullable for schema symmetry with the FK
+  // it's the inverse of).
+  destinationMetalIssueLineId String? @unique
+
+  createdByUserId String
+  createdBy       User     @relation("MetalTransferCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt       DateTime @default(now())
+
+  destinationMetalIssueLines JewelleryMetalIssueLine[]
+
+  @@index([sourceJobId])
+  @@index([destinationJobId])
+  @@index([metalType, purityId])
+  @@map("jewellery_metal_transfers")
 }
 
 enum JewelleryDiamondResolution {
@@ -1881,6 +1967,7 @@ enum JewellerySequenceType {
   // Phase 6
   FINISHED_JEWELLERY_SALE
   FINISHED_JEWELLERY_RETURN
+  JEWELLERY_METAL_TRANSFER
 }
 
 model JewellerySequence {
@@ -2952,6 +3039,11 @@ enum CorrectionMode {
   /// out of a jewellery receipt. The original receipt and its voucher stand; a
   /// compensating voucher and linked correction rows carry the addition.
   ADD_CHARGES
+  /// Reallocates unresolved metal (and its carrying cost) from one Jewellery
+  /// Job to another job of the SAME Karigar. Posts no voucher — the same
+  /// Jewellery WIP account already holds the value for both jobs — so this is
+  /// a pure memo reclassification, audited the same way as every correction.
+  METAL_TRANSFER
 }
 
 enum CorrectionState {
@@ -2985,6 +3077,8 @@ model Correction {
   id                      String                            @id @default(cuid())
   /// Set when this is an ADD_CHARGES correction (missing receipt charges).
   receiptChargeCorrection JewelleryReceiptChargeCorrection?
+  /// Set when this is a METAL_TRANSFER correction.
+  metalTransfer           JewelleryMetalTransfer?
   correctionCode          String                            @unique
   entityType              CorrectionEntityType
   /// Primary key of the corrected record, in its own table. Deliberately a

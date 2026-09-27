@@ -38,6 +38,46 @@ export { PostingError };
 type Tx = Prisma.TransactionClient;
 type FyInput = { fyStartMonth: number; fyStartDay: number };
 
+/**
+ * How much fine-bearing metal is still with the Karigar, unresolved, for one
+ * job: everything ever attributed to it (issued + Karigar-added) less
+ * everything already accounted for (received into a finished piece + returned
+ * + scrap + transferred out to another job). Defined here (not in reports.ts,
+ * which depends on this module) so both the display/report path and the
+ * write path (receiveFinishedJewellery below) share exactly one formula —
+ * they used to duplicate it, which is exactly the kind of drift a job-to-job
+ * transfer would otherwise fall through.
+ *
+ * `transferredInFineWeight` is NOT added here, though it is tracked on the
+ * job: a transfer-IN increments `issuedMetalFineWeight` directly (so this
+ * formula, and every other reader of that column, already sees it — see
+ * postJobMetalTransfer), and `transferredInFineWeight` exists only as a
+ * separate audit figure ("how much of what's issued came via transfer").
+ * Adding it again here would double-count every gram a job ever received by
+ * transfer. `transferredOutFineWeight`, by contrast, is genuinely subtracted
+ * here because the source job's own `issuedMetalFineWeight` is left as the
+ * immutable record of what was ORIGINALLY issued to it and is never
+ * decremented by a transfer out.
+ */
+export function pendingFineWeightOf(job: {
+  issuedMetalFineWeight: Decimal | string;
+  karigarAddedFineWeight: Decimal | string;
+  receivedFineWeight: Decimal | string;
+  returnedMetalFineWeight: Decimal | string;
+  scrapFineWeight: Decimal | string;
+  /** Job-to-job metal transfers OUT — absent (treated as 0) for any caller that predates them. */
+  transferredOutFineWeight?: Decimal | string;
+}): Decimal {
+  return round3(
+    new Decimal(job.issuedMetalFineWeight)
+      .plus(job.karigarAddedFineWeight)
+      .minus(job.receivedFineWeight)
+      .minus(job.returnedMetalFineWeight)
+      .minus(job.scrapFineWeight)
+      .minus(job.transferredOutFineWeight ?? 0)
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Metal stock balance (weighted-average cost per fungible metal+purity bucket)
 // ---------------------------------------------------------------------------
@@ -819,6 +859,9 @@ export async function issueMaterialsToJewelleryJob(
     createdByUserId: string;
   }
 ) {
+  // Locked first so this can never race a concurrent job-to-job metal
+  // transfer targeting the same (still-DRAFT) job.
+  await tx.$queryRawUnsafe(`SELECT id FROM "jewellery_jobs" WHERE id = $1 FOR UPDATE`, input.jobId);
   const job = await tx.jewelleryJob.findUnique({ where: { id: input.jobId } });
   if (!job) throw new PostingError("Job not found.");
   if (job.status !== "DRAFT") {
@@ -1184,6 +1227,9 @@ export async function cancelJewelleryJob(
   tx: Tx,
   input: FyInput & { jobId: string; cancelledByUserId: string; cancellationReason: string }
 ) {
+  // Locked first so this can never race a concurrent job-to-job metal
+  // transfer (or receipt) on the same job.
+  await tx.$queryRawUnsafe(`SELECT id FROM "jewellery_jobs" WHERE id = $1 FOR UPDATE`, input.jobId);
   const job = await tx.jewelleryJob.findUnique({ where: { id: input.jobId } });
   if (!job) throw new PostingError("Job not found.");
   if (job.status === "CANCELLED") throw new PostingError("This job has already been cancelled.");
@@ -1208,6 +1254,28 @@ export async function cancelJewelleryJob(
   if (!new Decimal(job.receivedFineWeight).isZero() || !new Decimal(job.returnedMetalFineWeight).isZero()) {
     throw new PostingError("This job already has received material; it cannot be cancelled.");
   }
+  // A transfer-sourced metal line was never a warehouse issue for THIS job —
+  // the loop below would otherwise wrongly hand it back to warehouse stock a
+  // second time (it already left the warehouse under the SOURCE job's own
+  // issue). Refuse outright rather than try to reverse the transfer here too;
+  // the Owner reverses the transfer first (giving the metal back to its
+  // source job), which then leaves this job cancellable normally.
+  const activeIncomingTransfer = await tx.jewelleryMetalTransfer.findFirst({
+    where: { destinationJobId: job.id, correction: { state: "POSTED" } },
+  });
+  if (activeIncomingTransfer) {
+    throw new PostingError(
+      `This job holds metal transferred in from another job (${activeIncomingTransfer.transferCode}). Reverse that transfer first, then cancel.`
+    );
+  }
+  const activeOutgoingTransfer = await tx.jewelleryMetalTransfer.findFirst({
+    where: { sourceJobId: job.id, correction: { state: "POSTED" } },
+  });
+  if (activeOutgoingTransfer) {
+    throw new PostingError(
+      `This job transferred metal out to another job (${activeOutgoingTransfer.transferCode}). Reverse that transfer first, then cancel.`
+    );
+  }
 
   if (job.wipVoucherId) {
     await cancelVoucher(tx, {
@@ -1221,6 +1289,10 @@ export async function cancelJewelleryJob(
 
   const metalLines = await tx.jewelleryMetalIssueLine.findMany({ where: { jobId: job.id } });
   for (const line of metalLines) {
+    // Never a real warehouse issue (see the transfer guard above) — this
+    // history row only exists for audit lineage and must never generate a
+    // warehouse-return movement, active transfer or (historically) reversed.
+    if (line.sourceTransferId) continue;
     await tx.metalStockMovement.create({
       data: {
         type: "ISSUE_CANCEL_IN",
@@ -1330,12 +1402,79 @@ export async function setJewelleryJobNeedsCorrection(tx: Tx, jobId: string, flag
     if (job.status === "COMPLETED" || job.status === "CANCELLED" || job.status === "DRAFT") {
       throw new PostingError(`A job in ${job.status} status cannot be marked Needs Correction.`);
     }
-    return tx.jewelleryJob.update({ where: { id: jobId }, data: { status: "NEEDS_CORRECTION" } });
+    if (job.status === "NEEDS_CORRECTION") {
+      throw new PostingError("This job is already marked Needs Correction.");
+    }
+    // Remember the REAL status so clearing the flag restores it exactly —
+    // this used to hard-code "IN_PROGRESS" on clear, silently regressing a
+    // job that was actually PARTIALLY_RECEIVED back to an earlier stage.
+    return tx.jewelleryJob.update({
+      where: { id: jobId },
+      data: { status: "NEEDS_CORRECTION", statusBeforeNeedsCorrection: job.status },
+    });
   }
   if (job.status !== "NEEDS_CORRECTION") {
     throw new PostingError("This job is not currently marked Needs Correction.");
   }
-  return tx.jewelleryJob.update({ where: { id: jobId }, data: { status: "IN_PROGRESS" } });
+  const restoredStatus = job.statusBeforeNeedsCorrection ?? (await inferPreCorrectionStatus(tx, jobId));
+  return tx.jewelleryJob.update({
+    where: { id: jobId },
+    data: { status: restoredStatus, statusBeforeNeedsCorrection: null },
+  });
+}
+
+/**
+ * Fallback for a job flagged Needs Correction before statusBeforeNeedsCorrection
+ * existed (so it is null): the one fact that can be recovered reliably is
+ * whether anything has ever been received against this job. A job with at
+ * least one receipt cannot have been anything earlier than
+ * PARTIALLY_RECEIVED; a job with none cannot have progressed past
+ * MATERIALS_ISSUED. Never guesses COMPLETED — that transition also needs
+ * `markJobComplete` semantics this fallback cannot reconstruct.
+ */
+async function inferPreCorrectionStatus(tx: Tx, jobId: string): Promise<"PARTIALLY_RECEIVED" | "MATERIALS_ISSUED"> {
+  const receiptCount = await tx.jewelleryReceipt.count({ where: { jobId } });
+  return receiptCount > 0 ? "PARTIALLY_RECEIVED" : "MATERIALS_ISSUED";
+}
+
+/**
+ * Owner-only, audited-by-note repair for a job whose status has drifted out
+ * of sync with its own data (in practice: the Needs-Correction clear bug
+ * above, for a job flagged BEFORE this fix existed). Deliberately narrow: it
+ * only ever moves an early-stage status to PARTIALLY_RECEIVED, and only when
+ * the job's own receipts prove that is the true state — it never guesses
+ * COMPLETED, never touches a quantity, cost or voucher, and is refused with a
+ * plain reason for any job whose status already matches its data.
+ */
+export async function recomputeInconsistentJobStatus(
+  tx: Tx,
+  input: { jobId: string; reason: string; userId: string }
+) {
+  const reason = input.reason?.trim() ?? "";
+  if (reason.length < 10) {
+    throw new PostingError("Say why this job's status looks wrong (at least 10 characters) — the reason is kept on the job.");
+  }
+  const locked = await tx.$queryRawUnsafe<{ id: string }[]>(`SELECT id FROM "jewellery_jobs" WHERE id = $1 FOR UPDATE`, input.jobId);
+  if (locked.length === 0) throw new PostingError("Job not found.");
+  const job = await tx.jewelleryJob.findUniqueOrThrow({ where: { id: input.jobId } });
+
+  if (job.status !== "MATERIALS_ISSUED" && job.status !== "IN_PROGRESS") {
+    throw new PostingError(
+      `${job.jobCode} is ${job.status.replace(/_/g, " ").toLowerCase()}, which is not one of the early statuses this repair can correct.`
+    );
+  }
+  const receiptCount = await tx.jewelleryReceipt.count({ where: { jobId: job.id } });
+  if (receiptCount === 0) {
+    throw new PostingError(`${job.jobCode} has no receipt yet — its ${job.status.replace(/_/g, " ").toLowerCase()} status already matches its data.`);
+  }
+
+  return tx.jewelleryJob.update({
+    where: { id: job.id },
+    data: {
+      status: "PARTIALLY_RECEIVED",
+      notes: `${job.notes ? job.notes + "\n" : ""}[Status corrected by Owner: was ${job.status} despite ${receiptCount} existing receipt(s) — ${reason}]`,
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1425,6 +1564,9 @@ export async function receiveFinishedJewellery(
     createdByUserId: string;
   }
 ) {
+  // Locked first so this can never race a concurrent job-to-job metal
+  // transfer (out of THIS job) or a second concurrent receipt.
+  await tx.$queryRawUnsafe(`SELECT id FROM "jewellery_jobs" WHERE id = $1 FOR UPDATE`, input.jobId);
   const job = await tx.jewelleryJob.findUnique({ where: { id: input.jobId } });
   if (!job) throw new PostingError("Job not found.");
   if (job.status === "CANCELLED") throw new PostingError("This job has been cancelled.");
@@ -1802,13 +1944,7 @@ export async function receiveFinishedJewellery(
     throw new PostingError("Karigar-added weight/cost cannot be negative.");
   }
 
-  const pendingFineWeightBefore = round3(
-    new Decimal(job.issuedMetalFineWeight)
-      .plus(job.karigarAddedFineWeight)
-      .minus(job.receivedFineWeight)
-      .minus(job.returnedMetalFineWeight)
-      .minus(job.scrapFineWeight)
-  );
+  const pendingFineWeightBefore = pendingFineWeightOf(job);
   const pendingAvailable = round3(pendingFineWeightBefore.plus(karigarAddedFineWeight));
   const resolvedThisReceipt = round3(thisFinishedFineWeight.plus(returnedFineWeight).plus(scrapFineWeight));
 

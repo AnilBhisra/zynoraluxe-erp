@@ -19,6 +19,9 @@ import { CancelJobForm } from "@/components/jewellery/CancelJobForm";
 import { OverrideAllocationForm } from "@/components/jewellery/OverrideAllocationForm";
 import { ReceiptChargesPanel } from "@/components/jewellery/ReceiptChargesPanel";
 import type { ReceiptChargePanel } from "@/lib/jewellery/receiptChargePanels";
+import { MetalTransferPanel } from "@/components/jewellery/MetalTransferPanel";
+import type { MetalTransferPanel as MetalTransferPanelData } from "@/lib/jewellery/metalTransferPanels";
+import { FixJobStatusButton } from "@/components/jewellery/FixJobStatusButton";
 import { Button } from "@/components/ui/Button";
 import { jewelleryTypeLabel } from "@/lib/jewellery/types";
 import { formatThousandths, toThousandths } from "@/lib/jewellery/metalMath";
@@ -193,6 +196,7 @@ export function JobDetailView({
   availablePackets = [],
   pendingPackets = [],
   chargePanels = null,
+  transferPanel = null,
 }: {
   job: SerializedJobDetail;
   isOwner: boolean;
@@ -202,6 +206,8 @@ export function JobDetailView({
   pendingPackets?: PendingPacketOption[];
   /** Owner-only; null/undefined for Staff. */
   chargePanels?: ReceiptChargePanel[] | null;
+  /** Owner-only; null/undefined for Staff. */
+  transferPanel?: MetalTransferPanelData | null;
 }) {
   const router = useRouter();
   const [showIssueForm, setShowIssueForm] = useState(false);
@@ -265,6 +271,9 @@ export function JobDetailView({
               </form>
             ) : null}
             {canCancel ? <CancelJobForm jobId={job.id} jobCode={job.jobCode} /> : null}
+            {isOwner && transferPanel?.statusLooksInconsistent ? (
+              <FixJobStatusButton jobId={job.id} currentStatus={job.status} onDone={() => router.refresh()} />
+            ) : null}
           </div>
         </div>
 
@@ -479,6 +488,8 @@ export function JobDetailView({
       {isOwner && chargePanels && chargePanels.length > 0 ? (
         <ReceiptChargesPanel panels={chargePanels} onDone={() => router.refresh()} />
       ) : null}
+
+      {isOwner && transferPanel ? <MetalTransferPanel jobId={job.id} panel={transferPanel} onDone={() => router.refresh()} /> : null}
 
       {job.finishedOutputs.length > 0 ? (
         <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">

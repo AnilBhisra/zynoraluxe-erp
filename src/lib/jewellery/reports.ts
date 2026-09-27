@@ -6,7 +6,7 @@ import { round3 } from "@/lib/diamond/allocation";
 import { shapeLabel } from "@/lib/diamond/shapes";
 import { getAuthoritativeInventoryCost } from "@/lib/jewellery/finishedSalesPosting";
 import { jobIssuedCosts } from "@/lib/jewellery/jobIssuedCost";
-import { sumMetalPool } from "@/lib/jewellery/posting";
+import { pendingFineWeightOf, sumMetalPool } from "@/lib/jewellery/posting";
 import {
   CARRYING_COST_UNAVAILABLE,
   type CarryingAmount,
@@ -165,21 +165,7 @@ export type JewelleryJobRow = {
   totalIssuedCost: CarryingAmount;
 };
 
-export function pendingFineWeightOf(job: {
-  issuedMetalFineWeight: Decimal | string;
-  karigarAddedFineWeight: Decimal | string;
-  receivedFineWeight: Decimal | string;
-  returnedMetalFineWeight: Decimal | string;
-  scrapFineWeight: Decimal | string;
-}): Decimal {
-  return round3(
-    new Decimal(job.issuedMetalFineWeight)
-      .plus(job.karigarAddedFineWeight)
-      .minus(job.receivedFineWeight)
-      .minus(job.returnedMetalFineWeight)
-      .minus(job.scrapFineWeight)
-  );
-}
+export { pendingFineWeightOf };
 
 export async function listJewelleryJobs(filters?: {
   status?: JewelleryJobStatus[];

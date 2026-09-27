@@ -45,12 +45,17 @@ type JobIssueRow = { id: string; jewelleryJobId: string | null; metalType: Metal
  * A finished piece's own `purityId` column is its OUTPUT purity, which can
  * differ from the SOURCE purity its cost actually replays from (e.g. 24K
  * issued, 18K received) — so both job- and piece-level lookups key off the
- * JOB's own ISSUE_OUT movements, never a piece's own purity column.
+ * job's own ISSUE_OUT movements, never a piece's own purity column.
+ *
+ * A job funded entirely by a job-to-job metal transfer (never its own
+ * warehouse issue) has no ISSUE_OUT row of its own, so JOB_TRANSFER_IN is
+ * included here too — otherwise such a job would silently never be
+ * considered for replay, and would keep showing its pre-revaluation figures.
  */
 async function replayForJobs(tx: Tx, jobIds: string[]) {
   const issueMovements: JobIssueRow[] = jobIds.length
     ? await tx.metalStockMovement.findMany({
-        where: { type: "ISSUE_OUT", jewelleryJobId: { in: jobIds } },
+        where: { type: { in: ["ISSUE_OUT", "JOB_TRANSFER_IN"] }, jewelleryJobId: { in: jobIds } },
         select: { id: true, jewelleryJobId: true, metalType: true, purityId: true, costValue: true },
       })
     : [];

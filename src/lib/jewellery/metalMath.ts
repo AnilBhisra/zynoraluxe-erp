@@ -27,7 +27,9 @@ export type MetalStockMovementKind =
   | "ADJUSTMENT_IN"
   | "ADJUSTMENT_OUT"
   | "SCRAP_ADJUSTMENT_IN"
-  | "SCRAP_ADJUSTMENT_OUT";
+  | "SCRAP_ADJUSTMENT_OUT"
+  | "JOB_TRANSFER_OUT"
+  | "JOB_TRANSFER_IN";
 
 /**
  * How each immutable MetalStockMovement type affects the two stock pools
@@ -53,6 +55,10 @@ export const METAL_POOL_EFFECT: Record<MetalStockMovementKind, { usable: -1 | 0 
   // value moves between pools and never appears or vanishes.
   SCRAP_ADJUSTMENT_IN: { usable: 0, scrap: 1 },
   SCRAP_ADJUSTMENT_OUT: { usable: 0, scrap: -1 },
+  // Job-to-job metal transfer: informational, like CONSUMED_OUT — the metal
+  // never left or re-entered the warehouse, only its job attribution moved.
+  JOB_TRANSFER_OUT: { usable: 0, scrap: 0 },
+  JOB_TRANSFER_IN: { usable: 0, scrap: 0 },
 };
 
 const ZERO = BigInt(0);

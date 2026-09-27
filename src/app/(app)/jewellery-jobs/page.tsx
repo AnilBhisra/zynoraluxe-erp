@@ -21,6 +21,7 @@ import { serializeJobCostSummary, serializeJobPacketLines } from "@/lib/jeweller
 import { JobsTab, type SerializedJewelleryJob } from "@/components/jewellery/JobsTab";
 import { JobDetailView, type SerializedJobDetail } from "@/components/jewellery/JobDetailView";
 import { getReceiptChargePanels } from "@/lib/jewellery/receiptChargePanels";
+import { getMetalTransferPanel } from "@/lib/jewellery/metalTransferPanels";
 import { MetalStockTab, type SerializedMetalStockBucket, type SerializedMetalPurchase } from "@/components/jewellery/MetalStockTab";
 import { FinishedStockTab, type SerializedFinishedStockRow } from "@/components/jewellery/FinishedStockTab";
 import { FinishedSalesManager, type SerializedFinishedSale } from "@/components/jewellery/FinishedSalesManager";
@@ -151,12 +152,13 @@ async function JobsTabContent({
     if (!detail) {
       return <p className="text-sm text-zinc-500 dark:text-zinc-400">Job not found.</p>;
     }
-    const [availableDiamondsRaw, packetRows, jobPacketLines, chargePanels] = await Promise.all([
+    const [availableDiamondsRaw, packetRows, jobPacketLines, chargePanels, transferPanel] = await Promise.all([
       listPolishedDiamonds({ status: "AVAILABLE" }),
       listPolishedPackets(),
       listJobPacketLines(detail.id),
       // Cost data: never fetched for Staff.
       isOwner ? getReceiptChargePanels(detail.id) : Promise.resolve(null),
+      isOwner ? getMetalTransferPanel(detail.id) : Promise.resolve(null),
     ]);
     const addedLaterByReceipt = new Map((chargePanels ?? []).map((p) => [p.receiptId, p.addedLaterTotal]));
     // Packet quantities only — no packet cost ever reaches these props.
@@ -320,6 +322,7 @@ async function JobsTabContent({
         availablePackets={availablePackets}
         pendingPackets={pendingPackets}
         chargePanels={chargePanels}
+        transferPanel={transferPanel}
       />
     );
   }
