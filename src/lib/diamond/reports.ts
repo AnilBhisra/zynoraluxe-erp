@@ -3,6 +3,7 @@ import "server-only";
 import { prisma } from "@/lib/db/prisma";
 import { Decimal, type DecimalInput, round2, ZERO } from "@/lib/accounting/money";
 import { round3 } from "@/lib/diamond/allocation";
+import { sumPacketMovements } from "@/lib/diamond/packets";
 import type {
   DiamondJobStatus,
   DiamondProcessOutputKind,
@@ -322,18 +323,44 @@ export async function listPolishedDiamonds(filters?: {
   }));
 }
 
+/**
+ * Available polished stock — individual stones AND packets together.
+ *
+ * A packet (purchased directly as a parcel, or manufactured/converted into
+ * one — see PolishedPacket) is real available stock exactly like a single
+ * ZL-POL stone; a job whose entire purchase or output was recorded as a
+ * packet would otherwise show zero here even while its carat, pieces and
+ * cost sit in Polished Diamond Inventory untouched. Only CANCELLED packets
+ * are excluded; an EMPTY one already nets to zero and costs nothing to
+ * include.
+ */
 export async function getPolishedStockSummary(): Promise<{
   totalCarat: Decimal;
   totalCost: Decimal;
   pieceCount: number;
 }> {
-  const available = await prisma.polishedDiamond.findMany({
-    where: { status: "AVAILABLE" },
-    select: { carat: true, allocatedCost: true },
-  });
-  const totalCarat = available.reduce((sum, p) => sum.plus(new Decimal(p.carat)), ZERO);
-  const totalCost = available.reduce((sum, p) => sum.plus(new Decimal(p.allocatedCost)), ZERO);
-  return { totalCarat: round3(totalCarat), totalCost: round2(totalCost), pieceCount: available.length };
+  const [available, packets] = await Promise.all([
+    prisma.polishedDiamond.findMany({
+      where: { status: "AVAILABLE" },
+      select: { carat: true, allocatedCost: true },
+    }),
+    prisma.polishedPacket.findMany({
+      where: { status: { in: ["ACTIVE", "EMPTY"] } },
+      select: { movements: { select: { type: true, pieces: true, carat: true, costValue: true } } },
+    }),
+  ]);
+  let totalCarat = available.reduce((sum, p) => sum.plus(new Decimal(p.carat)), ZERO);
+  let totalCost = available.reduce((sum, p) => sum.plus(new Decimal(p.allocatedCost)), ZERO);
+  let pieceCount = available.length;
+  for (const packet of packets) {
+    const balance = sumPacketMovements(
+      packet.movements.map((m) => ({ type: m.type, pieces: m.pieces, carat: m.carat.toFixed(3), costValue: m.costValue.toFixed(2) }))
+    );
+    totalCarat = totalCarat.plus(balance.carat);
+    totalCost = totalCost.plus(balance.costValue);
+    pieceCount += balance.pieces;
+  }
+  return { totalCarat: round3(totalCarat), totalCost: round2(totalCost), pieceCount };
 }
 
 export type DiamondJobRow = {
