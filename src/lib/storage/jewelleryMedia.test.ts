@@ -287,6 +287,63 @@ describe("deleteJewelleryAsset — temporary object cleanup", () => {
   });
 });
 
+describe("outbound fetch timeouts (a stalled Supabase connection must never hang forever)", () => {
+  /** Simulates a stalled connection: the fetch never settles on its own —
+   * exactly how Node's real, timeout-less global fetch behaves against a
+   * hung endpoint — but honours an AbortSignal the way real fetch does,
+   * so it is fetchStorage's own bound that has to end it, not this mock. */
+  function stubHangingFetch() {
+    const fn = vi.fn((_url: unknown, init?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const err = new Error("The operation was aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+      });
+    });
+    vi.stubGlobal("fetch", fn);
+    return fn;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("uploadJewelleryAsset rejects with a clear, retry-safe JewelleryStorageError instead of hanging forever", async () => {
+    stubHangingFetch();
+    let caught: unknown;
+    const promise = uploadJewelleryAsset("jewellery-design", file(JPEG_BYTES, "image/jpeg")).catch((error) => {
+      caught = error;
+      throw error;
+    });
+    const assertion = expect(promise).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(30_000); // UPLOAD_TIMEOUT_MS
+    await assertion;
+    expect(caught).toBeInstanceOf(JewelleryStorageError);
+    expect((caught as Error).message).toMatch(/did not respond in time/i);
+  });
+
+  it("getJewelleryAssetSignedUrl returns null, not a thrown error, once the sign request times out", async () => {
+    stubHangingFetch();
+    const promise = getJewelleryAssetSignedUrl("jewellery-design/abc.jpg");
+    const assertion = expect(promise).resolves.toBeNull();
+    await vi.advanceTimersByTimeAsync(10_000); // REQUEST_TIMEOUT_MS
+    await assertion;
+  });
+
+  it("deleteJewelleryAsset returns false, not a thrown error, once the delete request times out", async () => {
+    stubHangingFetch();
+    const promise = deleteJewelleryAsset("jewellery-design/abc.jpg");
+    const assertion = expect(promise).resolves.toBe(false);
+    await vi.advanceTimersByTimeAsync(10_000); // REQUEST_TIMEOUT_MS
+    await assertion;
+  });
+});
+
 describe("apikey-only compatibility (sb_secret is not a JWT)", () => {
   it("never sets an Authorization header on any Storage Management/Object API request", async () => {
     const uploadFetch = mockFetchOnce({ ok: true } as Response);

@@ -282,6 +282,63 @@ describe("deleteDiamondAsset — temporary object cleanup", () => {
   });
 });
 
+describe("outbound fetch timeouts (a stalled Supabase connection must never hang forever)", () => {
+  /** Simulates a stalled connection: the fetch never settles on its own —
+   * exactly how Node's real, timeout-less global fetch behaves against a
+   * hung endpoint — but honours an AbortSignal the way real fetch does,
+   * so it is fetchStorage's own bound that has to end it, not this mock. */
+  function stubHangingFetch() {
+    const fn = vi.fn((_url: unknown, init?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const err = new Error("The operation was aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+      });
+    });
+    vi.stubGlobal("fetch", fn);
+    return fn;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("uploadDiamondAsset rejects with a clear, retry-safe StorageError instead of hanging forever", async () => {
+    stubHangingFetch();
+    let caught: unknown;
+    const promise = uploadDiamondAsset("rough-piece", file(JPEG_BYTES, "image/jpeg")).catch((error) => {
+      caught = error;
+      throw error;
+    });
+    const assertion = expect(promise).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(30_000); // UPLOAD_TIMEOUT_MS
+    await assertion;
+    expect(caught).toBeInstanceOf(StorageError);
+    expect((caught as Error).message).toMatch(/did not respond in time/i);
+  });
+
+  it("getDiamondAssetSignedUrl returns null, not a thrown error, once the sign request times out", async () => {
+    stubHangingFetch();
+    const promise = getDiamondAssetSignedUrl("rough-piece/abc.jpg");
+    const assertion = expect(promise).resolves.toBeNull();
+    await vi.advanceTimersByTimeAsync(10_000); // REQUEST_TIMEOUT_MS
+    await assertion;
+  });
+
+  it("deleteDiamondAsset returns false, not a thrown error, once the delete request times out", async () => {
+    stubHangingFetch();
+    const promise = deleteDiamondAsset("rough-piece/abc.jpg");
+    const assertion = expect(promise).resolves.toBe(false);
+    await vi.advanceTimersByTimeAsync(10_000); // REQUEST_TIMEOUT_MS
+    await assertion;
+  });
+});
+
 describe("apikey-only compatibility (sb_secret is not a JWT)", () => {
   /**
    * Supabase's current `sb_secret_...` key format is not a JWT, so it is

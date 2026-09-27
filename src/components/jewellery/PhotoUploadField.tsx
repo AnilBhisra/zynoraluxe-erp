@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { uploadJewelleryPhotoAction, deleteJewelleryPhotoAction } from "@/app/actions/jewellery";
+import { ClientTimeoutError, UPLOAD_CLIENT_TIMEOUT_MS, withClientTimeout } from "@/lib/client/uploadTimeout";
 import type { JewelleryAssetCategory } from "@/lib/storage/jewelleryMedia";
 
 function fireAndForgetDelete(assetId: string) {
@@ -27,25 +28,47 @@ export function JewelleryPhotoUploadField({
 }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Bumped on every new attempt so a late-arriving result from an earlier,
+  // already-timed-out attempt can never clobber a newer attempt's state
+  // (re-enable a stale spinner, or apply a stale success/error) — see
+  // src/lib/client/uploadTimeout.ts.
+  const attemptRef = useRef(0);
 
   async function handleChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
 
+    const attempt = ++attemptRef.current;
     setPending(true);
     setError(null);
     const formData = new FormData();
     formData.set("file", file);
     formData.set("category", category);
-    const result = await uploadJewelleryPhotoAction(undefined, formData);
-    setPending(false);
 
-    if (result?.success && result.assetId) {
-      if (assetId) fireAndForgetDelete(assetId);
-      onUploaded(result.assetId);
-    } else {
-      setError(result?.error ?? "Upload failed.");
+    try {
+      const result = await withClientTimeout(
+        uploadJewelleryPhotoAction(undefined, formData),
+        UPLOAD_CLIENT_TIMEOUT_MS,
+        "Upload timed out. Check your connection and try again."
+      );
+      if (attempt !== attemptRef.current) {
+        // Superseded by a newer attempt — don't touch state, but don't
+        // orphan a successful-but-abandoned upload in storage either.
+        if (result?.success && result.assetId) fireAndForgetDelete(result.assetId);
+        return;
+      }
+      setPending(false);
+      if (result?.success && result.assetId) {
+        if (assetId) fireAndForgetDelete(assetId);
+        onUploaded(result.assetId);
+      } else {
+        setError(result?.error ?? "Upload failed.");
+      }
+    } catch (err) {
+      if (attempt !== attemptRef.current) return;
+      setPending(false);
+      setError(err instanceof ClientTimeoutError ? err.message : "Upload failed. Please try again.");
     }
   }
 

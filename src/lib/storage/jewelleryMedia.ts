@@ -41,6 +41,37 @@ export class JewelleryStorageError extends Error {}
 const ALLOWED_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
 
+// Node's global fetch has no default timeout, so without one, a stalled
+// connection to Supabase Storage (seen in practice on a slower/flakier
+// "laptop" network, not just a down service) would hang the calling
+// Server Action — and with it the browser's own spinner — forever, with
+// no error ever shown. See src/lib/client/uploadTimeout.ts for the
+// matching client-side backstop.
+const UPLOAD_TIMEOUT_MS = 30_000; // uploads can carry up to 10 MB
+const REQUEST_TIMEOUT_MS = 10_000; // sign/delete are small metadata calls
+
+/** Bounds one outbound call to Supabase Storage. Converts a timeout
+ * specifically into JewelleryStorageError so callers get a clear,
+ * retry-safe message rather than an unbounded hang — retrying is always
+ * safe here since a timed-out call never returns an assetId for anything
+ * to reference. */
+async function fetchStorage(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new JewelleryStorageError(
+        "Storage did not respond in time. Please check your connection and try again."
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // "costing-estimate" added in Phase 5 (design photo on an Estimate
 // costing) — reuses this exact module rather than duplicating it, since
 // Costing's image needs (private bucket, signed URLs, magic-byte
@@ -125,15 +156,19 @@ export async function uploadJewelleryAsset(
 
   const objectPath = buildObjectPath(category, extensionForMime(file.type));
 
-  const response = await fetch(`${config.url}/storage/v1/object/${config.bucket}/${objectPath}`, {
-    method: "POST",
-    headers: {
-      apikey: config.secretKey,
-      "Content-Type": file.type,
-      "x-upsert": "false",
+  const response = await fetchStorage(
+    `${config.url}/storage/v1/object/${config.bucket}/${objectPath}`,
+    {
+      method: "POST",
+      headers: {
+        apikey: config.secretKey,
+        "Content-Type": file.type,
+        "x-upsert": "false",
+      },
+      body: bytes,
     },
-    body: bytes,
-  });
+    UPLOAD_TIMEOUT_MS
+  );
 
   if (!response.ok) {
     throw new JewelleryStorageError(`Upload failed (${response.status}). Please try again.`);
@@ -152,14 +187,23 @@ export async function getJewelleryAssetSignedUrl(
   const config = getConfig();
   if (!config) return null;
 
-  const response = await fetch(`${config.url}/storage/v1/object/sign/${config.bucket}/${assetId}`, {
-    method: "POST",
-    headers: {
-      apikey: config.secretKey,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ expiresIn: expiresInSeconds }),
-  });
+  let response: Response;
+  try {
+    response = await fetchStorage(
+      `${config.url}/storage/v1/object/sign/${config.bucket}/${assetId}`,
+      {
+        method: "POST",
+        headers: {
+          apikey: config.secretKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ expiresIn: expiresInSeconds }),
+      },
+      REQUEST_TIMEOUT_MS
+    );
+  } catch {
+    return null; // a timed-out sign request is "not available", same as any other failure
+  }
 
   if (!response.ok) return null;
   const data = (await response.json()) as { signedURL?: string };
@@ -183,11 +227,19 @@ export async function deleteJewelleryAsset(assetId: string): Promise<boolean> {
   const config = getConfig();
   if (!config) return false;
 
-  const response = await fetch(`${config.url}/storage/v1/object/${config.bucket}/${assetId}`, {
-    method: "DELETE",
-    headers: {
-      apikey: config.secretKey,
-    },
-  });
-  return response.ok;
+  try {
+    const response = await fetchStorage(
+      `${config.url}/storage/v1/object/${config.bucket}/${assetId}`,
+      {
+        method: "DELETE",
+        headers: {
+          apikey: config.secretKey,
+        },
+      },
+      REQUEST_TIMEOUT_MS
+    );
+    return response.ok;
+  } catch {
+    return false; // a timed-out cleanup delete should never throw — see doc comment above
+  }
 }
