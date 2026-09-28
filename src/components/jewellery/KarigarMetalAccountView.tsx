@@ -87,9 +87,9 @@ export function KarigarMetalAccountView({
                   {p.finenessPercent ? <span className="ml-1 text-xs font-normal text-zinc-500 dark:text-zinc-400">({p.finenessPercent}% saved fineness)</span> : null}
                 </p>
                 <dl className="mt-2 grid grid-cols-1 gap-2 text-xs sm:grid-cols-3">
-                  <Figure label="Unallocated (not on any job)" value={`${p.unallocatedGross}g gross`} sub={`${p.unallocatedFine}g fine${p.unallocatedCost !== null ? ` · ${money(p.unallocatedCost)}` : ""}`} testId="unallocated" />
-                  <Figure label="Allocated, pending on jobs" value={`${p.allocatedPendingFine}g fine`} sub={`≈ ${p.allocatedPendingGross}g gross`} testId="allocated" />
-                  <Figure label="Total with Karigar" value={`${p.totalWithKarigarFine}g fine`} sub={`≈ ${p.totalWithKarigarGross}g gross`} testId="total" strong />
+                  <Figure label="Unallocated (not on any job)" value={`Gross ${p.unallocatedGross} g`} sub={`Fine ${p.unallocatedFine} g${p.unallocatedCost !== null ? ` · ${money(p.unallocatedCost)}` : ""}`} testId="unallocated" />
+                  <Figure label="Allocated, pending on jobs" value={`Fine ${p.allocatedPendingFine} g`} sub={`Gross ≈ ${p.allocatedPendingGross} g (jobs reconcile on fine)`} testId="allocated" />
+                  <Figure label="Total with Karigar" value={`Fine ${p.totalWithKarigarFine} g`} sub={`Gross ≈ ${p.totalWithKarigarGross} g`} testId="total" strong />
                 </dl>
               </div>
             ))}
@@ -244,20 +244,21 @@ function CustodyForm({
 
   const [purityId, setPurityId] = useState(purityChoices[0]?.id ?? "");
   const [jobId, setJobId] = useState(initialJobId ?? jobChoices[0]?.id ?? "");
-  const [grossWeight, setGrossWeight] = useState("");
+  const [weight, setWeight] = useState("");
+  const [weightBasis, setWeightBasis] = useState<"GROSS" | "FINE">("GROSS");
   const [all, setAll] = useState(false);
   const [entryDate, setEntryDate] = useState(today());
   const [reason, setReason] = useState("");
   const [reference, setReference] = useState("");
   const [previewedInputs, setPreviewedInputs] = useState("");
-  const current = JSON.stringify({ purityId, jobId, grossWeight, all, entryDate, reason, reference });
+  const current = JSON.stringify({ purityId, jobId, weight, weightBasis, all, entryDate, reason, reference });
   const preview = previewState?.preview;
   const fresh = Boolean(preview) && previewedInputs === current;
   const needsPurity = kind !== "RELEASE_FROM_JOB";
   const needsJob = kind === "ALLOCATE_TO_JOB" || kind === "RELEASE_FROM_JOB";
   const allowAll = kind !== "ISSUE_TO_KARIGAR";
   const minReason = kind === "RELEASE_FROM_JOB" ? 10 : 3;
-  const ready = (!needsPurity || purityId) && (!needsJob || jobId) && (all || Number(grossWeight) > 0) && reason.trim().length >= minReason && entryDate;
+  const ready = (!needsPurity || purityId) && (!needsJob || jobId) && (all || Number(weight) > 0) && reason.trim().length >= minReason && entryDate;
 
   useEffect(() => {
     if (postState?.success) onDone();
@@ -279,7 +280,8 @@ function CustodyForm({
     fd.set("all", all ? "1" : "");
     if (needsPurity) fd.set("purityId", purityId);
     if (needsJob) fd.set("jobId", jobId);
-    if (!all) fd.set("grossWeight", grossWeight);
+    fd.set("weightBasis", weightBasis);
+    if (!all) fd.set("weight", weight);
     fd.set("entryDate", entryDate);
     fd.set("reason", reason);
     fd.set("reference", reference);
@@ -341,17 +343,34 @@ function CustodyForm({
             </select>
           </label>
         ) : null}
+        <fieldset className="flex flex-col gap-1.5" disabled={all}>
+          <legend className="text-sm font-medium text-zinc-800 dark:text-zinc-200">Weight entered as</legend>
+          <div className="flex flex-wrap gap-4 text-sm text-zinc-700 dark:text-zinc-300">
+            <label className="flex items-center gap-2">
+              <input type="radio" name="weightBasis" value="GROSS" checked={weightBasis === "GROSS"} onChange={() => setWeightBasis("GROSS")} className="h-4 w-4" />
+              Gross grams (as weighed)
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="radio" name="weightBasis" value="FINE" checked={weightBasis === "FINE"} onChange={() => setWeightBasis("FINE")} className="h-4 w-4" />
+              Fine grams (pure metal)
+            </label>
+          </div>
+        </fieldset>
         <Field
-          label="Gross weight (g)"
-          name="grossWeight"
+          label={weightBasis === "FINE" ? "Fine weight (g, pure metal)" : "Gross weight (g, as weighed)"}
+          name="weight"
           type="number"
           step="0.001"
           min="0"
           inputMode="decimal"
-          value={all ? "" : grossWeight}
-          onChange={(e) => setGrossWeight(e.target.value)}
+          value={all ? "" : weight}
+          onChange={(e) => setWeight(e.target.value)}
           disabled={all}
-          hint={kind === "RELEASE_FROM_JOB" && selectedJob?.pendingGross ? `Pending on this job ≈ ${selectedJob.pendingGross}g gross` : undefined}
+          hint={
+            kind === "RELEASE_FROM_JOB" && selectedJob
+              ? `Pending on this job: fine ${selectedJob.pendingFine} g${selectedJob.pendingGross ? ` (gross ≈ ${selectedJob.pendingGross} g)` : ""}`
+              : "The other unit is worked out from the saved fineness and shown in the preview."
+          }
         />
         {allowAll ? (
           <label className="flex items-center gap-2 self-end pb-3 text-sm text-zinc-700 dark:text-zinc-300">
@@ -393,7 +412,7 @@ function CustodyForm({
             size="md"
             disabled={postPending || previewPending}
             onClick={() => {
-              if (!window.confirm(`${preview.kindLabel}: ${preview.grossWeight}g gross (${preview.fineWeight}g fine) of ${preview.purityDisplayName}${preview.jobCode ? ` — ${preview.jobCode}` : ""}.\n\nPost this entry?`)) {
+              if (!window.confirm(`${preview.kindLabel}: gross ${preview.grossWeight} g / fine ${preview.fineWeight} g of ${preview.purityDisplayName}${preview.jobCode ? ` — ${preview.jobCode}` : ""}.\n\nPost this entry?`)) {
                 return;
               }
               startTransition(() => postAction(payload(preview.fingerprint)));
@@ -411,11 +430,18 @@ function PreviewBox({ preview, kind }: { preview: CustodyPreview; kind: CustodyK
   return (
     <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm dark:border-emerald-900 dark:bg-emerald-950/30" data-testid="custody-preview">
       <p className="font-medium text-zinc-900 dark:text-zinc-50">
-        Preview — nothing is saved yet. {preview.kindLabel}: {preview.grossWeight}g gross / {preview.fineWeight}g fine of {preview.purityDisplayName} ({preview.finenessPercent}%)
+        Preview — nothing is saved yet. {preview.kindLabel}: gross {preview.grossWeight} g / fine {preview.fineWeight} g of {preview.purityDisplayName} ({preview.finenessPercent}% saved fineness)
         {preview.jobCode ? ` — ${preview.jobCode}` : ""}, carrying ₹{preview.costValue}
         {preview.isFull ? " (the exact remaining value)" : ""}.
       </p>
       <ul className="mt-2 list-disc pl-5 text-xs text-zinc-700 dark:text-zinc-300">
+        <li data-testid="custody-preview-basis">
+          {preview.enteredWeightBasis === "FINE"
+            ? `You entered FINE ${preview.fineWeight} g; gross ${preview.grossWeight} g is worked out at ${preview.finenessPercent}%.`
+            : preview.enteredWeightBasis === "GROSS"
+              ? `You entered GROSS ${preview.grossWeight} g; fine ${preview.fineWeight} g is worked out at ${preview.finenessPercent}%.`
+              : `The whole balance: gross ${preview.grossWeight} g / fine ${preview.fineWeight} g.`}
+        </li>
         <li>
           {preview.karigarName}&apos;s unallocated {preview.purityDisplayName}: {preview.custodyBefore.gross}g → {preview.custodyAfter.gross}g gross ({preview.custodyBefore.fine}g → {preview.custodyAfter.fine}g fine; ₹{preview.custodyBefore.cost} → ₹{preview.custodyAfter.cost})
         </li>
@@ -468,12 +494,11 @@ function StatementRow({ row, isOwner, onDone }: { row: KarigarStatementRow; isOw
         </p>
         <p className="font-semibold">
           {sign}
-          {row.grossWeight}g gross / {sign}
-          {row.fineWeight}g fine {row.purityDisplayName}
+          gross {row.grossWeight} g / {sign}fine {row.fineWeight} g {row.purityDisplayName}
         </p>
       </div>
       <p className="mt-1">
-        Unallocated after: {row.unallocatedGrossAfter}g gross / {row.unallocatedFineAfter}g fine
+        Unallocated after: gross {row.unallocatedGrossAfter} g / fine {row.unallocatedFineAfter} g{row.enteredAs ? ` · entered as ${row.enteredAs}` : ""}
         {isOwner && row.costValue !== null ? ` · ₹${row.costValue}` : ""}
         {isOwner && row.voucherNumber ? ` · voucher ${row.voucherNumber}` : ""}
       </p>

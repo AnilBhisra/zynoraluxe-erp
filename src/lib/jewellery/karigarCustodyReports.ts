@@ -70,6 +70,8 @@ export type KarigarStatementRow = {
   purityDisplayName: string;
   grossWeight: string;
   fineWeight: string;
+  /** "gross" / "fine" when the Owner typed that unit; null for a whole-balance entry. */
+  enteredAs: "gross" | "fine" | null;
   /** +1 into the unallocated balance, -1 out of it. */
   direction: 1 | -1;
   costValue: string | null;
@@ -263,6 +265,7 @@ export async function getKarigarMetalAccount(karigarId: string, options: { inclu
       purityDisplayName: e.purity.displayName,
       grossWeight: g3(new Decimal(e.grossWeight)),
       fineWeight: g3(new Decimal(e.fineWeight)),
+      enteredAs: e.enteredWeightBasis === "FINE" ? "fine" : e.enteredWeightBasis === "GROSS" ? "gross" : null,
       direction,
       costValue: options.includeCost ? money(new Decimal(e.costValue)) : null,
       voucherNumber: options.includeCost ? (e.voucher?.voucherNumber ?? null) : null,

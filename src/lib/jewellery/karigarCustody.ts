@@ -7,7 +7,7 @@ import { createVoucherHeader, insertBalancedJournalLines } from "@/lib/accountin
 import type { Tx } from "@/lib/corrections/types";
 import { round3 } from "@/lib/diamond/allocation";
 import { nextJewelleryCode } from "@/lib/jewellery/numbering";
-import { getMetalStockBalanceInTx, pendingFineWeightOf } from "@/lib/jewellery/posting";
+import { declareCustodyAware, getMetalStockBalanceInTx, pendingFineWeightOf } from "@/lib/jewellery/posting";
 
 /**
  * Karigar metal custody — company metal issued to a named Karigar without a
@@ -175,8 +175,16 @@ export type CustodyOperationInput = {
   karigarId: string;
   purityId?: string | null;
   jobId?: string | null;
-  /** Gross grams; ignored when `all` is true. */
+  /**
+   * The weight, entered ONCE, in exactly one of two units (both ignored when
+   * `all` is true):
+   *   grossWeight — grams of the metal as weighed (e.g. 10.010 g of 24K);
+   *   fineWeight  — grams of pure metal it contains (e.g. 10.000 g fine).
+   * The other one is derived from the saved fineness, and the pair always
+   * satisfies fine = round3(gross × fineness ÷ 100).
+   */
   grossWeight?: string | number | null;
+  fineWeight?: string | number | null;
   /** Take the whole available balance (return / allocate / release). */
   all?: boolean;
   entryDate: Date;
@@ -198,6 +206,8 @@ export type CustodyPlan = {
   fineWeight: Decimal;
   costValue: Decimal;
   isFull: boolean;
+  /** Which unit the Owner typed: GROSS, FINE, or ALL (the whole balance). */
+  enteredWeightBasis: "GROSS" | "FINE" | "ALL";
   entryDate: Date;
   reason: string;
   reference: string | null;
@@ -221,15 +231,35 @@ function checkCommon(input: CustodyOperationInput): { reason: string; reference:
   return { reason, reference: input.reference?.trim() || null };
 }
 
-function grossInput(input: CustodyOperationInput): Decimal {
-  const raw = input.grossWeight;
-  if (raw === null || raw === undefined || String(raw).trim() === "") throw new CustodyError("Enter the gross weight in grams.");
-  const gross = round3(raw);
-  if (!gross.greaterThan(0)) throw new CustodyError("Enter a gross weight above zero.");
-  return gross;
+const present = (v: string | number | null | undefined) => v !== null && v !== undefined && String(v).trim() !== "";
+
+/** The one weight the Owner entered, and in which unit. */
+function enteredWeight(input: CustodyOperationInput): { basis: "GROSS" | "FINE"; value: Decimal } {
+  const hasGross = present(input.grossWeight);
+  const hasFine = present(input.fineWeight);
+  if (hasGross && hasFine) throw new CustodyError("Enter the weight once — as gross grams or as fine grams, not both.");
+  if (!hasGross && !hasFine) throw new CustodyError("Enter the weight in grams (gross or fine).");
+  const basis = hasFine ? "FINE" : "GROSS";
+  const value = round3((hasFine ? input.fineWeight : input.grossWeight) as string | number);
+  if (!value.greaterThan(0)) throw new CustodyError(`Enter a ${basis === "FINE" ? "fine" : "gross"} weight above zero.`);
+  return { basis, value };
 }
 
 const fineOf = (gross: Decimal, fineness: Decimal) => round3(gross.times(fineness).dividedBy(100));
+
+/**
+ * The gross weight (3 dp) whose fine content at `fineness` rounds to exactly
+ * `fine` — so a weight entered as fine is stored as a pair that reconciles
+ * both ways. Any 0.001 g fine is reachable, because one 0.001 g step of gross
+ * adds less than 0.001 g of fine; the nearest candidates are tried in order.
+ */
+function grossForFine(fine: Decimal, fineness: Decimal): Decimal {
+  const guess = round3(fine.times(100).dividedBy(fineness));
+  for (const g of [guess, guess.minus("0.001"), guess.plus("0.001"), guess.minus("0.002"), guess.plus("0.002")]) {
+    if (g.greaterThan(0) && fineOf(g, fineness).equals(fine)) return g;
+  }
+  throw new CustodyError(`${fine.toFixed(3)} g fine cannot be matched to a whole gross weight at ${fineness.toFixed(3)}% — enter the gross weight instead.`);
+}
 
 export async function planCustodyOperation(tx: Tx, input: CustodyOperationInput): Promise<CustodyPlan> {
   const { reason, reference } = checkCommon(input);
@@ -247,10 +277,13 @@ export async function planCustodyOperation(tx: Tx, input: CustodyOperationInput)
       }
       const fineness = new Decimal(purity.finenessPercent);
       if (!fineness.greaterThan(0)) throw new CustodyError("Only fine-bearing metal (gold, silver, platinum) can be held as Karigar custody.");
-      const gross = grossInput(input);
+      const entered = enteredWeight(input);
+      const gross = entered.basis === "FINE" ? grossForFine(entered.value, fineness) : entered.value;
       const stock = await getMetalStockBalanceInTx(tx, purity.metalType, purity.id);
       if (gross.greaterThan(stock.grossWeight)) {
-        throw new CustodyError(`Not enough ${purity.displayName} stock: ${gross.toFixed(3)}g requested, ${stock.grossWeight.toFixed(3)}g available.`);
+        throw new CustodyError(
+          `Not enough ${purity.displayName} stock: ${gross.toFixed(3)} g gross (${fineOf(gross, fineness).toFixed(3)} g fine) requested, ${stock.grossWeight.toFixed(3)} g gross available.`
+        );
       }
       const custody = await getCustodyBalanceInTx(tx, karigar.id, purity.metalType, purity.id);
       if (custody.finenessPercentSnapshot && !custody.finenessPercentSnapshot.equals(fineness)) {
@@ -263,8 +296,9 @@ export async function planCustodyOperation(tx: Tx, input: CustodyOperationInput)
       // the last gram takes the exact remaining value.
       const isFull = gross.equals(stock.grossWeight);
       const cost = isFull ? stock.costValue : stock.grossWeight.greaterThan(0) ? round2(gross.times(stock.costValue.dividedBy(stock.grossWeight))) : ZERO;
-      const fine = fineOf(gross, fineness);
+      const fine = entered.basis === "FINE" ? entered.value : fineOf(gross, fineness);
       return {
+        enteredWeightBasis: entered.basis,
         kind: input.kind,
         karigarId: karigar.id,
         karigarName: karigar.name,
@@ -305,24 +339,37 @@ export async function planCustodyOperation(tx: Tx, input: CustodyOperationInput)
       let fine: Decimal;
       let cost: Decimal;
       let isFull: boolean;
+      let basis: "GROSS" | "FINE" | "ALL" = "ALL";
+      const holds = `${karigar.name} holds only ${custody.grossWeight.toFixed(3)} g gross / ${custody.fineWeight.toFixed(3)} g fine of unallocated ${purity.displayName}.`;
       if (input.all) {
         [gross, fine, cost, isFull] = [custody.grossWeight, custody.fineWeight, custody.costValue, true];
       } else {
-        gross = grossInput(input);
-        if (gross.greaterThan(custody.grossWeight)) {
-          throw new CustodyError(`${karigar.name} holds only ${custody.grossWeight.toFixed(3)}g of unallocated ${purity.displayName}.`);
-        }
-        isFull = gross.equals(custody.grossWeight);
-        if (isFull) {
-          [fine, cost] = [custody.fineWeight, custody.costValue];
+        const entered = enteredWeight(input);
+        basis = entered.basis;
+        if (entered.basis === "GROSS") {
+          gross = entered.value;
+          if (gross.greaterThan(custody.grossWeight)) throw new CustodyError(holds);
+          isFull = gross.equals(custody.grossWeight);
+          fine = isFull ? custody.fineWeight : fineOf(gross, fineness);
         } else {
-          fine = fineOf(gross, fineness);
-          if (!fine.lessThan(custody.fineWeight)) throw new CustodyError("That is the whole balance after rounding — choose “All of it” instead.");
+          fine = entered.value;
+          if (fine.greaterThan(custody.fineWeight)) throw new CustodyError(holds);
+          isFull = fine.equals(custody.fineWeight);
+          gross = isFull ? custody.grossWeight : grossForFine(fine, fineness);
+        }
+        if (isFull) {
+          [gross, fine, cost] = [custody.grossWeight, custody.fineWeight, custody.costValue];
+        } else {
+          if (!fine.lessThan(custody.fineWeight) || !gross.lessThan(custody.grossWeight)) {
+            throw new CustodyError("That is the whole balance after rounding — choose “All of it” instead.");
+          }
+          // Gold is reconciled on fine weight: a part takes its fine share of the value.
           cost = round2(custody.costValue.times(fine).dividedBy(custody.fineWeight));
         }
       }
       const custodyAfter = { gross: custody.grossWeight.minus(gross), fine: custody.fineWeight.minus(fine), cost: round2(custody.costValue.minus(cost)) };
       const base = {
+        enteredWeightBasis: basis,
         kind: input.kind,
         karigarId: karigar.id,
         karigarName: karigar.name,
@@ -403,20 +450,39 @@ export async function planCustodyOperation(tx: Tx, input: CustodyOperationInput)
       if (!pending.greaterThan(0)) throw new CustodyError(`${job.jobCode} has no unresolved metal pending with the Karigar.`);
       const wip = new Decimal(job.remainingWipCost);
       const fineness = held.finenessPercentSnapshot;
+      // A job reconciles on FINE weight; its gross is only ever an equivalent.
       let fine: Decimal;
+      let enteredGross: Decimal | null = null;
+      let basis: "GROSS" | "FINE" | "ALL" = "ALL";
       if (input.all) {
         fine = pending;
       } else {
-        fine = fineOf(grossInput(input), fineness);
-        if (fine.greaterThan(pending)) {
-          throw new CustodyError(`${job.jobCode} has only ${pending.toFixed(3)}g fine pending (≈${round3(pending.times(100).dividedBy(fineness)).toFixed(3)}g gross).`);
+        const entered = enteredWeight(input);
+        basis = entered.basis;
+        if (entered.basis === "FINE") {
+          fine = entered.value;
+        } else {
+          enteredGross = entered.value;
+          fine = fineOf(entered.value, fineness);
         }
-        if (!fine.greaterThan(0)) throw new CustodyError("That weight is below 0.001g fine.");
+        if (fine.greaterThan(pending)) {
+          throw new CustodyError(`${job.jobCode} has only ${pending.toFixed(3)} g fine pending (≈ ${round3(pending.times(100).dividedBy(fineness)).toFixed(3)} g gross).`);
+        }
+        if (!fine.greaterThan(0)) throw new CustodyError("That weight is below 0.001 g fine.");
       }
       const isFull = fine.equals(pending);
       const cost = isFull ? wip : round2(wip.times(fine).dividedBy(pending));
-      // The gross equivalent of the fine metal at the job's own fineness.
-      const gross = input.all || isFull ? round3(fine.times(100).dividedBy(fineness)) : grossInput(input);
+      // The gross equivalent of the fine metal at the job's own fineness: the
+      // exact gross the Owner typed, else the gross that reconciles to it.
+      let gross: Decimal;
+      if (enteredGross && !isFull) gross = enteredGross;
+      else {
+        try {
+          gross = grossForFine(fine, fineness);
+        } catch {
+          gross = round3(fine.times(100).dividedBy(fineness));
+        }
+      }
       const custody = await getCustodyBalanceInTx(tx, karigar.id, held.metalType, held.purityId);
       if (custody.finenessPercentSnapshot && !custody.finenessPercentSnapshot.equals(fineness)) {
         throw new CustodyError(
@@ -424,6 +490,7 @@ export async function planCustodyOperation(tx: Tx, input: CustodyOperationInput)
         );
       }
       return {
+        enteredWeightBasis: basis,
         kind: input.kind,
         karigarId: karigar.id,
         karigarName: karigar.name,
@@ -462,6 +529,7 @@ export function custodyPlanFingerprint(plan: CustodyPlan): string {
     jobId: plan.jobId,
     purityId: plan.purityId,
     fineness: plan.finenessPercentSnapshot.toFixed(3),
+    basis: plan.enteredWeightBasis,
     gross: plan.grossWeight.toFixed(3),
     fine: plan.fineWeight.toFixed(3),
     cost: plan.costValue.toFixed(2),
@@ -529,6 +597,7 @@ export async function postCustodyOperation(tx: Tx, input: PostCustodyInput) {
     purityId = line?.purityId ?? null;
   }
   await lockInOrder(tx, { purityId, karigarId: input.karigarId, jobId: input.jobId ?? null });
+  await declareCustodyAware(tx);
 
   const existing = await tx.karigarMetalCustodyEntry.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
   if (existing) {
@@ -581,6 +650,7 @@ export async function postCustodyOperation(tx: Tx, input: PostCustodyInput) {
       grossWeight: plan.grossWeight.toFixed(3),
       fineWeight: plan.fineWeight.toFixed(3),
       costValue: plan.costValue.toFixed(2),
+      enteredWeightBasis: plan.enteredWeightBasis,
       entryDate: plan.entryDate,
       reason: plan.reason,
       reference: plan.reference,
@@ -751,6 +821,7 @@ export async function reverseCustodyEntry(
   const first = await tx.karigarMetalCustodyEntry.findUnique({ where: { id: input.entryId } });
   if (!first) throw new CustodyError("Entry not found.");
   await lockInOrder(tx, { purityId: first.purityId, karigarId: first.karigarId, jobId: first.jobId });
+  await declareCustodyAware(tx);
 
   const block = await custodyReversalBlock(tx, input.entryId);
   if (block) throw new CustodyError(`Cannot reverse ${first.entryCode}: ${block}`);

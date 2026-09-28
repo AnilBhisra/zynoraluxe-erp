@@ -1572,6 +1572,10 @@ model KarigarMetalCustodyEntry {
   grossWeight             Decimal     @db.Decimal(10, 3)
   fineWeight              Decimal     @db.Decimal(10, 3)
   costValue               Decimal     @db.Decimal(14, 2)
+  /// What the Owner typed the weight as: "GROSS" (the metal as weighed) or
+  /// "FINE" (pure metal). Both gross and fine are always stored; this only
+  /// records which one was entered and which was derived from the fineness.
+  enteredWeightBasis      String      @default("GROSS")
 
   entryDate DateTime
   reason    String

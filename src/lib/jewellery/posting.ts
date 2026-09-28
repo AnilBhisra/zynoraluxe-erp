@@ -81,6 +81,18 @@ export function pendingFineWeightOf(job: {
   );
 }
 
+/**
+ * Declares, for the current transaction only, that this code understands
+ * Karigar metal custody. The database guard zl_guard_custody_job (migration
+ * 20261004090000) refuses to receive, return, scrap, transfer or cancel metal
+ * on a job holding active custody metal unless this is set — so a rolled-back
+ * deployment that predates custody cannot miscount such a job. Every write
+ * path that changes a job's resolved metal calls this after taking its locks.
+ */
+export async function declareCustodyAware(tx: Tx): Promise<void> {
+  await tx.$queryRawUnsafe(`SELECT set_config('zynoraluxe.custody_aware', '1', true)`);
+}
+
 // ---------------------------------------------------------------------------
 // Metal stock balance (weighted-average cost per fungible metal+purity bucket)
 // ---------------------------------------------------------------------------
@@ -1285,6 +1297,7 @@ export async function cancelJewelleryJob(
   // Locked first so this can never race a concurrent job-to-job metal
   // transfer (or receipt) on the same job.
   await tx.$queryRawUnsafe(`SELECT id FROM "jewellery_jobs" WHERE id = $1 FOR UPDATE`, input.jobId);
+  await declareCustodyAware(tx);
   const job = await tx.jewelleryJob.findUnique({ where: { id: input.jobId } });
   if (!job) throw new PostingError("Job not found.");
   if (job.status === "CANCELLED") throw new PostingError("This job has already been cancelled.");
@@ -1720,6 +1733,7 @@ export async function receiveFinishedJewellery(
   // Locked first so this can never race a concurrent job-to-job metal
   // transfer (out of THIS job) or a second concurrent receipt.
   await tx.$queryRawUnsafe(`SELECT id FROM "jewellery_jobs" WHERE id = $1 FOR UPDATE`, input.jobId);
+  await declareCustodyAware(tx);
   const job = await tx.jewelleryJob.findUnique({ where: { id: input.jobId } });
   if (!job) throw new PostingError("Job not found.");
   if (job.status === "CANCELLED") throw new PostingError("This job has been cancelled.");

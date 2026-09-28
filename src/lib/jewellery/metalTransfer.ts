@@ -6,7 +6,7 @@ import { Decimal, round2, ZERO } from "@/lib/accounting/money";
 import { postCorrection, reverseCorrection } from "@/lib/corrections/engine";
 import { CorrectionError, fingerprintPlan, type CorrectionPlan, type DownstreamUse, type PlannedImpact, type Tx } from "@/lib/corrections/types";
 import { nextJewelleryCode } from "@/lib/jewellery/numbering";
-import { pendingFineWeightOf } from "@/lib/jewellery/posting";
+import { declareCustodyAware, pendingFineWeightOf } from "@/lib/jewellery/posting";
 
 /**
  * Audited job-to-job reallocation of unresolved fine-bearing metal between two
@@ -362,6 +362,7 @@ export async function postJobMetalTransfer(tx: Tx, input: PostMetalTransferInput
   if (!input.idempotencyKey?.trim()) throw new CorrectionError("Missing submission key — reload the page and try again.");
 
   await lockJobsInOrder(tx, input.sourceJobId, input.destinationJobId);
+  await declareCustodyAware(tx);
 
   const existing = await tx.correction.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
   if (existing) {
@@ -520,6 +521,7 @@ export async function reverseJobMetalTransfer(
     throw new CorrectionError("This is not a metal-transfer correction.");
   }
   await lockJobsInOrder(tx, first.metalTransfer.sourceJobId, first.metalTransfer.destinationJobId);
+  await declareCustodyAware(tx);
 
   const correction = await tx.correction.findUnique({
     where: { id: input.correctionId },

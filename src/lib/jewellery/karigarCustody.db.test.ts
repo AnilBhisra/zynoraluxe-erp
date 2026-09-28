@@ -301,6 +301,159 @@ describe("Karigar custody — give 10 g, allocate 4/3/2, receive each, return 1 
 });
 
 // ---------------------------------------------------------------------------
+// 1b. The same example entered as FINE gold: 24K (99.9%) in, 18K jewellery out
+// ---------------------------------------------------------------------------
+describe("Karigar custody — fine-gold basis: 10 g fine of 24K in, 18K jewellery out", () => {
+  let fine24: string;
+  let k18: string;
+  const jobs: Record<"A" | "B" | "C", string> = { A: "", B: "", C: "" };
+  const fineKarigar = () => prisma.party.findFirstOrThrow({ where: { name: "Fine Basis Karigar" } });
+
+  it("issues 10.000 g FINE: stored as gross 10.010 g / fine 10.000 g, costed on the gross weighed out", async () => {
+    fine24 = await upsertPurity("GOLD", "Custody Fine 24K", "99.900");
+    k18 = await upsertPurity("GOLD", "Custody Test 18K", "75.000");
+    await opening(fine24, "GOLD", "1000.000", "7123456.78");
+    const k = await prisma.party.create({ data: { name: "Fine Basis Karigar", type: "KARIGAR", createdByUserId: ownerId } });
+    const r = await prisma.$transaction(
+      (tx) => postCustodyOperation(tx, { kind: "ISSUE_TO_KARIGAR", karigarId: k.id, purityId: fine24, fineWeight: "10", entryDate: DATE, reason: "10 g fine for three rings", idempotencyKey: key("fine-issue"), owner: owner(), ...FY }),
+      TX
+    );
+    expect([r.entry.grossWeight.toFixed(3), r.entry.fineWeight.toFixed(3), r.entry.costValue.toFixed(2), r.entry.enteredWeightBasis]).toEqual(["10.010", "10.000", "71305.80", "FINE"]);
+    // Entering both units at once is refused; so is neither.
+    await expect(
+      prisma.$transaction((tx) => planCustodyOperation(tx, { kind: "ISSUE_TO_KARIGAR", karigarId: k.id, purityId: fine24, grossWeight: "1", fineWeight: "1", entryDate: DATE, reason: "both" }), TX)
+    ).rejects.toThrow(/not both/);
+  });
+
+  it("allocates 4 / 3 / 2 g FINE: each job gets exactly that fine weight, gross derived, value split by fine to the paisa", async () => {
+    const k = await fineKarigar();
+    for (const [name, fine, gross, cost] of [["A", "4", "4.004", "28522.32"], ["B", "3", "3.003", "21391.74"], ["C", "2", "2.002", "14261.16"]] as const) {
+      const job = await makeJob(`Fine ring ${name}`, k.id);
+      jobs[name] = job.id;
+      const r = await prisma.$transaction(
+        (tx) => postCustodyOperation(tx, { kind: "ALLOCATE_TO_JOB", karigarId: k.id, purityId: fine24, jobId: job.id, fineWeight: fine, entryDate: DATE, reason: `Allocate ${name}`, idempotencyKey: key("fine-alloc"), owner: owner(), ...FY }),
+        TX
+      );
+      expect([r.entry.fineWeight.toFixed(3), r.entry.grossWeight.toFixed(3), r.entry.costValue.toFixed(2)]).toEqual([Number(fine).toFixed(3), gross, cost]);
+      const j = await jobRow(job.id);
+      expect(pendingFineWeightOf(j).toFixed(3)).toBe(Number(fine).toFixed(3)); // jobs reconcile on FINE
+    }
+    const c = await custody(k.id, fine24);
+    expect([c.grossWeight.toFixed(3), c.fineWeight.toFixed(3), c.costValue.toFixed(2)]).toEqual(["1.001", "1.000", "7130.58"]);
+    const account = await getKarigarMetalAccount(k.id, { includeCost: true });
+    const p = account.byPurity.find((b) => b.purityId === fine24)!;
+    expect([p.unallocatedFine, p.allocatedPendingFine, p.totalWithKarigarFine]).toEqual(["1.000", "9.000", "10.000"]);
+    expect([p.unallocatedGross, p.allocatedPendingGross, p.totalWithKarigarGross]).toEqual(["1.001", "9.009", "10.010"]);
+    expect(account.statement.every((s) => s.enteredAs === "fine")).toBe(true);
+  });
+
+  it("receives 18K jewellery from each 24K job: fine is what reconciles; the alloy the Karigar added is gross only", async () => {
+    for (const [name, net, fine, alloy, cost] of [
+      ["A", "5.333", "4.000", "1.329", "28522.32"],
+      ["B", "4.000", "3.000", "0.997", "21391.74"],
+      ["C", "2.667", "2.000", "0.665", "14261.16"],
+    ] as const) {
+      await prisma.$transaction(
+        (tx) =>
+          receiveFinishedJewellery(tx, {
+            ...FY,
+            jobId: jobs[name],
+            receiveDate: DATE,
+            outputs: [{ jewelleryType: "RING", quantity: 1, netMetalWeight: net, metalType: "GOLD", purityId: k18, diamondIds: [], qcStatus: "PASSED" }],
+            diamondResolutions: [],
+            returnedMetalLines: [],
+            scrapMetalLines: [],
+            karigarAddedFineWeight: 0,
+            karigarAddedCost: 0,
+            alloy: { includedGrossWeight: alloy },
+            labourCharge: 0,
+            makingCharge: 0,
+            settingCharge: 0,
+            platingCharge: 0,
+            otherExpense: 0,
+            markJobComplete: true,
+            isAbnormalLoss: false,
+            damagedLostByUserId: ownerId,
+            idempotencyKey: key("fine-rcv"),
+            createdByUserId: ownerId,
+          }),
+        TX
+      );
+      const piece = await prisma.finishedJewellery.findFirstOrThrow({ where: { jobId: jobs[name] } });
+      expect([piece.netMetalWeight.toFixed(3), piece.fineMetalWeight.toFixed(3), piece.alloyAddedWeight.toFixed(3), piece.metalCost.toFixed(2)]).toEqual([net, fine, alloy, cost]);
+      const j = await jobRow(jobs[name]);
+      expect([j.status, pendingFineWeightOf(j).toFixed(3)]).toEqual(["COMPLETED", "0.000"]); // no loss: 18K fine = allocated fine
+    }
+    // Nothing is ever posted against the 18K pool: the source stays 24K.
+    expect(await prisma.metalStockMovement.count({ where: { purityId: k18 } })).toBe(0);
+  });
+
+  it("returns the 1.000 g fine (1.001 g gross) to stock at its exact remaining value; totals reconcile", async () => {
+    const k = await fineKarigar();
+    const before = await stock(fine24);
+    const r = await prisma.$transaction(
+      (tx) => postCustodyOperation(tx, { kind: "RETURN_TO_STOCK", karigarId: k.id, purityId: fine24, all: true, entryDate: DATE, reason: "Unused gold back", idempotencyKey: key("fine-ret"), owner: owner(), ...FY }),
+      TX
+    );
+    expect([r.entry.grossWeight.toFixed(3), r.entry.fineWeight.toFixed(3), r.entry.costValue.toFixed(2)]).toEqual(["1.001", "1.000", "7130.58"]);
+    const after = await stock(fine24);
+    expect(after.grossWeight.minus(before.grossWeight).toFixed(3)).toBe("1.001");
+    // Net out of stock: 10.010 − 1.001 = 9.009 g gross = 9.000 g fine, now inside three 18K pieces.
+    expect(new Decimal("1000").minus(after.grossWeight).toFixed(3)).toBe("9.009");
+    await expectReconciled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1c. Rollback guards: writes a pre-custody release would make are refused
+// ---------------------------------------------------------------------------
+describe("Karigar custody — database rollback guards", () => {
+  it("usable stock can never go below zero, whatever code writes the movement (metal with a Karigar is not in stock)", async () => {
+    const pid = await upsertPurity("GOLD", "Guard Test 24K", "99.900");
+    await opening(pid, "GOLD", "5.000", "50000.00");
+    const k = await prisma.party.create({ data: { name: "Guard Karigar", type: "KARIGAR", createdByUserId: ownerId } });
+    await prisma.$transaction(
+      (tx) => postCustodyOperation(tx, { kind: "ISSUE_TO_KARIGAR", karigarId: k.id, purityId: pid, grossWeight: "4", entryDate: DATE, reason: "Guard test", idempotencyKey: key("guard-issue"), owner: owner(), ...FY }),
+      TX
+    );
+    // What old code would do: it does not see KARIGAR_ISSUE_OUT, believes 5 g are in stock, and issues 3 g.
+    const job = await makeJob("Old-code issue", k.id);
+    await expect(
+      prisma.metalStockMovement.create({
+        data: { type: "ISSUE_OUT", metalType: "GOLD", purityId: pid, grossWeight: "3.000", fineWeight: "2.997", costValue: "30000.00", sourceDocument: "OLD-CODE", jewelleryJobId: job.id, createdByUserId: ownerId },
+      })
+    ).rejects.toThrow(/ZL_STOCK_GUARD/);
+    // Taking the 1 g actually there is fine.
+    await prisma.metalStockMovement.create({
+      data: { type: "ADJUSTMENT_OUT", metalType: "GOLD", purityId: pid, grossWeight: "1.000", fineWeight: "0.999", costValue: "10000.00", sourceDocument: "GUARD-OK", createdByUserId: ownerId },
+    });
+    await prisma.metalStockMovement.deleteMany({ where: { sourceDocument: "GUARD-OK" } }); // test-only tidy
+  });
+
+  it("a job holding custody metal cannot be received, returned, transferred or cancelled by code that does not declare custody awareness", async () => {
+    const k = await prisma.party.findFirstOrThrow({ where: { name: "Guard Karigar" } });
+    const pid = (await prisma.metalPurity.findFirstOrThrow({ where: { displayName: "Guard Test 24K" } })).id;
+    const job = await makeJob("Guarded job", k.id);
+    await prisma.$transaction(
+      (tx) => postCustodyOperation(tx, { kind: "ALLOCATE_TO_JOB", karigarId: k.id, purityId: pid, jobId: job.id, grossWeight: "2", entryDate: DATE, reason: "Guard test", idempotencyKey: key("guard-alloc"), owner: owner(), ...FY }),
+      TX
+    );
+    // Old code writing directly (no marker):
+    await expect(prisma.jewelleryJob.update({ where: { id: job.id }, data: { receivedFineWeight: "1.000" } })).rejects.toThrow(/ZL_CUSTODY_GUARD/);
+    await expect(prisma.jewelleryJob.update({ where: { id: job.id }, data: { status: "CANCELLED" } })).rejects.toThrow(/ZL_CUSTODY_GUARD/);
+    await expect(prisma.jewelleryJob.update({ where: { id: job.id }, data: { transferredOutFineWeight: "0.500" } })).rejects.toThrow(/ZL_CUSTODY_GUARD/);
+    // Harmless fields stay editable by anyone (notes, status label changes).
+    await prisma.jewelleryJob.update({ where: { id: job.id }, data: { notes: "old code may still edit notes" } });
+    // Current code declares awareness and receives normally.
+    await receive(job.id, "2.000");
+    expect((await jobRow(job.id)).status).toBe("COMPLETED");
+    // A job with NO custody metal is untouched by the guard.
+    const plain = await makeJob("Plain job", k.id);
+    await prisma.jewelleryJob.update({ where: { id: plain.id }, data: { status: "CANCELLED" } });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 2. Refusals, preview staleness, idempotency, concurrency
 // ---------------------------------------------------------------------------
 describe("Karigar custody — controls", () => {
@@ -309,7 +462,7 @@ describe("Karigar custody — controls", () => {
     await expect(op({ kind: "ISSUE_TO_KARIGAR", purityId, grossWeight: s.grossWeight.plus(1).toFixed(3) })).rejects.toThrow(/Not enough/);
     await op({ kind: "ISSUE_TO_KARIGAR", purityId, grossWeight: "5" });
     const job = await makeJob("Refusal job");
-    await expect(op({ kind: "ALLOCATE_TO_JOB", purityId, jobId: job.id, grossWeight: "5.001" })).rejects.toThrow(/holds only 5\.000g/);
+    await expect(op({ kind: "ALLOCATE_TO_JOB", purityId, jobId: job.id, grossWeight: "5.001" })).rejects.toThrow(/holds only 5\.000 g gross \/ 4\.995 g fine/);
     const foreign = await makeJob("Foreign job", otherKarigarId);
     await expect(op({ kind: "ALLOCATE_TO_JOB", purityId, jobId: foreign.id, grossWeight: "1" })).rejects.toThrow(/different Karigar/);
 

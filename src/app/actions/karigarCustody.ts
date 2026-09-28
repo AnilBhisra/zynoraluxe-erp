@@ -29,6 +29,8 @@ export type CustodyPreview = {
   jobCode: string | null;
   purityDisplayName: string;
   finenessPercent: string;
+  /** Which unit the Owner typed; the other was derived from the fineness. */
+  enteredWeightBasis: "GROSS" | "FINE" | "ALL";
   grossWeight: string;
   fineWeight: string;
   costValue: string;
@@ -61,7 +63,8 @@ const formSchema = z.object({
   karigarId: z.string().trim().min(1, "Choose a Karigar."),
   purityId: z.string().trim().optional(),
   jobId: z.string().trim().optional(),
-  grossWeight: z.string().trim().max(20).optional(),
+  weightBasis: z.enum(["GROSS", "FINE"]).default("GROSS"),
+  weight: z.string().trim().max(20).optional(),
   all: z.boolean(),
   entryDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, "Enter the date."),
   reason: z.string().trim().min(3, "Give the reason.").max(500),
@@ -80,7 +83,8 @@ function readForm(formData: FormData) {
     karigarId: formData.get("karigarId"),
     purityId: opt("purityId"),
     jobId: opt("jobId"),
-    grossWeight: opt("grossWeight"),
+    weightBasis: opt("weightBasis"),
+    weight: opt("weight"),
     all: formData.get("all") === "1",
     entryDate: formData.get("entryDate"),
     reason: formData.get("reason"),
@@ -96,7 +100,8 @@ function toInput(data: z.infer<typeof formSchema>): CustodyOperationInput {
     karigarId: data.karigarId,
     purityId: data.purityId ?? null,
     jobId: data.jobId ?? null,
-    grossWeight: data.grossWeight ?? null,
+    grossWeight: data.weightBasis === "GROSS" ? (data.weight ?? null) : null,
+    fineWeight: data.weightBasis === "FINE" ? (data.weight ?? null) : null,
     all: data.all,
     entryDate: new Date(`${data.entryDate}T00:00:00.000Z`),
     reason: data.reason,
@@ -131,6 +136,7 @@ export async function previewCustodyAction(_prev: CustodyFormState, formData: Fo
         jobCode: plan.jobCode,
         purityDisplayName: plan.purityDisplayName,
         finenessPercent: plan.finenessPercentSnapshot.toFixed(3),
+        enteredWeightBasis: plan.enteredWeightBasis,
         grossWeight: plan.grossWeight.toFixed(3),
         fineWeight: plan.fineWeight.toFixed(3),
         costValue: plan.costValue.toFixed(2),
