@@ -272,6 +272,12 @@ export function createFakeJewelleryTx() {
       findMany: async () => [],
       count: async () => 0,
     },
+    // Same for Karigar metal custody: cancelJewelleryJob's custody guard only
+    // needs "none exist" here (the real flows are covered by karigarCustody.db.test.ts).
+    karigarMetalCustodyEntry: {
+      findFirst: async () => null,
+      findMany: async () => [],
+    },
     jewelleryDiamondIssueLine: {
       create: async ({ data }: { data: Row }) => {
         const row = { id: nextId("jdil"), resolvedAs: null, ...data };

@@ -18,6 +18,13 @@ vi.mock("@/lib/db/prisma", () => ({
     stockMovement: { findMany: mocks.stockMovementFindMany },
     metalRevaluation: { findMany: mocks.metalRevaluationFindMany },
     correction: { findFirst: mocks.correctionFindFirst },
+    // "Can Issue Materials still run?" (Karigar custody): this job had its own
+    // issue, so it holds its own issue line — the answer is no.
+    jewelleryMetalIssueLine: { count: vi.fn().mockResolvedValue(1) },
+    jewelleryReceipt: { count: vi.fn().mockResolvedValue(0) },
+    jewelleryDiamondIssueLine: { count: vi.fn().mockResolvedValue(0) },
+    jewelleryPacketIssueLine: { count: vi.fn().mockResolvedValue(1) },
+    jewelleryOtherMaterialLine: { count: vi.fn().mockResolvedValue(0) },
   },
 }));
 

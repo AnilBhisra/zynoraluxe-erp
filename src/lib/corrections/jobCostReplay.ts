@@ -103,6 +103,8 @@ export async function replayPurityAtCurrentValues(
     costValue: m.costValue.toString(),
     sourceDocument: m.sourceDocument,
     jewelleryJobId: m.jewelleryJobId,
+    karigarId: m.karigarId,
+    reversalOfMovementId: m.reversalOfMovementId,
   }));
 
   try {

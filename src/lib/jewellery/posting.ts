@@ -67,6 +67,8 @@ export function pendingFineWeightOf(job: {
   scrapFineWeight: Decimal | string;
   /** Job-to-job metal transfers OUT — absent (treated as 0) for any caller that predates them. */
   transferredOutFineWeight?: Decimal | string;
+  /** Released back to the Karigar's unallocated custody balance — subtracted exactly like a transfer OUT. */
+  custodyReleasedFineWeight?: Decimal | string;
 }): Decimal {
   return round3(
     new Decimal(job.issuedMetalFineWeight)
@@ -75,6 +77,7 @@ export function pendingFineWeightOf(job: {
       .minus(job.returnedMetalFineWeight)
       .minus(job.scrapFineWeight)
       .minus(job.transferredOutFineWeight ?? 0)
+      .minus(job.custodyReleasedFineWeight ?? 0)
   );
 }
 
@@ -160,7 +163,11 @@ async function getJobPurityPendingFineWeightInTx(tx: Tx, jobId: string, purityId
     where: { jewelleryJobId: jobId, purityId },
     select: { type: true, fineWeight: true },
   });
-  const IN_TYPES = new Set(["ISSUE_OUT"]);
+  // Metal reaching the job: its own issue, a transfer in from another job, or
+  // an allocation from the Karigar's unallocated custody. Everything else
+  // carrying this job id (returns, scrap, consumption, transfers out, releases
+  // to custody, cancellation) takes metal away.
+  const IN_TYPES = new Set(["ISSUE_OUT", "JOB_TRANSFER_IN", "CUSTODY_TO_JOB"]);
   let pending = ZERO;
   for (const m of movements) {
     const sign = IN_TYPES.has(m.type) ? 1 : -1;
@@ -846,6 +853,32 @@ export type OtherMaterialLineInput = {
   note?: string | null;
 };
 
+/**
+ * Issue Materials is a once-per-job step. A DRAFT job can always take it. So
+ * can a job whose ONLY material so far arrived from a Karigar's unallocated
+ * custody or a job-to-job transfer (neither is its own Issue Materials): it
+ * has no issue voucher, no receipt, no diamond/packet/other line, and every
+ * metal line it holds came from one of those two sources. Anything else has
+ * already had its issue.
+ */
+export async function canStillIssueMaterials(
+  tx: Tx,
+  job: { id: string; status: string; wipVoucherId: string | null }
+): Promise<boolean> {
+  if (job.status === "DRAFT") return true;
+  if ((job.status !== "MATERIALS_ISSUED" && job.status !== "IN_PROGRESS") || job.wipVoucherId) return false;
+  const [ownIssueLines, receipts, diamonds, packets, others] = await Promise.all([
+    tx.jewelleryMetalIssueLine.count({ where: { jobId: job.id, sourceTransferId: null, sourceCustodyEntryId: null } }),
+    tx.jewelleryReceipt.count({ where: { jobId: job.id } }),
+    tx.jewelleryDiamondIssueLine.count({ where: { jobId: job.id } }),
+    tx.jewelleryPacketIssueLine.count({ where: { jobId: job.id } }),
+    tx.jewelleryOtherMaterialLine.count({ where: { jobId: job.id } }),
+  ]);
+  if (ownIssueLines + receipts + diamonds + packets + others > 0) return false;
+  const fundedLines = await tx.jewelleryMetalIssueLine.count({ where: { jobId: job.id } });
+  return fundedLines > 0;
+}
+
 export async function issueMaterialsToJewelleryJob(
   tx: Tx,
   input: FyInput & {
@@ -859,14 +892,23 @@ export async function issueMaterialsToJewelleryJob(
     createdByUserId: string;
   }
 ) {
-  // Locked first so this can never race a concurrent job-to-job metal
-  // transfer targeting the same (still-DRAFT) job.
+  // Each drawn purity is locked first (the same order Karigar custody uses:
+  // purity, then Karigar, then job), so two concurrent draws on one purity
+  // cannot both pass the stock check. Then the job, so this can never race a
+  // concurrent job-to-job metal transfer targeting the same (still-DRAFT) job.
+  for (const purityId of [...new Set(input.metalLines.map((l) => l.purityId))].sort()) {
+    await tx.$queryRawUnsafe(`SELECT id FROM "metal_purities" WHERE id = $1 FOR UPDATE`, purityId);
+  }
   await tx.$queryRawUnsafe(`SELECT id FROM "jewellery_jobs" WHERE id = $1 FOR UPDATE`, input.jobId);
   const job = await tx.jewelleryJob.findUnique({ where: { id: input.jobId } });
   if (!job) throw new PostingError("Job not found.");
-  if (job.status !== "DRAFT") {
+  if (!(await canStillIssueMaterials(tx, job))) {
     throw new PostingError("Materials have already been issued for this job.");
   }
+  // A job whose only metal so far came from the Karigar's custody (or a
+  // job-to-job transfer) has never had its own Issue Materials — it may take
+  // it once, adding to what it already holds, never replacing it.
+  const existingMetalLines = job.status === "DRAFT" ? [] : await tx.jewelleryMetalIssueLine.findMany({ where: { jobId: job.id } });
   const packetLines = input.packetLines ?? [];
   if (
     input.metalLines.length === 0 &&
@@ -930,6 +972,14 @@ export async function issueMaterialsToJewelleryJob(
     const costValue = round2(grossWeight.times(costPerGram));
     const finenessPercentSnapshot = new Decimal(purity.finenessPercent);
     const fineWeight = round3(grossWeight.times(finenessPercentSnapshot).dividedBy(100));
+    const heldAtOtherFineness = existingMetalLines.find(
+      (l) => l.purityId === line.purityId && !new Decimal(l.finenessPercentSnapshot).equals(finenessPercentSnapshot)
+    );
+    if (heldAtOtherFineness) {
+      throw new PostingError(
+        `This job already holds ${purity.displayName} recorded at ${new Decimal(heldAtOtherFineness.finenessPercentSnapshot).toFixed(3)}% — it cannot take more at ${finenessPercentSnapshot.toFixed(3)}% without mixing two fineness snapshots.`
+      );
+    }
 
     resolvedMetalLines.push({
       metalType: line.metalType,
@@ -1186,19 +1236,24 @@ export async function issueMaterialsToJewelleryJob(
   // (remainingAlloyWipCost). All of it still debits the SAME Jewellery WIP
   // account at issue time (correct at the ledger level); these fields only
   // track the application-level pools receipts drain.
+  // Added to what the job already holds, never overwriting it: a DRAFT job
+  // holds zero in every one of these, and a custody/transfer-funded job must
+  // keep what it has. `job` was read after the row lock above, so this sum is
+  // the current value.
+  const plus = (current: Decimal | string | number, add: Decimal, places: 2 | 3) => new Decimal(current).plus(add).toFixed(places);
   return tx.jewelleryJob.update({
     where: { id: job.id },
     data: {
-      status: "MATERIALS_ISSUED",
-      issuedMetalFineWeight: issuedMetalFineWeight.toFixed(3),
-      issuedMetalCost: issuedMetalCost.toFixed(2),
-      issuedDiamondCost: issuedDiamondCost.toFixed(2),
-      issuedPacketDiamondCost: issuedPacketDiamondCost.toFixed(2),
-      otherMaterialCost: otherMaterialCost.toFixed(2),
-      remainingWipCost: fineBearingMetalCost.toFixed(2),
-      issuedAlloyGrossWeight: issuedAlloyGrossWeight.toFixed(3),
-      issuedAlloyCost: issuedAlloyCost.toFixed(2),
-      remainingAlloyWipCost: issuedAlloyCost.toFixed(2),
+      status: job.status === "DRAFT" ? "MATERIALS_ISSUED" : job.status,
+      issuedMetalFineWeight: plus(job.issuedMetalFineWeight, issuedMetalFineWeight, 3),
+      issuedMetalCost: plus(job.issuedMetalCost, issuedMetalCost, 2),
+      issuedDiamondCost: plus(job.issuedDiamondCost, issuedDiamondCost, 2),
+      issuedPacketDiamondCost: plus(job.issuedPacketDiamondCost, issuedPacketDiamondCost, 2),
+      otherMaterialCost: plus(job.otherMaterialCost, otherMaterialCost, 2),
+      remainingWipCost: plus(job.remainingWipCost, fineBearingMetalCost, 2),
+      issuedAlloyGrossWeight: plus(job.issuedAlloyGrossWeight, issuedAlloyGrossWeight, 3),
+      issuedAlloyCost: plus(job.issuedAlloyCost, issuedAlloyCost, 2),
+      remainingAlloyWipCost: plus(job.remainingAlloyWipCost, issuedAlloyCost, 2),
       wipVoucherId: voucherId,
       // Keep the job's own create-time idempotency key when it has one —
       // overwriting it would let a late duplicate "create job" submission
@@ -1268,6 +1323,18 @@ export async function cancelJewelleryJob(
       `This job holds metal transferred in from another job (${activeIncomingTransfer.transferCode}). Reverse that transfer first, then cancel.`
     );
   }
+  // Karigar metal custody: an allocation never left the warehouse for THIS
+  // job, and a release already moved metal out of it with no warehouse
+  // movement — cancelling would hand the wrong metal back to stock. The Owner
+  // reverses first, or releases what is unused and completes the job.
+  const activeCustodyEntry = await tx.karigarMetalCustodyEntry.findFirst({
+    where: { jobId: job.id, kind: { in: ["ALLOCATE_TO_JOB", "RELEASE_FROM_JOB"] }, reversalOfEntryId: null, reversedBy: { is: null } },
+  });
+  if (activeCustodyEntry) {
+    throw new PostingError(
+      `This job holds Karigar custody metal (${activeCustodyEntry.entryCode}), so it cannot be cancelled. Reverse that entry first, or release the unused metal to the Karigar's balance and complete the job once nothing is left unresolved.`
+    );
+  }
   const activeOutgoingTransfer = await tx.jewelleryMetalTransfer.findFirst({
     where: { sourceJobId: job.id, correction: { state: "POSTED" } },
   });
@@ -1292,7 +1359,7 @@ export async function cancelJewelleryJob(
     // Never a real warehouse issue (see the transfer guard above) — this
     // history row only exists for audit lineage and must never generate a
     // warehouse-return movement, active transfer or (historically) reversed.
-    if (line.sourceTransferId) continue;
+    if (line.sourceTransferId || line.sourceCustodyEntryId) continue;
     await tx.metalStockMovement.create({
       data: {
         type: "ISSUE_CANCEL_IN",

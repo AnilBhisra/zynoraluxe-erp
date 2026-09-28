@@ -29,7 +29,11 @@ export type MetalStockMovementKind =
   | "SCRAP_ADJUSTMENT_IN"
   | "SCRAP_ADJUSTMENT_OUT"
   | "JOB_TRANSFER_OUT"
-  | "JOB_TRANSFER_IN";
+  | "JOB_TRANSFER_IN"
+  | "KARIGAR_ISSUE_OUT"
+  | "KARIGAR_RETURN_IN"
+  | "CUSTODY_TO_JOB"
+  | "JOB_TO_CUSTODY";
 
 /**
  * How each immutable MetalStockMovement type affects the two stock pools
@@ -59,6 +63,13 @@ export const METAL_POOL_EFFECT: Record<MetalStockMovementKind, { usable: -1 | 0 
   // never left or re-entered the warehouse, only its job attribution moved.
   JOB_TRANSFER_OUT: { usable: 0, scrap: 0 },
   JOB_TRANSFER_IN: { usable: 0, scrap: 0 },
+  // Karigar metal custody: issuing to a Karigar's unallocated balance really
+  // leaves the warehouse, and returning it really comes back. Moving it
+  // between that balance and a job never touches the warehouse.
+  KARIGAR_ISSUE_OUT: { usable: -1, scrap: 0 },
+  KARIGAR_RETURN_IN: { usable: 1, scrap: 0 },
+  CUSTODY_TO_JOB: { usable: 0, scrap: 0 },
+  JOB_TO_CUSTODY: { usable: 0, scrap: 0 },
 };
 
 const ZERO = BigInt(0);

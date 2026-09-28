@@ -190,6 +190,8 @@ export async function planOpeningStockRevaluation(
     costValue: m.costValue.toString(),
     sourceDocument: m.sourceDocument,
     jewelleryJobId: m.jewelleryJobId,
+    karigarId: m.karigarId,
+    reversalOfMovementId: m.reversalOfMovementId,
   }));
 
   const result = replayMetalValues({
@@ -198,6 +200,16 @@ export async function planOpeningStockRevaluation(
     targetMovementId: movement.id,
     targetNewCostValue: newValue.toFixed(2),
   });
+
+  // Metal still in a Karigar's UNALLOCATED custody has no revaluation target
+  // of its own yet, so restating it would leave its value unexplained.
+  // Refuse explicitly rather than post a correction that cannot be traced.
+  const restatedCustody = [...result.custody.values()].filter((c) => !c.delta.isZero());
+  if (restatedCustody.length > 0) {
+    throw new CorrectionError(
+      "Some of this metal is with a Karigar and not yet allocated to a job (Karigar metal custody). Allocate it to a job or return it to stock first, then revalue."
+    );
+  }
 
   const jobsById = new Map(receipts.map((r) => [r.jobId, r.job]));
   const jobCodes = jobIds.length

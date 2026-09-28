@@ -34,6 +34,8 @@ import { formatCarryingAmount } from "@/lib/jewellery/carryingCost";
 import { shapeLabel } from "@/lib/diamond/shapes";
 import type { MetalPurityOption } from "@/components/jewellery/ReceiveFinishedForm";
 import type { FinishedJewelleryStockStatus, JewelleryJobStatus } from "@/generated/prisma/enums";
+import { getKarigarMetalAccount, listKarigarCustodySummaries, reconcileMetalLedger } from "@/lib/jewellery/karigarCustodyReports";
+import { KarigarMetalAccountView, type CustodyKind, type IssuePurityOption } from "@/components/jewellery/KarigarMetalAccountView";
 
 export const metadata: Metadata = {
   title: "Jewellery Jobs · ZYNORALUXE",
@@ -54,9 +56,12 @@ type SearchParams = {
   finishedSearch?: string;
   finishedStatus?: string;
   saleSearch?: string;
+  karigarId?: string;
+  custodyOp?: string;
+  custodyJobId?: string;
 };
 
-const TABS = ["jobs", "metal", "finished"] as const;
+const TABS = ["jobs", "karigar", "metal", "finished"] as const;
 type Tab = (typeof TABS)[number];
 
 function TabLink({ tab, label, active }: { tab: Tab; label: string; active: boolean }) {
@@ -91,6 +96,7 @@ export default async function JewelleryJobsPage({ searchParams }: { searchParams
 
       <nav aria-label="Jewellery sections" className="mb-6 flex flex-wrap gap-1 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1.5">
         <TabLink tab="jobs" label="Jewellery Jobs" active={tab === "jobs"} />
+        <TabLink tab="karigar" label="Karigar Metal" active={tab === "karigar"} />
         <TabLink tab="metal" label="Metal Stock" active={tab === "metal"} />
         <TabLink tab="finished" label="Finished Stock" active={tab === "finished"} />
       </nav>
@@ -102,6 +108,14 @@ export default async function JewelleryJobsPage({ searchParams }: { searchParams
           jobId={params.jobId ?? ""}
           isOwner={isOwner}
           initialShowForm={params.issue === "1"}
+        />
+      ) : null}
+      {tab === "karigar" ? (
+        <KarigarTabContent
+          karigarId={params.karigarId ?? ""}
+          isOwner={isOwner}
+          op={CUSTODY_KINDS.includes(params.custodyOp as CustodyKind) ? (params.custodyOp as CustodyKind) : null}
+          jobId={params.custodyJobId ?? null}
         />
       ) : null}
       {tab === "metal" ? <MetalTabContent search={params.metalSearch ?? ""} isOwner={isOwner} /> : null}
@@ -233,6 +247,10 @@ async function JobsTabContent({
       remainingAlloyWipCost: ownerOnly(isOwner, detail.remainingAlloyWipCost.toFixed(2)),
       alloyPendingGrossWeight: detail.alloyPendingGrossWeight.toFixed(3),
       pendingFineWeight: detail.pendingFineWeight.toFixed(3),
+      karigarId: detail.karigarId,
+      custodyAllocatedFineWeight: detail.custodyAllocatedFineWeight.toFixed(3),
+      custodyReleasedFineWeight: detail.custodyReleasedFineWeight.toFixed(3),
+      canIssueMaterials: detail.canIssueMaterials,
       cancellationReason: detail.cancellationReason,
       isCompleted: detail.isCompleted,
       finalMetalLossFineWeight: detail.finalMetalLossFineWeight ? detail.finalMetalLossFineWeight.toFixed(3) : null,
@@ -369,13 +387,17 @@ async function JobsTabContent({
             {karigarBalances
               .filter((k) => k.openJobsCount > 0)
               .map((k) => (
-                <div key={k.karigarId} className="rounded-lg border border-[var(--border)] bg-[var(--surface-muted)] p-3">
+                <a
+                  key={k.karigarId}
+                  href={`/jewellery-jobs?tab=karigar&karigarId=${k.karigarId}`}
+                  className="block rounded-lg border border-[var(--border)] bg-[var(--surface-muted)] p-3 hover:border-zinc-400"
+                >
                   <p className="text-sm font-medium text-zinc-800 dark:text-zinc-200">{k.karigarName}</p>
                   <p className="text-xs text-zinc-500 dark:text-zinc-400">
                     {k.openJobsCount} open job{k.openJobsCount === 1 ? "" : "s"} · {k.pendingFineWeight.toFixed(3)}g pending
                     {k.pendingDiamondsCount > 0 ? ` · ${k.pendingDiamondsCount} diamond${k.pendingDiamondsCount === 1 ? "" : "s"}` : ""}
                   </p>
-                </div>
+                </a>
               ))}
           </div>
         </div>
@@ -390,6 +412,105 @@ async function JobsTabContent({
         view={view}
         initialShowForm={initialShowForm}
       />
+    </div>
+  );
+}
+
+const CUSTODY_KINDS: CustodyKind[] = ["ISSUE_TO_KARIGAR", "RETURN_TO_STOCK", "ALLOCATE_TO_JOB", "RELEASE_FROM_JOB"];
+
+async function KarigarTabContent({ karigarId, isOwner, op, jobId }: { karigarId: string; isOwner: boolean; op: CustodyKind | null; jobId: string | null }) {
+  if (karigarId) {
+    const karigar = await prisma.party.findUnique({ where: { id: karigarId } });
+    if (!karigar || karigar.type !== "KARIGAR") {
+      return <p className="text-sm text-zinc-500 dark:text-zinc-400">Karigar not found.</p>;
+    }
+    // Weights for everyone; every cost figure only for the Owner (never in a Staff payload).
+    const [account, buckets] = await Promise.all([
+      getKarigarMetalAccount(karigarId, { includeCost: isOwner }),
+      isOwner ? getMetalStockSummary() : Promise.resolve([]),
+    ]);
+    const issuePurities: IssuePurityOption[] = buckets
+      .filter((b) => b.metalType !== "ALLOY" && b.finenessPercent.greaterThan(0) && b.grossWeight.greaterThan(0))
+      .map((b) => ({ id: b.purityId, label: `${b.metalType} ${b.purityDisplayName} (${b.finenessPercent.toFixed(3)}%)`, stockGross: b.grossWeight.toFixed(3) }));
+    return <KarigarMetalAccountView account={account} isOwner={isOwner} issuePurities={issuePurities} initialOp={op} initialJobId={jobId} />;
+  }
+
+  const [summaries, karigars, reconciliation] = await Promise.all([
+    listKarigarCustodySummaries(),
+    prisma.party.findMany({ where: { type: "KARIGAR", isActive: true }, orderBy: { name: "asc" } }),
+    isOwner ? reconcileMetalLedger(prisma) : Promise.resolve(null),
+  ]);
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
+        <h3 className="mb-1 text-sm font-semibold text-zinc-700 dark:text-zinc-300">Company metal with Karigars</h3>
+        <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
+          Metal can be given to a Karigar without a job, then allocated to that Karigar&apos;s jobs. Open a Karigar to issue, allocate, return or release metal and
+          to see the statement.
+        </p>
+        {summaries.length === 0 ? (
+          <p className="text-sm text-zinc-600 dark:text-zinc-400">No Karigar holds company metal right now.</p>
+        ) : (
+          <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {summaries.map((s) => (
+              <li key={s.karigarId}>
+                <a
+                  href={`/jewellery-jobs?tab=karigar&karigarId=${s.karigarId}`}
+                  className="block rounded-lg border border-[var(--border)] bg-[var(--surface-muted)] p-3 hover:border-zinc-400"
+                  data-testid={`karigar-summary-${s.karigarName}`}
+                >
+                  <p className="text-sm font-medium text-zinc-900 dark:text-zinc-50">{s.karigarName}</p>
+                  <p className="text-xs text-zinc-600 dark:text-zinc-400">
+                    Unallocated: {s.unallocated.length === 0 ? "none" : s.unallocated.map((u) => `${u.gross}g ${u.purityDisplayName}`).join(", ")}
+                  </p>
+                  <p className="text-xs text-zinc-600 dark:text-zinc-400">
+                    {s.openJobsCount} open job{s.openJobsCount === 1 ? "" : "s"} · {s.allocatedPendingFine}g fine pending on jobs · total {s.totalWithKarigarFine}g fine
+                  </p>
+                </a>
+              </li>
+            ))}
+          </ul>
+        )}
+        {karigars.length > 0 ? (
+          <details className="mt-4 text-sm">
+            <summary className="cursor-pointer font-medium text-zinc-700 dark:text-zinc-300">Open any Karigar</summary>
+            <ul className="mt-2 flex flex-wrap gap-2">
+              {karigars.map((k) => (
+                <li key={k.id}>
+                  <a href={`/jewellery-jobs?tab=karigar&karigarId=${k.id}`} className="inline-block rounded-full border border-[var(--border)] px-3 py-1.5 text-xs hover:border-zinc-400">
+                    {k.name}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </details>
+        ) : null}
+      </div>
+
+      {reconciliation ? (
+        <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6" data-testid="metal-reconciliation">
+          <h3 className="mb-1 text-sm font-semibold text-zinc-700 dark:text-zinc-300">Ledger reconciliation (Owner)</h3>
+          <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
+            Each account&apos;s ledger balance against the records behind it. Jewellery WIP includes metal with Karigars that is not yet allocated to a job.
+          </p>
+          <ul className="flex flex-col gap-2">
+            {reconciliation.lines.map((l) => (
+              <li key={l.accountCode} className="rounded-lg border border-[var(--border)] bg-[var(--surface-muted)] p-3 text-xs text-zinc-700 dark:text-zinc-300">
+                <p className="font-medium text-zinc-900 dark:text-zinc-50">
+                  {l.accountCode} {l.label}: ledger ₹{l.ledger.toFixed(2)} · records ₹{l.expected.toFixed(2)} ·{" "}
+                  <span className={l.difference.isZero() ? "text-emerald-700 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400"}>
+                    difference ₹{l.difference.toFixed(2)}
+                  </span>
+                </p>
+                <p className="text-zinc-500 dark:text-zinc-400">{l.parts.map((p) => `${p.label} ₹${p.value.toFixed(2)}`).join(" · ")}</p>
+              </li>
+            ))}
+          </ul>
+          {reconciliation.unavailable ? (
+            <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">Some finished pieces&apos; revalued cost could not be replayed, so finished stock is incomplete here.</p>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

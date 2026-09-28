@@ -22,6 +22,10 @@ function job(isOwner: boolean): SerializedJobDetail {
   return {
     id: "job-1",
     jobCode: "ZL-JJOB-2026-000001",
+    karigarId: "karigar-1",
+    custodyAllocatedFineWeight: "0.000",
+    custodyReleasedFineWeight: "0.000",
+    canIssueMaterials: false,
     customerName: null,
     customerReference: null,
     karigarName: "PHASE7TEST Karigar",

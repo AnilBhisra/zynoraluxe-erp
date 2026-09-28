@@ -109,7 +109,8 @@ model User {
   packetProcessReceiptsCreated   PacketProcessReceipt[]   @relation("PacketProcessReceiptCreatedBy")
   packetProcessJobLinesClosed    PacketProcessJobLine[]   @relation("PacketProcessJobLineClosedBy")
 
-  metalTransfersCreated JewelleryMetalTransfer[] @relation("MetalTransferCreatedBy")
+  metalTransfersCreated      JewelleryMetalTransfer[]   @relation("MetalTransferCreatedBy")
+  metalCustodyEntriesCreated KarigarMetalCustodyEntry[] @relation("KarigarMetalCustodyCreatedBy")
 
   // Phase 8 — a correction is PREPARED by anyone with access to the module
   // (Staff included) but may only be APPROVED/POSTED by an Owner.
@@ -203,11 +204,14 @@ model Party {
 
   metalPurchasesAsSupplier MetalPurchase[] @relation("MetalPurchaseSupplier")
 
-  polishedPurchasesAsSupplier     PolishedPurchase[] @relation("PolishedPurchaseSupplier")
-  polishedPurchasesAsBroker       PolishedPurchase[] @relation("PolishedPurchaseBroker")
-  packetProcessJobsAsManufacturer PacketProcessJob[] @relation("PacketProcessJobManufacturer")
-  jewelleryJobsAsCustomer         JewelleryJob[]     @relation("JewelleryJobCustomer")
-  jewelleryJobsAsKarigar          JewelleryJob[]     @relation("JewelleryJobKarigar")
+  polishedPurchasesAsSupplier     PolishedPurchase[]         @relation("PolishedPurchaseSupplier")
+  polishedPurchasesAsBroker       PolishedPurchase[]         @relation("PolishedPurchaseBroker")
+  packetProcessJobsAsManufacturer PacketProcessJob[]         @relation("PacketProcessJobManufacturer")
+  jewelleryJobsAsCustomer         JewelleryJob[]             @relation("JewelleryJobCustomer")
+  jewelleryJobsAsKarigar          JewelleryJob[]             @relation("JewelleryJobKarigar")
+  // Company metal held by this Karigar, unallocated to any job (see KarigarMetalCustodyEntry).
+  metalCustodyEntries             KarigarMetalCustodyEntry[] @relation("KarigarMetalCustodyKarigar")
+  metalCustodyMovements           MetalStockMovement[]       @relation("MetalStockMovementKarigar")
 
   costSheetsAsCustomer CostSheet[] @relation("CostSheetCustomer")
 
@@ -420,8 +424,9 @@ model Voucher {
 
   // Phase 8 — an opening metal stock movement's own voucher, and a posted
   // Owner correction's compensating voucher.
-  metalStockMovement MetalStockMovement?
-  correction         Correction?
+  metalStockMovement       MetalStockMovement?
+  karigarMetalCustodyEntry KarigarMetalCustodyEntry?
+  correction               Correction?
 
   // Phase 6 — a Finished Jewellery Sale's own SALE voucher, its (optional)
   // full-cancellation REVERSAL voucher, and a return's SALE_RETURN
@@ -1115,12 +1120,13 @@ model MetalPurity {
 
   metalPurchases      MetalPurchase[]
   metalStockMovements MetalStockMovement[]
-  jobsAsTargetPurity  JewelleryJob[]            @relation("JewelleryJobTargetPurity")
+  jobsAsTargetPurity  JewelleryJob[]             @relation("JewelleryJobTargetPurity")
   metalIssueLines     JewelleryMetalIssueLine[]
   finishedJewellery   FinishedJewellery[]
   costSheetMetalLines CostSheetMetalLine[]
   metalRevaluations   MetalRevaluation[]
   metalTransfers      JewelleryMetalTransfer[]
+  metalCustodyEntries KarigarMetalCustodyEntry[]
 
   @@unique([metalType, displayName])
   @@map("metal_purities")
@@ -1206,6 +1212,16 @@ enum MetalStockMovementType {
   // ADJUSTMENT_OUT/ADJUSTMENT_IN.
   JOB_TRANSFER_OUT
   JOB_TRANSFER_IN
+  // Karigar metal custody (see KarigarMetalCustodyEntry). KARIGAR_ISSUE_OUT
+  // leaves the usable pool for a Karigar's UNALLOCATED balance and
+  // KARIGAR_RETURN_IN brings it back; both carry karigarId and no job.
+  // CUSTODY_TO_JOB / JOB_TO_CUSTODY move it between that balance and one of
+  // the same Karigar's jobs: informational, no pool effect, and each carries
+  // BOTH karigarId and jewelleryJobId on one row.
+  KARIGAR_ISSUE_OUT
+  KARIGAR_RETURN_IN
+  CUSTODY_TO_JOB
+  JOB_TO_CUSTODY
 }
 
 // Immutable, weight-based audit ledger — metal is fungible (unlike
@@ -1251,6 +1267,13 @@ model MetalStockMovement {
   /// or one pool would keep value the other has already given back.
   transferPairId String?
 
+  /// Karigar metal custody: the Karigar whose unallocated balance this row
+  /// moves (set only on the four custody movement types), and its entry.
+  karigarId      String?
+  karigar        Party?                    @relation("MetalStockMovementKarigar", fields: [karigarId], references: [id])
+  custodyEntryId String?
+  custodyEntry   KarigarMetalCustodyEntry? @relation(fields: [custodyEntryId], references: [id])
+
   createdByUserId String
   createdBy       User   @relation("MetalStockMovementCreatedBy", fields: [createdByUserId], references: [id])
 
@@ -1260,6 +1283,8 @@ model MetalStockMovement {
   @@index([jewelleryJobId])
   @@index([type])
   @@index([transferPairId])
+  @@index([karigarId, metalType, purityId])
+  @@index([custodyEntryId])
   @@map("metal_stock_movements")
 }
 
@@ -1368,6 +1393,17 @@ model JewelleryJob {
   transferredInFineWeight  Decimal @default(0) @db.Decimal(10, 3)
   transferredInCost        Decimal @default(0) @db.Decimal(14, 2)
 
+  // Karigar metal custody (see KarigarMetalCustodyEntry). Allocation works like
+  // a transfer IN: it also increments issuedMetalFineWeight/issuedMetalCost/
+  // remainingWipCost, so custodyAllocated* is an audit figure only and is
+  // never added again by pendingFineWeightOf(). Release works like a transfer
+  // OUT: issuedMetalFineWeight stays the record of what came in, and
+  // custodyReleasedFineWeight is subtracted by pendingFineWeightOf().
+  custodyAllocatedFineWeight Decimal @default(0) @db.Decimal(10, 3)
+  custodyAllocatedCost       Decimal @default(0) @db.Decimal(14, 2)
+  custodyReleasedFineWeight  Decimal @default(0) @db.Decimal(10, 3)
+  custodyReleasedCost        Decimal @default(0) @db.Decimal(14, 2)
+
   cancelledAt        DateTime?
   cancelledByUserId  String?
   cancelledBy        User?     @relation("JewelleryJobCancelledBy", fields: [cancelledByUserId], references: [id])
@@ -1399,6 +1435,7 @@ model JewelleryJob {
   metalRevaluations         MetalRevaluation[]
   metalTransfersOut         JewelleryMetalTransfer[]     @relation("MetalTransferSource")
   metalTransfersIn          JewelleryMetalTransfer[]     @relation("MetalTransferDestination")
+  metalCustodyEntries       KarigarMetalCustodyEntry[]
 
   @@index([karigarId])
   @@index([customerId])
@@ -1429,11 +1466,19 @@ model JewelleryMetalIssueLine {
   sourceTransferId String?
   sourceTransfer   JewelleryMetalTransfer? @relation(fields: [sourceTransferId], references: [id])
 
+  // Set only for a line created by allocating a Karigar's unallocated custody
+  // metal to this job: never a warehouse issue for THIS job (the metal left
+  // the warehouse when it was issued to the Karigar), so cancellation never
+  // hands it back to stock.
+  sourceCustodyEntryId String?
+  sourceCustodyEntry   KarigarMetalCustodyEntry? @relation(fields: [sourceCustodyEntryId], references: [id])
+
   issueDate DateTime
   createdAt DateTime @default(now())
 
   @@index([jobId])
   @@index([sourceTransferId])
+  @@index([sourceCustodyEntryId])
   @@map("jewellery_metal_issue_lines")
 }
 
@@ -1487,6 +1532,72 @@ model JewelleryMetalTransfer {
   @@index([destinationJobId])
   @@index([metalType, purityId])
   @@map("jewellery_metal_transfers")
+}
+
+enum KarigarMetalCustodyKind {
+  /// Company stock -> the Karigar's unallocated balance. Posts Dr Jewellery WIP / Cr Metal Inventory.
+  ISSUE_TO_KARIGAR
+  /// Unallocated balance -> company stock (a real physical return). Posts Dr Metal Inventory / Cr Jewellery WIP.
+  RETURN_TO_STOCK
+  /// Unallocated balance -> one of the same Karigar's jobs. Memo only, no voucher: both sit in Jewellery WIP.
+  ALLOCATE_TO_JOB
+  /// A job's unresolved metal -> the same Karigar's unallocated balance. The
+  /// metal never physically came back; memo only, no voucher.
+  RELEASE_FROM_JOB
+}
+
+/// Company-owned metal held by a Karigar. One row per Owner operation (and one
+/// per reversal, pointing at what it reverses). The Karigar's unallocated
+/// balance is never stored: it is the sum of the custody movements
+/// (MetalStockMovement rows carrying karigarId), per metal + purity. That
+/// balance holds ONE fineness snapshot at a time, so gross and fine stay in
+/// step and no purity conversion is ever implied.
+///
+/// Not a purchase and not customer gold: the value stays in the company's own
+/// Jewellery WIP account from issue until it reaches a job, stock or a finished piece.
+model KarigarMetalCustodyEntry {
+  id        String                  @id @default(cuid())
+  entryCode String                  @unique
+  kind      KarigarMetalCustodyKind
+
+  karigarId String
+  karigar   Party         @relation("KarigarMetalCustodyKarigar", fields: [karigarId], references: [id])
+  jobId     String?
+  job       JewelleryJob? @relation(fields: [jobId], references: [id])
+
+  metalType               MetalType
+  purityId                String
+  purity                  MetalPurity @relation(fields: [purityId], references: [id])
+  finenessPercentSnapshot Decimal     @db.Decimal(6, 3)
+  grossWeight             Decimal     @db.Decimal(10, 3)
+  fineWeight              Decimal     @db.Decimal(10, 3)
+  costValue               Decimal     @db.Decimal(14, 2)
+
+  entryDate DateTime
+  reason    String
+  reference String?
+
+  /// Issue / return (and their reversals) post a voucher; allocate / release never do.
+  voucherId String?  @unique
+  voucher   Voucher? @relation(fields: [voucherId], references: [id])
+
+  /// Set on a reversal: the entry it reverses. The original is never edited.
+  reversalOfEntryId String?                   @unique
+  reversalOf        KarigarMetalCustodyEntry? @relation("KarigarMetalCustodyReversal", fields: [reversalOfEntryId], references: [id])
+  reversedBy        KarigarMetalCustodyEntry? @relation("KarigarMetalCustodyReversal")
+
+  idempotencyKey String? @unique
+
+  createdByUserId String
+  createdBy       User     @relation("KarigarMetalCustodyCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt       DateTime @default(now())
+
+  movements     MetalStockMovement[]
+  jobMetalLines JewelleryMetalIssueLine[]
+
+  @@index([karigarId, metalType, purityId])
+  @@index([jobId])
+  @@map("karigar_metal_custody_entries")
 }
 
 enum JewelleryDiamondResolution {
@@ -2011,6 +2122,7 @@ enum JewellerySequenceType {
   FINISHED_JEWELLERY_SALE
   FINISHED_JEWELLERY_RETURN
   JEWELLERY_METAL_TRANSFER
+  KARIGAR_METAL_CUSTODY
 }
 
 model JewellerySequence {

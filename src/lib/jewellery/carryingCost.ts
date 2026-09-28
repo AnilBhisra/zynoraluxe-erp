@@ -51,11 +51,17 @@ type JobIssueRow = { id: string; jewelleryJobId: string | null; metalType: Metal
  * warehouse issue) has no ISSUE_OUT row of its own, so JOB_TRANSFER_IN is
  * included here too — otherwise such a job would silently never be
  * considered for replay, and would keep showing its pre-revaluation figures.
+ * The same holds for a job funded from a Karigar's unallocated custody
+ * (CUSTODY_TO_JOB) — except an allocation that was later reversed, which
+ * no longer brought anything to the job.
  */
 async function replayForJobs(tx: Tx, jobIds: string[]) {
   const issueMovements: JobIssueRow[] = jobIds.length
     ? await tx.metalStockMovement.findMany({
-        where: { type: { in: ["ISSUE_OUT", "JOB_TRANSFER_IN"] }, jewelleryJobId: { in: jobIds } },
+        where: {
+          jewelleryJobId: { in: jobIds },
+          OR: [{ type: { in: ["ISSUE_OUT", "JOB_TRANSFER_IN"] } }, { type: "CUSTODY_TO_JOB", reversalOfMovementId: null, reversedByMovement: { is: null } }],
+        },
         select: { id: true, jewelleryJobId: true, metalType: true, purityId: true, costValue: true },
       })
     : [];

@@ -6,7 +6,7 @@ import { round3 } from "@/lib/diamond/allocation";
 import { shapeLabel } from "@/lib/diamond/shapes";
 import { getAuthoritativeInventoryCost } from "@/lib/jewellery/finishedSalesPosting";
 import { jobIssuedCosts } from "@/lib/jewellery/jobIssuedCost";
-import { pendingFineWeightOf, sumMetalPool } from "@/lib/jewellery/posting";
+import { canStillIssueMaterials, pendingFineWeightOf, sumMetalPool } from "@/lib/jewellery/posting";
 import {
   CARRYING_COST_UNAVAILABLE,
   type CarryingAmount,
@@ -249,6 +249,12 @@ export type JewelleryJobDetail = JewelleryJobRow & {
   returnedAlloyGrossWeight: Decimal;
   remainingAlloyWipCost: Decimal;
   alloyPendingGrossWeight: Decimal;
+  // Karigar metal custody (weights only; audit figures).
+  karigarId: string;
+  custodyAllocatedFineWeight: Decimal;
+  custodyReleasedFineWeight: Decimal;
+  /** Issue Materials is still open for this job (DRAFT, or funded only from custody / a transfer). */
+  canIssueMaterials: boolean;
   cancelledAt: Date | null;
   cancellationReason: string | null;
   isCompleted: boolean;
@@ -363,6 +369,10 @@ const METAL_MOVEMENT_LABELS: Record<string, string> = {
   CONSUMED_OUT: "Metal consumed (finished + process loss)",
   ADJUSTMENT_IN: "Owner adjustment (in)",
   ADJUSTMENT_OUT: "Owner adjustment (out)",
+  JOB_TRANSFER_OUT: "Metal transferred to another job",
+  JOB_TRANSFER_IN: "Metal transferred in from another job",
+  CUSTODY_TO_JOB: "Allocated from the Karigar's unallocated metal",
+  JOB_TO_CUSTODY: "Released to the Karigar's unallocated metal (not a physical return)",
 };
 
 const DIAMOND_MOVEMENT_LABELS: Record<string, string> = {
@@ -487,6 +497,10 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
     ),
     pendingFineWeight: pendingFineWeightOf(job),
     totalIssuedCost: issuedCosts.totalIssuedCost,
+    karigarId: job.karigarId,
+    custodyAllocatedFineWeight: round3(job.custodyAllocatedFineWeight ?? 0),
+    custodyReleasedFineWeight: round3(job.custodyReleasedFineWeight ?? 0),
+    canIssueMaterials: await canStillIssueMaterials(prisma, job),
     cancelledAt: job.cancelledAt,
     cancellationReason: job.cancellationReason,
     isCompleted: job.status === "COMPLETED",

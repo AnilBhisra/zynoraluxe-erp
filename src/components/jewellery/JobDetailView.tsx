@@ -40,6 +40,12 @@ function money(value: string | null): string {
 export type SerializedJobDetail = {
   id: string;
   jobCode: string;
+  karigarId: string;
+  /** Karigar metal custody audit figures (weights only). */
+  custodyAllocatedFineWeight: string;
+  custodyReleasedFineWeight: string;
+  /** DRAFT, or funded only from Karigar custody / a transfer — computed on the server. */
+  canIssueMaterials: boolean;
   customerName: string | null;
   customerReference: string | null;
   karigarName: string;
@@ -222,7 +228,12 @@ export function JobDetailView({
     router.refresh();
   }
 
-  const canIssueMaterials = job.status === "DRAFT";
+  const canIssueMaterials = job.canIssueMaterials;
+  const canReleaseToKarigar =
+    isOwner &&
+    (job.status === "MATERIALS_ISSUED" || job.status === "IN_PROGRESS" || job.status === "PARTIALLY_RECEIVED" || job.status === "NEEDS_CORRECTION") &&
+    toThousandths(job.pendingFineWeight) > BigInt(0);
+  const hasCustody = job.custodyAllocatedFineWeight !== "0.000" || job.custodyReleasedFineWeight !== "0.000";
   const canMarkInProgress = job.status === "MATERIALS_ISSUED";
   const canReceive =
     job.status === "MATERIALS_ISSUED" || job.status === "IN_PROGRESS" || job.status === "PARTIALLY_RECEIVED" || job.status === "NEEDS_CORRECTION";
@@ -248,7 +259,10 @@ export function JobDetailView({
           <div>
             <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">{job.jobCode}</h2>
             <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-              {job.designName} · {jewelleryTypeLabel(job.jewelleryType)} · {job.karigarName}
+              {job.designName} · {jewelleryTypeLabel(job.jewelleryType)} ·{" "}
+              <a href={`/jewellery-jobs?tab=karigar&karigarId=${job.karigarId}`} className="underline underline-offset-4" title="Karigar metal account">
+                {job.karigarName}
+              </a>
               {job.customerName ? ` · ${job.customerName}` : ""}
             </p>
             <p className="mt-1 text-xs font-medium text-zinc-500 dark:text-zinc-400">{STATUS_LABELS[job.status] ?? job.status}</p>
@@ -278,8 +292,25 @@ export function JobDetailView({
             {isOwner && transferPanel?.canCompleteWithoutReceipt ? (
               <CompleteReconciledJobButton jobId={job.id} onDone={() => router.refresh()} />
             ) : null}
+            {canReleaseToKarigar ? (
+              <a
+                href={`/jewellery-jobs?tab=karigar&karigarId=${job.karigarId}&custodyOp=RELEASE_FROM_JOB&custodyJobId=${job.id}`}
+                className="inline-flex h-11 items-center rounded-lg px-4 text-sm font-medium text-zinc-700 underline underline-offset-4 hover:text-zinc-900 dark:text-zinc-300"
+              >
+                Release unused metal to Karigar balance
+              </a>
+            ) : null}
           </div>
         </div>
+
+        {hasCustody ? (
+          <p className="mt-3 text-xs text-zinc-600 dark:text-zinc-400" data-testid="job-custody-note">
+            From {job.karigarName}&apos;s unallocated metal: {job.custodyAllocatedFineWeight}g fine · released back to it: {job.custodyReleasedFineWeight}g fine ·{" "}
+            <a href={`/jewellery-jobs?tab=karigar&karigarId=${job.karigarId}`} className="underline underline-offset-4">
+              Karigar metal account
+            </a>
+          </p>
+        ) : null}
 
         <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
           <Stat label="Issue date" value={new Date(job.issueDate).toLocaleDateString("en-IN")} />

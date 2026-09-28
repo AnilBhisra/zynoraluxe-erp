@@ -35,7 +35,11 @@ export type ReplayMovementType =
   | "SCRAP_ADJUSTMENT_IN"
   | "SCRAP_ADJUSTMENT_OUT"
   | "JOB_TRANSFER_OUT"
-  | "JOB_TRANSFER_IN";
+  | "JOB_TRANSFER_IN"
+  | "KARIGAR_ISSUE_OUT"
+  | "KARIGAR_RETURN_IN"
+  | "CUSTODY_TO_JOB"
+  | "JOB_TO_CUSTODY";
 
 export type ReplayMovement = {
   id: string;
@@ -47,6 +51,10 @@ export type ReplayMovement = {
   /** Receipt or job code — how receipt-side movements are grouped. */
   sourceDocument: string;
   jewelleryJobId: string | null;
+  /** Karigar whose unallocated custody balance a custody movement moves. */
+  karigarId?: string | null;
+  /** A custody reversal mirrors exactly the (restated) value of the movement it reverses. */
+  reversalOfMovementId?: string | null;
 };
 
 /** One finished piece produced by a receipt, for splitting its metal cost. */
@@ -86,6 +94,8 @@ export type ReplayResult = {
   scrapPool: ReplayValueChange & { grossWeight: Decimal };
   /** Metal value still with a Karigar, by job id. */
   jobWip: Map<string, ReplayValueChange & { fineWeight: Decimal }>;
+  /** Company metal with a Karigar but not allocated to any job, by Karigar id. */
+  custody: Map<string, ReplayValueChange & { fineWeight: Decimal; grossWeight: Decimal }>;
   /** Metal cost of each finished piece, by finished jewellery id. */
   finishedPieces: Map<string, ReplayValueChange & { label: string; fineWeight: Decimal }>;
   /** Per-movement restated value, for evidence (originals are never edited). */
@@ -96,6 +106,7 @@ export class ReplayError extends Error {}
 
 type Pool = { gross: Decimal; value: Decimal };
 type JobState = { issuedFine: Decimal; pendingFine: Decimal; wipValue: Decimal; oldWipValue: Decimal };
+type CustodyState = { gross: Decimal; fine: Decimal; value: Decimal; oldValue: Decimal };
 
 const d = (v: DecimalInput) => new Decimal(v);
 
@@ -133,6 +144,45 @@ export function replayMetalValues(input: ReplayInput): ReplayResult {
   const record = (id: string, oldValue: DecimalInput, newValue: Decimal) => {
     const previous = d(oldValue);
     movementChanges.set(id, { oldValue: previous, newValue, delta: round2(newValue.minus(previous)) });
+  };
+
+  // Karigar metal custody: one fine-weight pool per Karigar (within this
+  // purity's ledger), drained the same way a job's WIP pool is.
+  const custody = new Map<string, CustodyState>();
+  const custodyState = (m: ReplayMovement): CustodyState => {
+    if (!m.karigarId) throw new ReplayError(`Custody movement ${m.sourceDocument} has no Karigar — cannot replay it.`);
+    const existing = custody.get(m.karigarId);
+    if (existing) return existing;
+    const fresh: CustodyState = { gross: ZERO, fine: ZERO, value: ZERO, oldValue: ZERO };
+    custody.set(m.karigarId, fresh);
+    return fresh;
+  };
+  // A reversal carries exactly what the movement it reverses carried — after
+  // restatement — so an operation and its reversal always net to zero.
+  const mirroredValue = (m: ReplayMovement): Decimal | undefined => {
+    if (!m.reversalOfMovementId) return undefined;
+    const original = movementChanges.get(m.reversalOfMovementId);
+    if (!original) throw new ReplayError(`Reversal ${m.sourceDocument} points at a movement outside this ledger — cannot replay it.`);
+    return original.newValue;
+  };
+  const takeFromCustody = (state: CustodyState, m: ReplayMovement, gross: Decimal, fine: Decimal): Decimal => {
+    if (fine.greaterThan(state.fine) || gross.greaterThan(state.gross)) {
+      throw new ReplayError(`Custody movement ${m.sourceDocument} takes more than the Karigar's unallocated balance held at that point — cannot replay it.`);
+    }
+    // All of it takes the whole value; part takes its fine-weight share.
+    const all = fine.equals(state.fine);
+    const newValue = mirroredValue(m) ?? (all ? state.value : state.fine.greaterThan(0) ? round2(state.value.times(fine).dividedBy(state.fine)) : ZERO);
+    state.gross = state.gross.minus(gross);
+    state.fine = state.fine.minus(fine);
+    state.value = round2(state.value.minus(newValue));
+    state.oldValue = round2(state.oldValue.minus(d(m.costValue)));
+    return newValue;
+  };
+  const putIntoCustody = (state: CustodyState, m: ReplayMovement, gross: Decimal, fine: Decimal, newValue: Decimal) => {
+    state.gross = state.gross.plus(gross);
+    state.fine = state.fine.plus(fine);
+    state.value = round2(state.value.plus(newValue));
+    state.oldValue = round2(state.oldValue.plus(d(m.costValue)));
   };
 
   // Receipt-side movements (return / scrap / consumed) are driven by their
@@ -263,6 +313,59 @@ export function replayMetalValues(input: ReplayInput): ReplayResult {
         break;
       }
 
+      // Karigar metal custody. Issue and return really cross the warehouse
+      // boundary (pool average out, custody share back); allocation and
+      // release only move value between a Karigar's unallocated balance and
+      // one of the same Karigar's jobs, like a job-to-job transfer.
+      case "KARIGAR_ISSUE_OUT": {
+        const newValue = mirroredValue(m) ?? poolShare(pool, gross);
+        pool.gross = pool.gross.minus(gross);
+        pool.value = round2(pool.value.minus(newValue));
+        oldPool.gross = oldPool.gross.minus(gross);
+        oldPool.value = round2(oldPool.value.minus(d(m.costValue)));
+        putIntoCustody(custodyState(m), m, gross, fine, newValue);
+        record(m.id, m.costValue, newValue);
+        break;
+      }
+
+      case "KARIGAR_RETURN_IN": {
+        const newValue = takeFromCustody(custodyState(m), m, gross, fine);
+        pool.gross = pool.gross.plus(gross);
+        pool.value = round2(pool.value.plus(newValue));
+        oldPool.gross = oldPool.gross.plus(gross);
+        oldPool.value = round2(oldPool.value.plus(d(m.costValue)));
+        record(m.id, m.costValue, newValue);
+        break;
+      }
+
+      case "CUSTODY_TO_JOB": {
+        if (!m.jewelleryJobId) throw new ReplayError("A custody allocation has no job — cannot replay it.");
+        const newValue = takeFromCustody(custodyState(m), m, gross, fine);
+        const job = jobState(m.jewelleryJobId);
+        job.issuedFine = job.issuedFine.plus(fine);
+        job.pendingFine = job.pendingFine.plus(fine);
+        job.wipValue = round2(job.wipValue.plus(newValue));
+        job.oldWipValue = round2(job.oldWipValue.plus(d(m.costValue)));
+        record(m.id, m.costValue, newValue);
+        break;
+      }
+
+      case "JOB_TO_CUSTODY": {
+        if (!m.jewelleryJobId) throw new ReplayError("A custody release has no job — cannot replay it.");
+        const job = jobState(m.jewelleryJobId);
+        if (!job.pendingFine.greaterThan(0) || fine.greaterThan(job.pendingFine)) {
+          throw new ReplayError(`Custody release ${m.sourceDocument} takes more fine weight than its job had pending at that point — cannot replay it.`);
+        }
+        const newValue =
+          mirroredValue(m) ?? (fine.equals(job.pendingFine) ? job.wipValue : round2(job.wipValue.times(fine).dividedBy(job.pendingFine)));
+        job.pendingFine = job.pendingFine.minus(fine);
+        job.wipValue = round2(job.wipValue.minus(newValue));
+        job.oldWipValue = round2(job.oldWipValue.minus(d(m.costValue)));
+        putIntoCustody(custodyState(m), m, gross, fine, newValue);
+        record(m.id, m.costValue, newValue);
+        break;
+      }
+
       case "RETURN_IN":
       case "SCRAP_RETURN_IN":
       case "CONSUMED_OUT": {
@@ -305,7 +408,20 @@ export function replayMetalValues(input: ReplayInput): ReplayResult {
     });
   }
 
+  const custodyResult = new Map<string, ReplayValueChange & { fineWeight: Decimal; grossWeight: Decimal }>();
+  for (const [karigarId, state] of custody) {
+    if (state.fine.isZero() && state.gross.isZero() && state.value.isZero() && state.oldValue.isZero()) continue;
+    custodyResult.set(karigarId, {
+      fineWeight: state.fine,
+      grossWeight: state.gross,
+      oldValue: state.oldValue,
+      newValue: state.value,
+      delta: round2(state.value.minus(state.oldValue)),
+    });
+  }
+
   return {
+    custody: custodyResult,
     usablePool: {
       grossWeight: pool.gross,
       oldValue: oldPool.value,
