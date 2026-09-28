@@ -155,7 +155,7 @@ export function serializePacketProcessJobDetail(detail: PacketProcessJobDetail, 
 
 /** Phase 7 process fields on a Diamond (Manufacturer) job detail. */
 export function serializeJobProcessFields(
-  detail: { processNameSnapshot: string | null; processOutputKindSnapshot: "ROUGH" | "POLISHED" | null; chargeRateBasis: "FIXED" | "PER_CARAT" | "PER_PIECE" | null; chargeRate: { toFixed(dp: number): string } | null },
+  detail: { processNameSnapshot: string | null; processOutputKindSnapshot: "ROUGH" | "POLISHED" | null; chargeRateBasis: "FIXED" | "PER_CARAT" | "PER_PIECE" | "PER_ISSUED_CARAT" | null; chargeRate: { toFixed(dp: number): string } | null },
   isOwner: boolean
 ): Pick<SerializedJobDetail, "processName" | "processOutputKind" | "chargeRateBasis" | "chargeRate"> {
   return {

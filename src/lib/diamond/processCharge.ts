@@ -2,13 +2,19 @@
  * Manufacturer process charge — pure and client-safe, so the receive forms
  * preview exactly what the server posts.
  *
- *   FIXED      the agreed amount, charged once, on the receipt that closes the job
- *   PER_CARAT  rate × carat returned or used on this receipt
- *   PER_PIECE  rate × pieces returned or used on this receipt
+ *   FIXED             the agreed amount, charged once, on the receipt that closes the job
+ *   PER_CARAT         rate × carat returned or used on this receipt
+ *   PER_PIECE         rate × pieces returned or used on this receipt
+ *   PER_ISSUED_CARAT  rate × ISSUED carat this receipt uses up — what came back
+ *                     plus, on the closing receipt, the normal weight loss. So a
+ *                     job's total is rate × (issued − rough returned unused −
+ *                     damaged/lost), e.g. Polishing 10.190 ct issued -> 5.091 ct
+ *                     polished charges 10.190 ct.
  *
- * Loss and damaged/lost stones are never charged for.
+ * Damaged/lost stones and rough returned unused are never charged for; under
+ * the three older bases, weight loss is not charged for either.
  */
-export type ChargeRateBasis = "FIXED" | "PER_CARAT" | "PER_PIECE";
+export type ChargeRateBasis = "FIXED" | "PER_CARAT" | "PER_PIECE" | "PER_ISSUED_CARAT";
 
 function toCents(value: string | number): bigint {
   const text = typeof value === "number" ? value.toString() : value.trim();
@@ -42,6 +48,8 @@ export function computeProcessCharge(input: {
   carat: string;
   pieces: number;
   isFinal: boolean;
+  /** Issued carat this receipt uses up (returned/used + closing weight loss). Required for PER_ISSUED_CARAT. */
+  issuedCarat?: string;
 }): string {
   if (!/^\d+(\.\d+)?$/.test(input.rate.trim())) throw new Error("The charge rate must be a non-negative decimal.");
   switch (input.basis) {
@@ -51,6 +59,11 @@ export function computeProcessCharge(input: {
       return multiply(input.rate, input.carat);
     case "PER_PIECE":
       return multiply(input.rate, String(input.pieces));
+    case "PER_ISSUED_CARAT":
+      if (input.issuedCarat == null || !/^\d+(\.\d+)?$/.test(input.issuedCarat.trim())) {
+        throw new Error("A per-issued-carat charge needs the issued carat this receipt uses up.");
+      }
+      return multiply(input.rate, input.issuedCarat);
   }
 }
 
@@ -58,4 +71,5 @@ export const CHARGE_RATE_BASIS_LABELS: Record<ChargeRateBasis, string> = {
   FIXED: "Fixed amount",
   PER_CARAT: "Per carat",
   PER_PIECE: "Per piece",
+  PER_ISSUED_CARAT: "Per issued carat",
 };

@@ -109,6 +109,7 @@ export function PacketProcessIssueForm({
           <label htmlFor="jm-charge-basis" className="text-sm font-medium text-zinc-800 dark:text-zinc-200">Process charge</label>
           <select id="jm-charge-basis" name="chargeRateBasis" value={chargeRateBasis} onChange={(e) => setChargeRateBasis(e.target.value as typeof chargeRateBasis)} className={SELECT}>
             <option value="PER_CARAT">Per carat returned or used</option>
+            <option value="PER_ISSUED_CARAT">Per issued carat (weight loss included)</option>
             <option value="PER_PIECE">Per piece returned or used</option>
             <option value="FIXED">Fixed amount (charged when the job closes)</option>
           </select>

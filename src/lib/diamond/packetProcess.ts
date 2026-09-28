@@ -435,13 +435,17 @@ export async function receivePacketProcessReturn(
 
   // ---- Process charge on stones actually returned or used ----
   const chargeable = rows.filter((r) => r.disposition !== "DAMAGED_LOST");
+  const chargeableCarat = round3(chargeable.reduce((sum, r) => sum.plus(r.carat3), ZERO));
   const charge = new Decimal(
     computeProcessCharge({
       basis: job.chargeRateBasis,
       rate: new Decimal(job.chargeRate).toFixed(4),
-      carat: round3(chargeable.reduce((sum, r) => sum.plus(r.carat3), ZERO)).toFixed(3),
+      carat: chargeableCarat.toFixed(3),
       pieces: chargeable.reduce((sum, r) => sum + r.pieces, 0),
       isFinal,
+      // Per issued carat also charges normal weight loss on the lines this
+      // receipt closes — never an Owner-declared abnormal loss.
+      issuedCarat: round3(chargeableCarat.plus(input.isAbnormalLoss ? ZERO : totalLossCarat)).toFixed(3),
     })
   );
   const chargeByRow = new Map<Row, Decimal>();

@@ -25,7 +25,7 @@ export const SHAPE_ENUM = z.enum([
   "CUSTOM",
 ]);
 
-export const CHARGE_RATE_BASIS_ENUM = z.enum(["FIXED", "PER_CARAT", "PER_PIECE"]);
+export const CHARGE_RATE_BASIS_ENUM = z.enum(["FIXED", "PER_CARAT", "PER_PIECE", "PER_ISSUED_CARAT"]);
 
 export const roughPieceDraftSchema = z.object({
   // STONE = one individual stone (always issued whole); PARCEL = many stones

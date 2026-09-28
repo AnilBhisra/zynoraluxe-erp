@@ -10,7 +10,7 @@ export type DiamondProcessRow = {
   id: string;
   name: string;
   outputKind: "ROUGH" | "POLISHED";
-  defaultRateBasis: "FIXED" | "PER_CARAT" | "PER_PIECE";
+  defaultRateBasis: "FIXED" | "PER_CARAT" | "PER_PIECE" | "PER_ISSUED_CARAT";
   isActive: boolean;
 };
 
@@ -27,7 +27,8 @@ function ProcessForm({ process }: { process?: DiamondProcessRow }) {
         <option value="POLISHED">Returns polished</option>
       </select>
       <select aria-label="Default charge" name="defaultRateBasis" defaultValue={process?.defaultRateBasis ?? "PER_CARAT"} className={INPUT}>
-        <option value="PER_CARAT">Charge per carat</option>
+        <option value="PER_CARAT">Charge per received carat</option>
+        <option value="PER_ISSUED_CARAT">Charge per issued carat</option>
         <option value="PER_PIECE">Charge per piece</option>
         <option value="FIXED">Fixed charge</option>
       </select>

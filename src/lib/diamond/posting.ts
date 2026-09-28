@@ -908,6 +908,9 @@ export async function receivePolishedDiamonds(
         carat: totalPolishedCarat.toFixed(3),
         pieces: totalStones,
         isFinal: isFinalReceiptForJob,
+        // Rough this receipt uses up: what was polished plus, on the closing
+        // receipt, the weight lost in polishing. Rough returned unused is not.
+        issuedCarat: round3(totalPolishedCarat.plus(weightLossCarat)).toFixed(3),
       })
     );
     if (enteredLabourCharge.greaterThan(0) && !enteredLabourCharge.equals(labourCharge)) {
@@ -1292,6 +1295,7 @@ export async function receiveProcessedRough(
         carat: processedCarat.toFixed(3),
         pieces: input.pieces.length,
         isFinal,
+        issuedCarat: round3(processedCarat.plus(weightLossCarat)).toFixed(3),
       })
     );
     if (enteredCharge.greaterThan(0) && !enteredCharge.equals(charge)) {

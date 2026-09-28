@@ -21,6 +21,17 @@ describe("computeProcessCharge", () => {
     expect(computeProcessCharge({ basis: "PER_CARAT", rate: "900", carat: "0.000", pieces: 0, isFinal: true })).toBe("0.00");
   });
 
+  it("per issued carat charges the issued carat used up, not the received carat (Polishing 10.190 -> 5.091 @ 850)", () => {
+    // received 5.091 + weight loss 5.099 = 10.190 issued
+    expect(computeProcessCharge({ basis: "PER_ISSUED_CARAT", rate: "850", carat: "5.091", pieces: 6, isFinal: true, issuedCarat: "10.190" })).toBe("8661.50");
+    // the old per-carat basis still charges only what came back
+    expect(computeProcessCharge({ basis: "PER_CARAT", rate: "850", carat: "5.091", pieces: 6, isFinal: true })).toBe("4327.35");
+  });
+
+  it("per issued carat refuses to guess when the issued carat is missing", () => {
+    expect(() => computeProcessCharge({ basis: "PER_ISSUED_CARAT", rate: "850", carat: "5.091", pieces: 6, isFinal: true })).toThrow(/issued carat/);
+  });
+
   it("rejects a negative or malformed rate", () => {
     expect(() => computeProcessCharge({ basis: "PER_CARAT", rate: "-1", carat: "1", pieces: 1, isFinal: false })).toThrow();
   });

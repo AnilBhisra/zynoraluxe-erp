@@ -38,7 +38,7 @@ function parcelPreview(p: AvailablePieceOption, isOwner: boolean, caratInput: st
 }
 
 /** Phase 7 — an active Manufacturer process offered at issue. */
-export type ProcessOption = { id: string; name: string; outputKind: "ROUGH" | "POLISHED"; defaultRateBasis: "FIXED" | "PER_CARAT" | "PER_PIECE" };
+export type ProcessOption = { id: string; name: string; outputKind: "ROUGH" | "POLISHED"; defaultRateBasis: "FIXED" | "PER_CARAT" | "PER_PIECE" | "PER_ISSUED_CARAT" };
 
 export function IssueRoughForm({
   karigars,
@@ -182,7 +182,8 @@ export function IssueRoughForm({
                   className="h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-900 dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
                 >
                   <option value="">Enter on each receipt</option>
-                  <option value="PER_CARAT">Per carat</option>
+                  <option value="PER_CARAT">Per received carat</option>
+                  <option value="PER_ISSUED_CARAT">Per issued carat (weight loss included)</option>
                   <option value="PER_PIECE">Per piece</option>
                   <option value="FIXED">Fixed amount</option>
                 </select>

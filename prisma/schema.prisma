@@ -2802,6 +2802,9 @@ enum ProcessChargeRateBasis {
   FIXED
   PER_CARAT
   PER_PIECE
+  /// rate x the ISSUED carat each receipt uses up, normal weight loss included
+  /// (rough returned unused and damaged/lost stones are never charged)
+  PER_ISSUED_CARAT
 }
 
 enum PacketProcessJobStatus {

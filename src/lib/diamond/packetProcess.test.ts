@@ -34,7 +34,7 @@ function expectBalanced(f: Fixture) {
   }
 }
 
-function setup(chargeRateBasis: "FIXED" | "PER_CARAT" | "PER_PIECE" = "PER_CARAT", chargeRate = 0) {
+function setup(chargeRateBasis: "FIXED" | "PER_CARAT" | "PER_PIECE" | "PER_ISSUED_CARAT" = "PER_CARAT", chargeRate = 0) {
   const f = createFakePacketProcessTx();
   const manufacturer = f.seedParty({ name: "Shree Manufacturers", type: "MANUFACTURER" });
   const process = f.seedDiamondProcess({ name: "Polishing", outputKind: "POLISHED" });
@@ -292,6 +292,56 @@ describe("Job Manufacturer — returns", () => {
     // 4ct = 40000.00: abnormal loss 0.4ct → 4000.00; remaining 36000.00 split 3.4 : 0.2.
     expect(voucherLine(f, receipt.postingVoucherId as string, SYSTEM_ACCOUNT_CODES.BUSINESS_EXPENSES, "debit")).toBe("6000.00");
     expect(voucherLine(f, receipt.postingVoucherId as string, SYSTEM_ACCOUNT_CODES.POLISHED_DIAMOND_INVENTORY, "debit")).toBe("34000.00");
+    expectBalanced(f);
+  });
+
+  it("per issued carat: a partial return charges what came back; the closing return adds the normal loss — total = issued × rate", async () => {
+    const { f, packetA, issue, receive, lineFor } = setup("PER_ISSUED_CARAT", 100);
+    const job = await issue([{ packetId: packetA.id, pieces: 40, carat: 4 }]);
+    const lineId = lineFor(job.id as string, packetA.id).id;
+    const first = await receive(job.id as string, [{ jobLineId: lineId, disposition: "RETURNED_TO_STOCK", pieces: 20, carat: 1.9 }]);
+    expect(first.receipt.processCharge).toBe("190.00");
+    const second = await receive(
+      job.id as string,
+      [{ jobLineId: lineId, disposition: "RETURNED_TO_STOCK", pieces: 20, carat: 1.9 }],
+      { closeLineIds: [lineId] }
+    );
+    expect(second.receipt.lossCarat).toBe("0.200");
+    expect(second.receipt.processCharge).toBe("210.00"); // (1.9 + 0.2 loss) × 100
+    expect(new Decimal(String(first.receipt.processCharge)).plus(String(second.receipt.processCharge)).toFixed(2)).toBe("400.00"); // 4ct issued × 100
+    expectBalanced(f);
+  });
+
+  it("per issued carat never charges damaged/lost stones or an Owner-declared abnormal loss", async () => {
+    const { f, packetA, issue, receive, lineFor } = setup("PER_ISSUED_CARAT", 100);
+    const job = await issue([{ packetId: packetA.id, pieces: 40, carat: 4 }]);
+    const lineId = lineFor(job.id as string, packetA.id).id;
+    const { receipt } = await receive(
+      job.id as string,
+      [
+        { jobLineId: lineId, disposition: "RETURNED_TO_STOCK", pieces: 38, carat: 3.4 },
+        { jobLineId: lineId, disposition: "DAMAGED_LOST", pieces: 2, carat: 0.2, damagedLostReason: "Broken on the wheel" },
+      ],
+      { markJobComplete: true, isAbnormalLoss: true, abnormalLossReason: "Over-polished" }
+    );
+    expect(receipt.processCharge).toBe("340.00"); // only the 3.4ct that came back
+    expectBalanced(f);
+  });
+
+  it("per issued carat charges normal loss but still not damaged/lost stones", async () => {
+    const { f, packetA, issue, receive, lineFor } = setup("PER_ISSUED_CARAT", 100);
+    const job = await issue([{ packetId: packetA.id, pieces: 40, carat: 4 }]);
+    const lineId = lineFor(job.id as string, packetA.id).id;
+    const { receipt } = await receive(
+      job.id as string,
+      [
+        { jobLineId: lineId, disposition: "RETURNED_TO_STOCK", pieces: 38, carat: 3.4 },
+        { jobLineId: lineId, disposition: "DAMAGED_LOST", pieces: 2, carat: 0.2, damagedLostReason: "Broken on the wheel" },
+      ],
+      { markJobComplete: true }
+    );
+    expect(receipt.lossCarat).toBe("0.400");
+    expect(receipt.processCharge).toBe("380.00"); // (3.4 returned + 0.4 normal loss) × 100; the 0.2 damaged is not charged
     expectBalanced(f);
   });
 
