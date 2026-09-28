@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useState } from "react";
+import { useActionState, useEffect, useState, useTransition } from "react";
 
 import {
   postMetalTransferAction,
@@ -112,6 +112,22 @@ function TransferForm({
 
   const preview = previewState?.preview;
   const fresh = Boolean(preview) && previewedInputs === currentInputs;
+  const [, startTransition] = useTransition();
+
+  // Dispatched with a payload built from React state, never by submitting the
+  // <form>: React resets a form after its action returns, which snapped the
+  // destination <select> back to another job, so a chosen destination other
+  // than the default was refused as "changed after this preview".
+  const payload = (fingerprint: string) => {
+    const fd = new FormData();
+    fd.set("sourceJobId", jobId);
+    fd.set("destinationJobId", destinationJobId);
+    fd.set("fineWeight", fineWeight);
+    fd.set("reason", reason);
+    fd.set("idempotencyKey", idempotencyKey);
+    fd.set("previewFingerprint", fingerprint);
+    return fd;
+  };
 
   if (postState?.success) {
     return (
@@ -122,11 +138,7 @@ function TransferForm({
   }
 
   return (
-    <form className="mt-3 flex flex-col gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
-      <input type="hidden" name="sourceJobId" value={jobId} />
-      <input type="hidden" name="idempotencyKey" value={idempotencyKey} />
-      <input type="hidden" name="previewFingerprint" value={fresh && preview ? preview.fingerprint : ""} />
-
+    <form className="mt-3 flex flex-col gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4" onSubmit={(e) => e.preventDefault()}>
       {previewState?.error ? <Alert tone="error">{previewState.error}</Alert> : null}
       {postState?.error ? <Alert tone="error">{postState.error}</Alert> : null}
 
@@ -186,29 +198,31 @@ function TransferForm({
 
       <div className="flex flex-wrap gap-2">
         <Button
-          type="submit"
+          type="button"
           variant="secondary"
           size="md"
-          formAction={previewAction}
           disabled={previewPending || postPending || !destinationJobId || Number(fineWeight) <= 0 || reason.trim().length < 10}
-          onClick={() => setPreviewedInputs(currentInputs)}
+          onClick={() => {
+            setPreviewedInputs(currentInputs);
+            startTransition(() => previewAction(payload("")));
+          }}
         >
           {previewPending ? "Preparing…" : "Preview"}
         </Button>
         {preview && fresh ? (
           <Button
-            type="submit"
+            type="button"
             size="md"
-            formAction={postAction}
             disabled={postPending || previewPending}
-            onClick={(e) => {
+            onClick={() => {
               if (
                 !window.confirm(
                   `Transfer ${preview.fineWeight}g fine (₹${preview.costValue}) from ${preview.sourceJobCode} to ${preview.destinationJobCode}?\n\nThis does not touch warehouse stock and posts no voucher — only the two jobs' own metal records change.`
                 )
               ) {
-                e.preventDefault();
+                return;
               }
+              startTransition(() => postAction(payload(preview.fingerprint)));
             }}
           >
             {postPending ? "Transferring…" : "Post transfer"}
