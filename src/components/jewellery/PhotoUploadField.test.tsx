@@ -66,7 +66,8 @@ describe("JewelleryPhotoUploadField", () => {
     );
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
 
-    fireEvent.change(input, { target: { files: [makeFile()] } }); // attempt 1 — will resolve late
+    fireEvent.change(input, { target: { files: [makeFile()] } }); // attempt 1 — sent, will resolve late
+    await waitFor(() => expect(mockUpload).toHaveBeenCalledTimes(1)); // it really went out (e.g. then timed out)
     fireEvent.change(input, { target: { files: [makeFile()] } }); // attempt 2 — supersedes attempt 1
 
     second.resolve({ success: true, assetId: "asset-2" });
@@ -76,6 +77,21 @@ describe("JewelleryPhotoUploadField", () => {
     await waitFor(() => expect(mockDelete).toHaveBeenCalledTimes(1));
     expect(mockDelete.mock.calls[0][0].get("assetId")).toBe("asset-1");
     expect(onUploaded).toHaveBeenCalledTimes(1); // never re-invoked for the stale attempt
+  });
+
+  it("an attempt superseded while its photo is still being prepared is never sent, so it can never orphan or delete anything", async () => {
+    mockUpload.mockResolvedValue({ success: true, assetId: "asset-new" });
+    const onUploaded = vi.fn();
+    const { container } = render(
+      <JewelleryPhotoUploadField category="jewellery-design" label="Design photo" assetId={null} onUploaded={onUploaded} />
+    );
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [makeFile()] } }); // attempt 1 — superseded before it is sent
+    fireEvent.change(input, { target: { files: [makeFile()] } }); // attempt 2
+    await waitFor(() => expect(onUploaded).toHaveBeenCalledWith("asset-new"));
+    expect(mockUpload).toHaveBeenCalledTimes(1);
+    expect(mockDelete).not.toHaveBeenCalled();
+    expect((mockUpload.mock.calls[0][1] as FormData).get("uploadRef")).toMatch(/^[a-f0-9]{8}$/);
   });
 
   it("clears the spinner and shows the server's own error on an ordinary (non-timeout) failure", async () => {

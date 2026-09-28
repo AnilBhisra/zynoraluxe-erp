@@ -38,6 +38,17 @@ const nextConfig: NextConfig = {
   // Minor fingerprinting hardening alongside the headers below — costs
   // nothing and isn't specific to any header requirement above.
   poweredByHeader: false,
+  experimental: {
+    serverActions: {
+      // Photo uploads travel through Server Actions, whose default request
+      // limit is 1 MB — every photo over that failed with "Body exceeded 1 MB
+      // limit" (HTTP 413), which reached the user as "Upload failed". Vercel
+      // itself refuses request bodies over 4.5 MB, so stay under that with
+      // room for multipart overhead. Photos are resized in the browser first
+      // (src/lib/client/prepareImage.ts), so this is a ceiling, not the norm.
+      bodySizeLimit: "4mb",
+    },
+  },
   async headers() {
     return [
       {

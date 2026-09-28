@@ -10,6 +10,7 @@ import { parseDateOnly } from "@/lib/accounting/financialYear";
 import * as costingEngine from "@/lib/costing/engine";
 import { getCostingSettings } from "@/lib/costing/reports";
 import { deleteJewelleryAsset, isJewelleryStorageConfigured, uploadJewelleryAsset } from "@/lib/storage/jewelleryMedia";
+import { friendlyUploadError, logUploadAttempt, readUploadRef } from "@/lib/storage/uploadDiagnostics";
 import {
   createActualCostingSchema,
   costSheetIdSchema,
@@ -601,12 +602,18 @@ export async function uploadCostingPhotoAction(
     return { error: "Choose a file to upload." };
   }
 
+  const ref = readUploadRef(formData.get("uploadRef"));
+  const started = Date.now();
   try {
     const { assetId } = await uploadJewelleryAsset("costing-estimate", file);
+    logUploadAttempt({ ref, surface: "costing", category: "costing-estimate", bytes: file.size, type: file.type, outcome: "ok", ms: Date.now() - started });
     return { success: true, assetId };
   } catch (error) {
-    console.error("uploadCostingPhotoAction failed:", error);
-    return { error: error instanceof Error ? error.message : "Upload failed. Please try again." };
+    logUploadAttempt({
+      ref, surface: "costing", category: "costing-estimate", bytes: file.size, type: file.type, outcome: "failed", ms: Date.now() - started,
+      detail: error instanceof Error ? `${error.name}: ${error.message}` : "unknown error",
+    });
+    return { error: friendlyUploadError(error, ref) };
   }
 }
 

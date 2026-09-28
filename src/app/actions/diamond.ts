@@ -20,6 +20,7 @@ import {
   uploadDiamondAsset,
   type DiamondAssetCategory,
 } from "@/lib/storage/diamondMedia";
+import { friendlyUploadError, logUploadAttempt, readUploadRef } from "@/lib/storage/uploadDiagnostics";
 import {
   adjustPacketSchema,
   cancelJobSchema,
@@ -93,12 +94,18 @@ export async function uploadDiamondPhotoAction(
     return { error: "Missing upload category." };
   }
 
+  const ref = readUploadRef(formData.get("uploadRef"));
+  const started = Date.now();
   try {
     const { assetId } = await uploadDiamondAsset(category as DiamondAssetCategory, file);
+    logUploadAttempt({ ref, surface: "diamond", category: category, bytes: file.size, type: file.type, outcome: "ok", ms: Date.now() - started });
     return { success: true, assetId };
   } catch (error) {
-    console.error("uploadDiamondPhotoAction failed:", error);
-    return { error: error instanceof Error ? error.message : "Upload failed. Please try again." };
+    logUploadAttempt({
+      ref, surface: "diamond", category: category, bytes: file.size, type: file.type, outcome: "failed", ms: Date.now() - started,
+      detail: error instanceof Error ? `${error.name}: ${error.message}` : "unknown error",
+    });
+    return { error: friendlyUploadError(error, ref) };
   }
 }
 
