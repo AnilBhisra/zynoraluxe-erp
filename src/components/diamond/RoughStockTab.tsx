@@ -5,6 +5,8 @@ import { useState } from "react";
 
 import { RoughPurchaseForm } from "@/components/diamond/RoughPurchaseForm";
 import { OverrideRoughAllocationForm } from "@/components/diamond/OverrideAllocationForms";
+import { ConvertRoughToParcelForm } from "@/components/diamond/ConvertRoughToParcelForm";
+import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import type { PartyOption } from "@/components/accounting/PartySelect";
@@ -36,6 +38,8 @@ export type SerializedRoughPiece = {
   colorEstimate: string | null;
   clarityNote: string | null;
   returnedFromJobCode: string | null;
+  /** Set when an Owner converted this row from a single stone into a parcel. */
+  convertedToParcel: { at: string; byName: string | null; reason: string } | null;
   photoUrl: string | null;
 };
 
@@ -104,8 +108,14 @@ export function RoughStockTab({
   const [showForm, setShowForm] = useState(false);
   const [expandedLotId, setExpandedLotId] = useState<string | null>(null);
   const [overrideLotId, setOverrideLotId] = useState<string | null>(null);
+  const [convertedNotice, setConvertedNotice] = useState<string | null>(null);
 
   function handleSaved() {
+    router.refresh();
+  }
+
+  function handleConverted(roughCode: string) {
+    setConvertedNotice(`${roughCode} is now a parcel — it can be issued in part. Its carat, cost, purchase and supplier balance are unchanged.`);
     router.refresh();
   }
 
@@ -144,6 +154,12 @@ export function RoughStockTab({
           Search
         </button>
       </form>
+
+      {convertedNotice ? (
+        <div data-testid="converted-notice">
+          <Alert tone="success">{convertedNotice}</Alert>
+        </div>
+      ) : null}
 
       {lots.length === 0 ? (
         <EmptyState
@@ -245,6 +261,17 @@ export function RoughStockTab({
                                 <span className="block text-xs font-normal text-zinc-500 dark:text-zinc-400">
                                   split from {piece.parentRoughCode}
                                 </span>
+                              ) : null}
+                              {piece.convertedToParcel ? (
+                                <span className="block text-xs font-normal text-zinc-500 dark:text-zinc-400" data-testid="converted-note">
+                                  Converted from a stone on {new Date(piece.convertedToParcel.at).toLocaleDateString("en-IN")}
+                                  {piece.convertedToParcel.byName ? ` by ${piece.convertedToParcel.byName}` : ""}: {piece.convertedToParcel.reason}
+                                </span>
+                              ) : null}
+                              {isOwner && piece.kind === "STONE" && piece.status === "AVAILABLE" && !piece.costLocked ? (
+                                <div className="mt-2 font-normal">
+                                  <ConvertRoughToParcelForm roughPieceId={piece.id} roughCode={piece.roughCode} onDone={handleConverted} />
+                                </div>
                               ) : null}
                             </td>
                             <td className="px-3 py-2">

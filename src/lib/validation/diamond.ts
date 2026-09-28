@@ -169,6 +169,18 @@ export const convertPolishedToParcelSchema = z.object({
   reason: z.string().trim().min(10, "Say why this record is a parcel (at least 10 characters) — it is kept in the audit trail.").max(500),
 });
 
+export const convertRoughStoneToParcelSchema = z.object({
+  roughPieceId: z.string().trim().min(1),
+  // Optional, like a parcel purchase: blank = stones not counted.
+  pieceCount: z.preprocess(
+    (v) => (v === "" || v == null ? undefined : v),
+    z.coerce.number().int("The number of stones must be a whole number.").min(2, "A parcel holds at least 2 stones — leave it blank if they were not counted.").optional()
+  ),
+  reason: z.string().trim().min(10, "Say why this stone is really a parcel (at least 10 characters) — it is kept in the audit trail.").max(500),
+  expectedCarat: z.string().trim().min(1, "Preview the conversion first."),
+  expectedCost: z.string().trim().min(1, "Preview the conversion first."),
+});
+
 export const recutPolishedSchema = z.object({
   polishedDiamondId: z.string().trim().min(1),
   reason: z.string().trim().min(3, "Give a short reason.").max(300),

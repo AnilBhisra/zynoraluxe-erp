@@ -74,6 +74,7 @@ model User {
   polishedDiamondsRecut      PolishedDiamond[] @relation("PolishedDiamondRecutBy")
   polishedDiamondsMarkedLost PolishedDiamond[] @relation("PolishedDiamondDamagedLostBy")
   polishedDiamondsConverted  PolishedDiamond[] @relation("PolishedDiamondConvertedBy")
+  roughPiecesConverted       RoughPiece[]      @relation("RoughPieceConvertedToParcelBy")
   stockMovementsCreated      StockMovement[]   @relation("StockMovementCreatedBy")
 
   metalPuritiesCreated       MetalPurity[]                @relation("MetalPurityCreatedBy")
@@ -721,6 +722,16 @@ model RoughPiece {
   parentPieceId      String?
   parentPiece        RoughPiece?    @relation("ParcelSplit", fields: [parentPieceId], references: [id])
   childPieces        RoughPiece[]   @relation("ParcelSplit")
+
+  // Audited Owner conversion of a row bought as a STONE that is really a
+  // parcel: the SAME row becomes a PARCEL in place (carat, cost, lot, voucher
+  // and purchase movement untouched), so it can be issued in part. Never done
+  // implicitly, and only before the row's first issue — see
+  // convertRoughStoneToParcel.
+  convertedToParcelAt       DateTime?
+  convertedToParcelByUserId String?
+  convertedToParcelBy       User?     @relation("RoughPieceConvertedToParcelBy", fields: [convertedToParcelByUserId], references: [id])
+  convertedToParcelReason   String?
 
   createdByUserId String
   createdBy       User   @relation("RoughPieceCreatedBy", fields: [createdByUserId], references: [id])

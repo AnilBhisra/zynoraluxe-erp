@@ -184,6 +184,9 @@ async function RoughStockTabContent({ search, isOwner }: { search: string; isOwn
           colorEstimate: p.colorEstimate,
           clarityNote: p.clarityNote,
           returnedFromJobCode: p.returnedFromJobCode,
+          convertedToParcel: p.convertedToParcel
+            ? { at: p.convertedToParcel.at.toISOString(), byName: p.convertedToParcel.byName, reason: p.convertedToParcel.reason }
+            : null,
           photoUrl: await resolveDiamondAssetUrl(p.photoAssetId),
         }))
       ),

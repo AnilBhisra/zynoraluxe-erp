@@ -67,8 +67,22 @@ export type RoughPieceRow = {
   clarityNote: string | null;
   photoAssetId: string | null;
   returnedFromJobCode: string | null;
+  /** Set when an Owner converted this row from a single stone into a parcel. */
+  convertedToParcel: { at: Date; byName: string | null; reason: string } | null;
   createdAt: Date;
 };
+
+type ConversionFields = {
+  convertedToParcelAt: Date | null;
+  convertedToParcelReason: string | null;
+  convertedToParcelBy: { name: string } | null;
+};
+
+function conversionOf(p: ConversionFields): RoughPieceRow["convertedToParcel"] {
+  return p.convertedToParcelAt
+    ? { at: p.convertedToParcelAt, byName: p.convertedToParcelBy?.name ?? null, reason: p.convertedToParcelReason ?? "" }
+    : null;
+}
 
 /** For each given rough row still with a Manufacturer/Karigar, the open job
  * holding it and how much of that job is genuinely still pending. */
@@ -106,7 +120,7 @@ export async function listRoughPieces(filters?: {
           ]
         : undefined,
     },
-    include: { lot: { include: { supplier: true } }, returnedFromJob: true },
+    include: { lot: { include: { supplier: true } }, returnedFromJob: true, convertedToParcelBy: { select: { name: true } } },
     orderBy: { createdAt: "desc" },
     take: 500,
   });
@@ -132,6 +146,7 @@ export async function listRoughPieces(filters?: {
     clarityNote: p.clarityNote,
     photoAssetId: p.photoAssetId,
     returnedFromJobCode: p.returnedFromJob?.jobCode ?? null,
+    convertedToParcel: conversionOf(p),
     createdAt: p.createdAt,
   }));
 }
@@ -165,7 +180,7 @@ export async function listRoughLots(filters?: {
           ]
         : undefined,
     },
-    include: { supplier: true, pieces: true },
+    include: { supplier: true, pieces: { include: { convertedToParcelBy: { select: { name: true } } } } },
     orderBy: { purchaseDate: "desc" },
     take: 200,
   });
@@ -215,6 +230,7 @@ export async function listRoughLots(filters?: {
           clarityNote: p.clarityNote,
           photoAssetId: p.photoAssetId,
           returnedFromJobCode: null,
+          convertedToParcel: conversionOf(p),
           createdAt: p.createdAt,
         })),
     };

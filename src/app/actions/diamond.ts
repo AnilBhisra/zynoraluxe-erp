@@ -10,6 +10,7 @@ import { getCompanyFySettings } from "@/lib/accounting/company";
 import { parseDateOnly } from "@/lib/accounting/financialYear";
 import * as diamondPosting from "@/lib/diamond/posting";
 import * as parcelConversion from "@/lib/diamond/polishedParcelConversion";
+import * as roughConversion from "@/lib/diamond/roughParcelConversion";
 import * as polishedPurchasePosting from "@/lib/diamond/polishedPurchase";
 import * as packetProcessPosting from "@/lib/diamond/packetProcess";
 import * as packetAdjustmentPosting from "@/lib/diamond/packetAdjustment";
@@ -25,6 +26,7 @@ import {
   cancelPacketProcessJobSchema,
   cancelPolishedPurchaseSchema,
   convertPolishedToParcelSchema,
+  convertRoughStoneToParcelSchema,
   diamondProcessSchema,
   issueRoughSchema,
   markJobInProgressSchema,
@@ -483,6 +485,70 @@ export async function convertPolishedToParcelAction(
     if (error instanceof parcelConversion.PostingError) return { error: error.message };
     console.error("convertPolishedToParcelAction failed:", error);
     return { error: "Could not convert this record. Please try again." };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Owner-only, audited: a rough row bought as a single STONE that really is a
+// parcel becomes a PARCEL in place (issuable in part). Preview first; the
+// confirm carries the previewed carat/cost so nothing can change unseen.
+// ---------------------------------------------------------------------------
+
+export type SerializedRoughConversionPreview = Omit<roughConversion.RoughConversionPreview, "purchaseDate"> & {
+  purchaseDate: string | null;
+};
+
+export async function previewRoughStoneToParcelAction(
+  roughPieceId: string
+): Promise<{ error?: string; preview?: SerializedRoughConversionPreview }> {
+  await requireOwner();
+  if (typeof roughPieceId !== "string" || !roughPieceId.trim()) return { error: "Rough piece not found." };
+  try {
+    const p = await roughConversion.previewRoughStoneToParcel(prisma, roughPieceId.trim());
+    return { preview: { ...p, purchaseDate: p.purchaseDate ? p.purchaseDate.toISOString() : null } };
+  } catch (error) {
+    if (error instanceof roughConversion.PostingError) return { error: error.message };
+    console.error("previewRoughStoneToParcelAction failed:", error);
+    return { error: "Could not load the preview. Please try again." };
+  }
+}
+
+export async function convertRoughStoneToParcelAction(
+  _prevState: DiamondFormState,
+  formData: FormData
+): Promise<DiamondFormState> {
+  const user = await requireOwner();
+
+  const parsed = convertRoughStoneToParcelSchema.safeParse({
+    roughPieceId: formData.get("roughPieceId"),
+    pieceCount: formData.get("pieceCount"),
+    reason: formData.get("reason"),
+    expectedCarat: formData.get("expectedCarat"),
+    expectedCost: formData.get("expectedCost"),
+  });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
+  }
+
+  try {
+    const piece = await prisma.$transaction(
+      (tx) =>
+        roughConversion.convertRoughStoneToParcel(tx, {
+          roughPieceId: parsed.data.roughPieceId,
+          pieceCount: parsed.data.pieceCount ?? null,
+          reason: parsed.data.reason,
+          expectedCarat: parsed.data.expectedCarat,
+          expectedCost: parsed.data.expectedCost,
+          convertedByUserId: user.id,
+        }),
+      { timeout: 20000 }
+    );
+    revalidateDiamond();
+    return { success: true, code: piece.roughCode };
+  } catch (error) {
+    if (error instanceof roughConversion.PostingError) return { error: error.message };
+    console.error("convertRoughStoneToParcelAction failed:", error);
+    return { error: "Could not convert this stone. Please try again." };
   }
 }
 
