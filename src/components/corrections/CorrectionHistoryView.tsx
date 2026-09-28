@@ -7,6 +7,7 @@ const MODE_LABELS: Record<string, string> = {
   REVERSE_REPOST: "Reversed and reposted",
   REVALUE: "Revalued",
   ADD_CHARGES: "Missing charges added",
+  ADD_MANUFACTURER_LABOUR: "Manufacturer labour corrected",
 };
 
 const STATE_LABELS: Record<string, string> = {
@@ -25,6 +26,7 @@ const ENTITY_LABELS: Record<string, string> = {
   JEWELLERY_JOB: "Jewellery Job",
   JEWELLERY_RECEIPT: "Jewellery Receipt",
   FINISHED_JEWELLERY: "Finished Jewellery",
+  DIAMOND_RECEIPT: "Manufacturer Receipt",
 };
 
 function money(value: string | null) {

@@ -3,6 +3,7 @@ import "server-only";
 import { prisma } from "@/lib/db/prisma";
 import { Decimal, type DecimalInput, round2, ZERO } from "@/lib/accounting/money";
 import { round3 } from "@/lib/diamond/allocation";
+import { perIssuedCaratLabour } from "@/lib/diamond/processCharge";
 import { sumPacketMovements } from "@/lib/diamond/packets";
 import type {
   DiamondJobStatus,
@@ -567,6 +568,10 @@ export type DiamondJobDetail = DiamondJobRow & {
     weightLossCarat: Decimal;
     yieldPercent: Decimal;
     labourCharge: Decimal;
+    /** The live (posted, not reversed) Owner labour correction on this receipt, if any. */
+    labourCorrection: { correctionId: string; code: string; added: Decimal; corrected: Decimal } | null;
+    /** This receipt's labour re-priced per ISSUED carat at the job's per-carat rate; null without one. */
+    perIssuedCaratLabour: string | null;
   }[];
   timeline: JobTimelineEntry[];
 };
@@ -577,7 +582,15 @@ export async function getDiamondJobDetail(jobId: string): Promise<DiamondJobDeta
     include: {
       karigar: true,
       pieces: { include: { roughPiece: { include: { lot: true } } } },
-      receipts: { orderBy: { receiveDate: "asc" } },
+      receipts: {
+        orderBy: { receiveDate: "asc" },
+        include: {
+          labourCorrections: {
+            where: { correction: { state: "POSTED", reversedByCorrectionId: null } },
+            include: { correction: { select: { id: true, correctionCode: true } } },
+          },
+        },
+      },
       stockMovements: { orderBy: { createdAt: "asc" } },
     },
   });
@@ -622,6 +635,23 @@ export async function getDiamondJobDetail(jobId: string): Promise<DiamondJobDeta
       weightLossCarat: round3(r.weightLossCarat),
       yieldPercent: round3(r.yieldPercent),
       labourCharge: round2(r.labourCharge),
+      labourCorrection: r.labourCorrections[0]
+        ? {
+            correctionId: r.labourCorrections[0].correction.id,
+            code: r.labourCorrections[0].correction.correctionCode,
+            added: round2(r.labourCorrections[0].addedLabour),
+            corrected: round2(r.labourCorrections[0].correctedLabour),
+          }
+        : null,
+      perIssuedCaratLabour:
+        job.processOutputKindSnapshot === "ROUGH"
+          ? null
+          : perIssuedCaratLabour({
+              basis: job.chargeRateBasis,
+              rate: job.chargeRate ? new Decimal(job.chargeRate).toFixed(4) : null,
+              polishedCarat: round3(r.totalPolishedCarat).toFixed(3),
+              weightLossCarat: round3(r.weightLossCarat).toFixed(3),
+            }),
     })),
     timeline: job.stockMovements.map((m) => ({
       id: m.id,

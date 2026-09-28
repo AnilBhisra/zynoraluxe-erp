@@ -272,6 +272,16 @@ async function JobsTabContent({
         weightLossCarat: r.weightLossCarat.toFixed(3),
         yieldPercent: r.yieldPercent.toFixed(3),
         labourCharge: ownerOnly(isOwner, r.labourCharge.toFixed(2)),
+        labourCorrection:
+          isOwner && r.labourCorrection
+            ? {
+                correctionId: r.labourCorrection.correctionId,
+                code: r.labourCorrection.code,
+                added: r.labourCorrection.added.toFixed(2),
+                corrected: r.labourCorrection.corrected.toFixed(2),
+              }
+            : null,
+        perIssuedCaratLabour: isOwner ? r.perIssuedCaratLabour : null,
       })),
       timeline: detail.timeline.map((m) => ({
         id: m.id,

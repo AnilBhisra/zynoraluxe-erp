@@ -8,6 +8,8 @@ import { ReceivePolishedForm } from "@/components/diamond/ReceivePolishedForm";
 import { ReceiveProcessedRoughForm } from "@/components/diamond/ReceiveProcessedRoughForm";
 import { CHARGE_RATE_BASIS_LABELS, type ChargeRateBasis } from "@/lib/diamond/processCharge";
 import { CancelJobForm } from "@/components/diamond/CancelJobForm";
+import { ReceiptLabourCorrectionForm, ReverseLabourCorrectionForm } from "@/components/diamond/ReceiptLabourCorrectionForm";
+import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { shapeLabel } from "@/lib/diamond/shapes";
 import type { DiamondShape } from "@/generated/prisma/enums";
@@ -55,6 +57,10 @@ export type SerializedJobDetail = {
     weightLossCarat: string;
     yieldPercent: string;
     labourCharge: string | null;
+    /** Owner-only: the live labour correction on this receipt. */
+    labourCorrection: { correctionId: string; code: string; added: string; corrected: string } | null;
+    /** Owner-only: this receipt's labour re-priced per issued carat at the job's rate. */
+    perIssuedCaratLabour: string | null;
   }[];
   timeline: { id: string; type: string; pieces: number; carat: string; costValue: string | null; sourceDocument: string; createdAt: string }[];
 };
@@ -78,6 +84,14 @@ export function JobDetailView({ job, isOwner }: { job: SerializedJobDetail; isOw
   const [showReceiveForm, setShowReceiveForm] = useState(false);
 
   function handleSaved() {
+    router.refresh();
+  }
+
+  // The correction form unmounts once its receipt re-renders as corrected, so
+  // the lasting confirmation lives here.
+  const [labourNotice, setLabourNotice] = useState<string | null>(null);
+  function handleLabourDone(message: string) {
+    setLabourNotice(message);
     router.refresh();
   }
 
@@ -209,6 +223,11 @@ export function JobDetailView({ job, isOwner }: { job: SerializedJobDetail; isOw
       {job.receipts.length > 0 ? (
         <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
           <h3 className="mb-3 text-sm font-semibold text-zinc-700 dark:text-zinc-300">Receipts</h3>
+          {labourNotice ? (
+            <div className="mb-3" data-testid="labour-notice">
+              <Alert tone="success">{labourNotice}</Alert>
+            </div>
+          ) : null}
           <div className="overflow-x-auto">
             <table className="w-full min-w-[560px] text-sm">
               <thead className="bg-[var(--surface-muted)] text-left text-xs text-zinc-500 dark:text-zinc-400">
@@ -233,7 +252,27 @@ export function JobDetailView({ job, isOwner }: { job: SerializedJobDetail; isOw
                     <td className="px-3 py-2">{r.returnedRoughCarat}ct</td>
                     <td className="px-3 py-2">{r.weightLossCarat}ct</td>
                     <td className="px-3 py-2">{r.yieldPercent}%</td>
-                    {isOwner ? <td className="px-3 py-2">₹{r.labourCharge}</td> : null}
+                    {isOwner ? (
+                      <td className="px-3 py-2 align-top">
+                        ₹{r.labourCharge}
+                        {r.labourCorrection ? (
+                          <span className="block text-xs text-zinc-600 dark:text-zinc-400" data-testid="labour-corrected">
+                            + ₹{r.labourCorrection.added} correction ({r.labourCorrection.code}) = <strong>₹{r.labourCorrection.corrected}</strong>
+                            <span className="block">
+                              <ReverseLabourCorrectionForm correctionId={r.labourCorrection.correctionId} onDone={handleLabourDone} />
+                            </span>
+                          </span>
+                        ) : job.processOutputKind !== "ROUGH" && r.polishedCount > 0 && r.labourCharge !== null ? (
+                          <ReceiptLabourCorrectionForm
+                            receiptId={r.id}
+                            receiptCode={r.receiptCode}
+                            currentLabour={r.labourCharge}
+                            suggestion={r.perIssuedCaratLabour}
+                            onDone={handleLabourDone}
+                          />
+                        ) : null}
+                      </td>
+                    ) : null}
                   </tr>
                 ))}
               </tbody>

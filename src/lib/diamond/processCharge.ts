@@ -67,6 +67,27 @@ export function computeProcessCharge(input: {
   }
 }
 
+/**
+ * A posted polished receipt's labour re-priced per ISSUED carat at the job's
+ * agreed per-carat rate: rate × (polished + that receipt's weight loss).
+ * Null when the job has no per-carat rate to re-price with.
+ */
+export function perIssuedCaratLabour(input: {
+  basis: string | null;
+  rate: string | null;
+  polishedCarat: string;
+  weightLossCarat: string;
+}): string | null {
+  if (!input.rate || (input.basis !== "PER_CARAT" && input.basis !== "PER_ISSUED_CARAT")) return null;
+  const toMilli = (v: string) => {
+    const [w, f = ""] = v.trim().split(".");
+    return BigInt(w || "0") * BigInt(1000) + BigInt((f + "000").slice(0, 3) || "0");
+  };
+  const milli = toMilli(input.polishedCarat) + toMilli(input.weightLossCarat);
+  const issued = `${milli / BigInt(1000)}.${(milli % BigInt(1000)).toString().padStart(3, "0")}`;
+  return computeProcessCharge({ basis: "PER_ISSUED_CARAT", rate: input.rate, carat: input.polishedCarat, pieces: 0, isFinal: true, issuedCarat: issued });
+}
+
 export const CHARGE_RATE_BASIS_LABELS: Record<ChargeRateBasis, string> = {
   FIXED: "Fixed amount",
   PER_CARAT: "Per carat",

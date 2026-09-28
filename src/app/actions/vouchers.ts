@@ -472,6 +472,17 @@ export async function cancelVoucherAction(
         error: "This voucher belongs to a missing-charges correction — reverse it from the receipt on the Jewellery Job page instead, so the piece cost and Karigar payable stay in sync.",
       };
     }
+    // Same for a Manufacturer labour correction: it also moved the polished
+    // outputs' cost and the job's labour total.
+    const labourCorrection = await prisma.correction.findFirst({
+      where: { correctionVoucherId: parsed.data.voucherId, mode: "ADD_MANUFACTURER_LABOUR" },
+      select: { id: true },
+    });
+    if (labourCorrection) {
+      return {
+        error: "This voucher belongs to a Manufacturer labour correction — reverse it from the receipt on the Diamond Manufacturer job page instead, so the polished stock cost and Manufacturer payable stay in sync.",
+      };
+    }
   }
   // A Rough Purchase or Metal Purchase also posts as a plain "PURCHASE"
   // voucher (there is no dedicated voucher type for either) — without this

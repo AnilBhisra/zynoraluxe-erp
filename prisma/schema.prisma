@@ -835,14 +835,15 @@ model DiamondJob {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  pieces           DiamondJobPiece[]
-  receipts         PolishedReceipt[]
-  stockMovements   StockMovement[]
-  returnedPieces   RoughPiece[]      @relation("JobReturnedPieces")
-  polishedDiamonds PolishedDiamond[]
+  pieces            DiamondJobPiece[]
+  receipts          PolishedReceipt[]
+  stockMovements    StockMovement[]
+  returnedPieces    RoughPiece[]                     @relation("JobReturnedPieces")
+  polishedDiamonds  PolishedDiamond[]
   // Manufactured polished parcels this job's receipts produced (kept as
   // packets so they can be issued in part); see PolishedPacket.
-  sourcedPackets   PolishedPacket[]  @relation("PolishedPacketSourceJob")
+  sourcedPackets    PolishedPacket[]                 @relation("PolishedPacketSourceJob")
+  labourCorrections DiamondReceiptLabourCorrection[]
 
   @@index([karigarId])
   @@index([status])
@@ -882,12 +883,43 @@ model PolishedReceipt {
 
   createdAt DateTime @default(now())
 
-  outputs        PolishedDiamond[]
-  sourcedPackets PolishedPacket[]  @relation("PolishedPacketSourceReceipt")
-  returnedPieces RoughPiece[]      @relation("ReceiptReturnedPieces")
+  outputs           PolishedDiamond[]
+  sourcedPackets    PolishedPacket[]                 @relation("PolishedPacketSourceReceipt")
+  returnedPieces    RoughPiece[]                     @relation("ReceiptReturnedPieces")
+  labourCorrections DiamondReceiptLabourCorrection[]
 
   @@index([jobId])
   @@map("polished_receipts")
+}
+
+/// An audited Owner correction that raises a Manufacturer receipt's labour
+/// (e.g. re-priced per issued carat). The receipt row and its voucher stay as
+/// posted; this row, its Correction (mode ADD_MANUFACTURER_LABOUR) and the
+/// CORRECTION voucher carry the addition, and `lines` records exactly what
+/// each polished output received so a reversal removes exactly that.
+model DiamondReceiptLabourCorrection {
+  id String @id @default(cuid())
+
+  correctionId String     @unique
+  correction   Correction @relation(fields: [correctionId], references: [id])
+
+  receiptId String
+  receipt   PolishedReceipt @relation(fields: [receiptId], references: [id])
+
+  jobId String
+  job   DiamondJob @relation(fields: [jobId], references: [id])
+
+  previousLabour  Decimal @db.Decimal(14, 2)
+  addedLabour     Decimal @db.Decimal(14, 2)
+  correctedLabour Decimal @db.Decimal(14, 2)
+  /// [{ kind: "STONE" | "PACKET", id, movementId?, code, carat, added, costBefore, costAfter }]
+  lines           Json
+
+  createdAt DateTime @default(now())
+
+  @@index([receiptId])
+  @@index([jobId])
+  @@map("diamond_receipt_labour_corrections")
 }
 
 model PolishedDiamond {
@@ -3037,6 +3069,7 @@ enum CorrectionEntityType {
   FINISHED_JEWELLERY
   FINISHED_JEWELLERY_SALE
   MASTER_SETTING
+  DIAMOND_RECEIPT
 }
 
 enum CorrectionMode {
@@ -3058,6 +3091,10 @@ enum CorrectionMode {
   /// Jewellery WIP account already holds the value for both jobs — so this is
   /// a pure memo reclassification, audited the same way as every correction.
   METAL_TRANSFER
+  /// Raises a Manufacturer (diamond) receipt's labour. The receipt and its
+  /// voucher stand; a CORRECTION voucher (Dr Polished Inventory, Cr the
+  /// Manufacturer's payable) and a DiamondReceiptLabourCorrection carry it.
+  ADD_MANUFACTURER_LABOUR
 }
 
 enum CorrectionState {
@@ -3093,6 +3130,8 @@ model Correction {
   receiptChargeCorrection JewelleryReceiptChargeCorrection?
   /// Set when this is a METAL_TRANSFER correction.
   metalTransfer           JewelleryMetalTransfer?
+  /// Set when this is an ADD_MANUFACTURER_LABOUR correction.
+  diamondLabourCorrection DiamondReceiptLabourCorrection?
   correctionCode          String                            @unique
   entityType              CorrectionEntityType
   /// Primary key of the corrected record, in its own table. Deliberately a
