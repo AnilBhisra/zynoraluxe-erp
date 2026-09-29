@@ -469,7 +469,7 @@ describe("Karigar custody — controls", () => {
     // A job already holding silver cannot take gold.
     const silverJob = await makeJob("Silver job");
     await prisma.$transaction(
-      (tx) => issueMaterialsToJewelleryJob(tx, { ...FY, jobId: silverJob.id, issueDate: DATE, metalLines: [{ metalType: "SILVER", purityId: silverPurityId, grossWeight: "10" }], polishedDiamondIds: [], otherMaterialLines: [], idempotencyKey: key("issue"), createdByUserId: ownerId }),
+      (tx) => issueMaterialsToJewelleryJob(tx, { legacyDirectGoldIssue: true, ...FY, jobId: silverJob.id, issueDate: DATE, metalLines: [{ metalType: "SILVER", purityId: silverPurityId, grossWeight: "10" }], polishedDiamondIds: [], otherMaterialLines: [], idempotencyKey: key("issue"), createdByUserId: ownerId }),
       TX
     );
     await expect(op({ kind: "ALLOCATE_TO_JOB", purityId, jobId: silverJob.id, grossWeight: "1" })).rejects.toThrow(/never mixed/);
@@ -621,7 +621,7 @@ describe("Karigar custody — releasing unused metal from an existing job", () =
   it("releases part of an old-style job's pending metal to the Karigar balance; the original issue is untouched", async () => {
     const job = await makeJob("Old style job");
     await prisma.$transaction(
-      (tx) => issueMaterialsToJewelleryJob(tx, { ...FY, jobId: job.id, issueDate: DATE, metalLines: [{ metalType: "GOLD", purityId, grossWeight: "6" }], polishedDiamondIds: [], otherMaterialLines: [], idempotencyKey: key("issue"), createdByUserId: ownerId }),
+      (tx) => issueMaterialsToJewelleryJob(tx, { legacyDirectGoldIssue: true, ...FY, jobId: job.id, issueDate: DATE, metalLines: [{ metalType: "GOLD", purityId, grossWeight: "6" }], polishedDiamondIds: [], otherMaterialLines: [], idempotencyKey: key("issue"), createdByUserId: ownerId }),
       TX
     );
     const before = await jobRow(job.id);
@@ -676,7 +676,7 @@ describe("Karigar custody — releasing unused metal from an existing job", () =
     await op({ kind: "ALLOCATE_TO_JOB", purityId, jobId: job.id, all: true });
     const before = await jobRow(job.id);
     await prisma.$transaction(
-      (tx) => issueMaterialsToJewelleryJob(tx, { ...FY, jobId: job.id, issueDate: DATE, metalLines: [{ metalType: "GOLD", purityId, grossWeight: "1" }], polishedDiamondIds: [], otherMaterialLines: [], idempotencyKey: key("issue"), createdByUserId: ownerId }),
+      (tx) => issueMaterialsToJewelleryJob(tx, { legacyDirectGoldIssue: true, ...FY, jobId: job.id, issueDate: DATE, metalLines: [{ metalType: "GOLD", purityId, grossWeight: "1" }], polishedDiamondIds: [], otherMaterialLines: [], idempotencyKey: key("issue"), createdByUserId: ownerId }),
       TX
     );
     const after = await jobRow(job.id);
@@ -684,7 +684,7 @@ describe("Karigar custody — releasing unused metal from an existing job", () =
     expect(new Decimal(after.remainingWipCost).greaterThan(before.remainingWipCost)).toBe(true);
     await expect(
       prisma.$transaction(
-        (tx) => issueMaterialsToJewelleryJob(tx, { ...FY, jobId: job.id, issueDate: DATE, metalLines: [{ metalType: "GOLD", purityId, grossWeight: "1" }], polishedDiamondIds: [], otherMaterialLines: [], idempotencyKey: key("issue"), createdByUserId: ownerId }),
+        (tx) => issueMaterialsToJewelleryJob(tx, { legacyDirectGoldIssue: true, ...FY, jobId: job.id, issueDate: DATE, metalLines: [{ metalType: "GOLD", purityId, grossWeight: "1" }], polishedDiamondIds: [], otherMaterialLines: [], idempotencyKey: key("issue"), createdByUserId: ownerId }),
         TX
       )
     ).rejects.toThrow(/already been issued/);
@@ -730,7 +730,7 @@ describe("Karigar custody — receipts on a job funded from custody or by transf
     const { postJobMetalTransfer } = await import("@/lib/jewellery/metalTransfer");
     const src = await makeJob("Transfer source");
     await prisma.$transaction(
-      (tx) => issueMaterialsToJewelleryJob(tx, { ...FY, jobId: src.id, issueDate: DATE, metalLines: [{ metalType: "GOLD", purityId, grossWeight: "2" }], polishedDiamondIds: [], otherMaterialLines: [], idempotencyKey: key("issue"), createdByUserId: ownerId }),
+      (tx) => issueMaterialsToJewelleryJob(tx, { legacyDirectGoldIssue: true, ...FY, jobId: src.id, issueDate: DATE, metalLines: [{ metalType: "GOLD", purityId, grossWeight: "2" }], polishedDiamondIds: [], otherMaterialLines: [], idempotencyKey: key("issue"), createdByUserId: ownerId }),
       TX
     );
     const dst = await makeJob("Transfer destination");

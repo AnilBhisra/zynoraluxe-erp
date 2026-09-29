@@ -678,7 +678,7 @@ describe("issueMaterialsToJewelleryJob", () => {
     await purchaseMetal(fixture, purity.id as string, { grossWeight: 100, totalPurchaseCost: 500000 });
     const job = await createDraftJob(fixture);
 
-    const updated = await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    const updated = await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,
@@ -712,7 +712,7 @@ describe("issueMaterialsToJewelleryJob", () => {
     await purchaseMetal(fixture, gold18.id as string, { grossWeight: 50, totalPurchaseCost: 200000 });
     const job = await createDraftJob(fixture);
 
-    const updated = await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    const updated = await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,
@@ -736,7 +736,7 @@ describe("issueMaterialsToJewelleryJob", () => {
     const job = await createDraftJob(fixture);
 
     await expect(
-      issueMaterialsToJewelleryJob(fixture.tx as never, {
+      issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
         ...common(),
         jobId: job.id as string,
         issueDate: DATE,
@@ -754,7 +754,7 @@ describe("issueMaterialsToJewelleryJob", () => {
     const job1 = await createDraftJob(fixture);
 
     // Drain the purity to EXACTLY zero.
-    await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job1.id as string,
       issueDate: DATE,
@@ -770,7 +770,7 @@ describe("issueMaterialsToJewelleryJob", () => {
     // be rejected — this is correct guard behaviour, not a bug.
     const job2 = await createDraftJob(fixture);
     await expect(
-      issueMaterialsToJewelleryJob(fixture.tx as never, {
+      issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
         ...common(),
         jobId: job2.id as string,
         issueDate: DATE,
@@ -788,7 +788,7 @@ describe("issueMaterialsToJewelleryJob", () => {
     expect(replenished.costValue.toFixed(2)).toBe("55000.00");
 
     const job3 = await createDraftJob(fixture);
-    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job3.id as string,
       issueDate: DATE,
@@ -805,7 +805,7 @@ describe("issueMaterialsToJewelleryJob", () => {
     const diamond = fixture.seedPolishedDiamond({ polishedCode: "ZL-P-000001", shape: "ROUND", carat: "0.5", allocatedCost: "8000" });
     const job = await createDraftJob(fixture);
 
-    const updated = await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    const updated = await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,
@@ -836,7 +836,7 @@ describe("issueMaterialsToJewelleryJob", () => {
     const job = await createDraftJob(fixture);
 
     await expect(
-      issueMaterialsToJewelleryJob(fixture.tx as never, {
+      issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
         ...common(),
         jobId: job.id as string,
         issueDate: DATE,
@@ -853,7 +853,7 @@ describe("issueMaterialsToJewelleryJob", () => {
     const job = await createDraftJob(fixture);
 
     await expect(
-      issueMaterialsToJewelleryJob(fixture.tx as never, {
+      issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
         ...common(),
         jobId: job.id as string,
         issueDate: DATE,
@@ -870,7 +870,7 @@ describe("issueMaterialsToJewelleryJob", () => {
     await purchaseMetal(fixture, purity.id as string, { grossWeight: 10, totalPurchaseCost: 50000 });
     const job = await createDraftJob(fixture);
 
-    const updated = await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    const updated = await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,
@@ -891,7 +891,7 @@ describe("issueMaterialsToJewelleryJob", () => {
     await purchaseMetal(fixture, purity.id as string, { grossWeight: 10, totalPurchaseCost: 50000 });
     const job = await createDraftJob(fixture);
 
-    await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,
@@ -901,7 +901,7 @@ describe("issueMaterialsToJewelleryJob", () => {
     });
 
     await expect(
-      issueMaterialsToJewelleryJob(fixture.tx as never, {
+      issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
         ...common(),
         jobId: job.id as string,
         issueDate: DATE,
@@ -916,7 +916,7 @@ describe("issueMaterialsToJewelleryJob", () => {
     const fixture = createFakeJewelleryTx();
     const job = await createDraftJob(fixture);
     await expect(
-      issueMaterialsToJewelleryJob(fixture.tx as never, {
+      issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
         ...common(),
         jobId: job.id as string,
         issueDate: DATE,
@@ -933,7 +933,7 @@ describe("markJewelleryJobInProgress / setJewelleryJobNeedsCorrection", () => {
     const purity = seedGold22k(fixture);
     await purchaseMetal(fixture, purity.id as string, { grossWeight: 10, totalPurchaseCost: 50000 });
     const job = await createDraftJob(fixture);
-    return issueMaterialsToJewelleryJob(fixture.tx as never, {
+    return issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,
@@ -979,7 +979,7 @@ describe("receiveFinishedJewellery", () => {
   async function setupJob(fixture: Fixture, grossWeight: number, totalPurchaseCost: number, purity = seedGold22k(fixture)) {
     await purchaseMetal(fixture, purity.id as string, { grossWeight: grossWeight * 2, totalPurchaseCost: totalPurchaseCost * 2 });
     const job = await createDraftJob(fixture);
-    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,
@@ -1181,7 +1181,7 @@ describe("receiveFinishedJewellery", () => {
     await purchaseMetal(fixture, gold22.id as string, { grossWeight: 50, totalPurchaseCost: 250000 });
     await purchaseMetal(fixture, gold18.id as string, { grossWeight: 50, totalPurchaseCost: 200000 });
     const job = await createDraftJob(fixture);
-    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,
@@ -1276,7 +1276,7 @@ describe("receiveFinishedJewellery", () => {
     await purchaseMetal(fixture, purity.id as string, { grossWeight: 20, totalPurchaseCost: 100000 });
     const diamond = fixture.seedPolishedDiamond({ polishedCode: "ZL-P-000010", shape: "ROUND", carat: "0.3", allocatedCost: "6000" });
     const job = await createDraftJob(fixture);
-    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,
@@ -1325,7 +1325,7 @@ describe("receiveFinishedJewellery", () => {
     const fixture = createFakeJewelleryTx();
     const diamond = fixture.seedPolishedDiamond({ polishedCode: "ZL-P-000011", shape: "ROUND", carat: "0.3", allocatedCost: "6000" });
     const job = await createDraftJob(fixture);
-    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,
@@ -1365,7 +1365,7 @@ describe("receiveFinishedJewellery", () => {
     const fixture = createFakeJewelleryTx();
     const diamond = fixture.seedPolishedDiamond({ polishedCode: "ZL-P-000012", shape: "ROUND", carat: "0.3", allocatedCost: "6000" });
     const job = await createDraftJob(fixture);
-    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,
@@ -1404,7 +1404,7 @@ describe("receiveFinishedJewellery", () => {
     const fixture = createFakeJewelleryTx();
     const diamond = fixture.seedPolishedDiamond({ polishedCode: "ZL-P-000013", shape: "ROUND", carat: "0.3", allocatedCost: "6000" });
     const job = await createDraftJob(fixture);
-    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,
@@ -1440,7 +1440,7 @@ describe("receiveFinishedJewellery", () => {
     const fixture = createFakeJewelleryTx();
     const diamond = fixture.seedPolishedDiamond({ polishedCode: "ZL-P-000014", shape: "ROUND", carat: "0.3", allocatedCost: "6000" });
     const job = await createDraftJob(fixture);
-    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,
@@ -1481,7 +1481,7 @@ describe("receiveFinishedJewellery", () => {
     await purchaseMetal(fixture, purity.id as string, { grossWeight: 20, totalPurchaseCost: 100000 });
     const diamond = fixture.seedPolishedDiamond({ polishedCode: "ZL-P-000015", shape: "ROUND", carat: "0.3", allocatedCost: "6000" });
     const job = await createDraftJob(fixture);
-    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,
@@ -1757,7 +1757,7 @@ describe("receiveFinishedJewellery", () => {
     const purity = seedGold22k(fixture);
     await purchaseMetal(fixture, purity.id as string, { grossWeight: 10, totalPurchaseCost: 50000 });
     const job = await createDraftJob(fixture);
-    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,
@@ -1822,7 +1822,7 @@ describe("cancelJewelleryJob", () => {
     await purchaseMetal(fixture, purity.id as string, { grossWeight: 10, totalPurchaseCost: 50000 });
     const diamond = fixture.seedPolishedDiamond({ polishedCode: "ZL-P-000020", shape: "ROUND", carat: "0.3", allocatedCost: "6000" });
     const job = await createDraftJob(fixture);
-    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,
@@ -1877,7 +1877,7 @@ describe("cancelJewelleryJob", () => {
     const purity = seedGold22k(fixture);
     await purchaseMetal(fixture, purity.id as string, { grossWeight: 10, totalPurchaseCost: 50000 });
     const job = await createDraftJob(fixture);
-    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,
@@ -1923,7 +1923,7 @@ describe("overrideFinishedJewelleryAllocation", () => {
     const purity = seedGold22k(fixture);
     await purchaseMetal(fixture, purity.id as string, { grossWeight: 30, totalPurchaseCost: 90000 });
     const job = await createDraftJob(fixture);
-    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,
@@ -2014,7 +2014,7 @@ describe("mixed-purity return and scrap handling", () => {
     await purchaseMetal(fixture, gold22.id as string, { grossWeight: 20, totalPurchaseCost: 100000 }); // 5000/g
     await purchaseMetal(fixture, gold18.id as string, { grossWeight: 20, totalPurchaseCost: 60000 }); // 3000/g
     const job = await createDraftJob(fixture);
-    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,
@@ -2245,7 +2245,7 @@ describe("mixed-purity return and scrap handling", () => {
     const purity = seedGold22k(fixture);
     await purchaseMetal(fixture, purity.id as string, { grossWeight: 10, totalPurchaseCost: 50000 });
     const job = await createDraftJob(fixture);
-    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,
@@ -2286,7 +2286,7 @@ describe("other-material cost allocation across outputs", () => {
     const purity = seedGold22k(fixture);
     await purchaseMetal(fixture, purity.id as string, { grossWeight: grossWeight * 2, totalPurchaseCost: totalPurchaseCost * 2 });
     const job = await createDraftJob(fixture);
-    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    const issued = await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,
@@ -2539,7 +2539,7 @@ describe("historical snapshot preservation", () => {
     const purity = seedGold22k(fixture);
     await purchaseMetal(fixture, purity.id as string, { grossWeight: 10, totalPurchaseCost: 50000 });
     const job = await createDraftJob(fixture);
-    await issueMaterialsToJewelleryJob(fixture.tx as never, {
+    await issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
       ...common(),
       jobId: job.id as string,
       issueDate: DATE,

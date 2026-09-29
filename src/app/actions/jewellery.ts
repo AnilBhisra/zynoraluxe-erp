@@ -25,7 +25,10 @@ import {
   overrideFinishedAllocationSchema,
   receiveFinishedJewellerySchema,
   recomputeJobStatusSchema,
+  type ReceiveFinishedJewelleryInput,
 } from "@/lib/validation/jewellery";
+import { CustodyError } from "@/lib/jewellery/karigarCustody";
+import { planReceiptCustody, receiptCustodyFingerprint, receiveWithCustodyAllocation } from "@/lib/jewellery/receiptCustody";
 
 export type JewelleryFormState = { error?: string; success?: boolean; code?: string } | undefined;
 
@@ -375,6 +378,49 @@ export async function cancelJewelleryJobAction(
 // Receive Finished Jewellery
 // ---------------------------------------------------------------------------
 
+function toReceiptInput(
+  data: ReceiveFinishedJewelleryInput,
+  receiveDate: Date,
+  user: { id: string },
+  fy: { fyStartMonth: number; fyStartDay: number }
+) {
+  return {
+    fyStartMonth: fy.fyStartMonth,
+    fyStartDay: fy.fyStartDay,
+    jobId: data.jobId,
+    receiveDate,
+    outputs: data.outputs,
+    diamondResolutions: data.diamondResolutions,
+    packetResolutions: data.packetResolutions.map((r) => ({
+      ...r,
+      setInOutputIndex: r.setInOutputIndex ?? null,
+      damagedLostReason: r.damagedLostReason || null,
+    })),
+    returnedMetalLines: data.returnedMetalLines,
+    scrapMetalLines: data.scrapMetalLines,
+    karigarAddedFineWeight: data.karigarAddedFineWeight,
+    karigarAddedCost: data.karigarAddedCost,
+    alloy: {
+      companyGrossWeight: data.companyAlloyGrossWeight,
+      karigarGrossWeight: data.karigarAlloyGrossWeight,
+      karigarCost: data.karigarAlloyCost,
+      includedGrossWeight: data.includedAlloyGrossWeight,
+    },
+    labourCharge: data.labourCharge,
+    makingCharge: data.makingCharge,
+    settingCharge: data.settingCharge,
+    platingCharge: data.platingCharge,
+    otherExpense: data.otherExpense,
+    markJobComplete: data.markJobComplete,
+    isAbnormalLoss: data.isAbnormalLoss,
+    abnormalLossReason: data.abnormalLossReason || null,
+    notes: data.notes || null,
+    damagedLostByUserId: user.id,
+    idempotencyKey: data.idempotencyKey || null,
+    createdByUserId: user.id,
+  };
+}
+
 export async function receiveFinishedJewelleryAction(
   _prevState: JewelleryFormState,
   formData: FormData
@@ -436,43 +482,44 @@ export async function receiveFinishedJewelleryAction(
     if (existing) return { success: true, code: existing.receiptCode };
   }
 
+  // Receipt-time allocation from the Karigar's metal balance: Owner only
+  // (it moves custody metal), one transaction with the receipt, and refused
+  // if anything changed since the Owner's preview.
+  const custodySourcePurityId = String(formData.get("custodySourcePurityId") ?? "").trim();
+  if (custodySourcePurityId) {
+    if (!isOwner) return { error: "Only the Owner can take gold from a Karigar's balance for a receipt." };
+    if (!data.idempotencyKey) return { error: "Missing submission key — reload the page and try again." };
+    const fingerprint = String(formData.get("custodyFingerprint") ?? "").trim();
+    if (!fingerprint) return { error: "Preview the gold allocation first, then save." };
+    try {
+      const result = await prisma.$transaction(
+        (tx) =>
+          receiveWithCustodyAllocation(tx, {
+            ...toReceiptInput(data, receiveDate, user, fy),
+            idempotencyKey: data.idempotencyKey!,
+            sourcePurityId: custodySourcePurityId,
+            explicitLossFineWeight: String(formData.get("explicitLossFineWeight") ?? "").trim() || null,
+            expectedFingerprint: fingerprint,
+            owner: { id: user.id, role: user.role },
+          }),
+        { timeout: 30000, maxWait: 15000 }
+      );
+      revalidateJewellery();
+      return { success: true, code: result.receipt.receiptCode };
+    } catch (error) {
+      if (isIdempotencyConflict(error)) {
+        const existing = await prisma.jewelleryReceipt.findUnique({ where: { idempotencyKey: data.idempotencyKey } });
+        if (existing) return { success: true, code: existing.receiptCode };
+      }
+      if (error instanceof CustodyError || error instanceof jewelleryPosting.PostingError) return { error: error.message };
+      console.error("receiveFinishedJewelleryAction (custody) failed:", error);
+      return { error: "Could not save this receipt. Nothing was saved — please try again." };
+    }
+  }
+
   try {
     const result = await prisma.$transaction((tx) =>
-      jewelleryPosting.receiveFinishedJewellery(tx, {
-        fyStartMonth: fy.fyStartMonth,
-        fyStartDay: fy.fyStartDay,
-        jobId: data.jobId,
-        receiveDate,
-        outputs: data.outputs,
-        diamondResolutions: data.diamondResolutions,
-        packetResolutions: data.packetResolutions.map((r) => ({
-          ...r,
-          setInOutputIndex: r.setInOutputIndex ?? null,
-          damagedLostReason: r.damagedLostReason || null,
-        })),
-        returnedMetalLines: data.returnedMetalLines,
-        scrapMetalLines: data.scrapMetalLines,
-        karigarAddedFineWeight: data.karigarAddedFineWeight,
-        karigarAddedCost: data.karigarAddedCost,
-        alloy: {
-          companyGrossWeight: data.companyAlloyGrossWeight,
-          karigarGrossWeight: data.karigarAlloyGrossWeight,
-          karigarCost: data.karigarAlloyCost,
-          includedGrossWeight: data.includedAlloyGrossWeight,
-        },
-        labourCharge: data.labourCharge,
-        makingCharge: data.makingCharge,
-        settingCharge: data.settingCharge,
-        platingCharge: data.platingCharge,
-        otherExpense: data.otherExpense,
-        markJobComplete: data.markJobComplete,
-        isAbnormalLoss: data.isAbnormalLoss,
-        abnormalLossReason: data.abnormalLossReason || null,
-        notes: data.notes || null,
-        damagedLostByUserId: user.id,
-        idempotencyKey: data.idempotencyKey || null,
-        createdByUserId: user.id,
-      }),
+      jewelleryPosting.receiveFinishedJewellery(tx, toReceiptInput(data, receiveDate, user, fy)),
       // This posting function can issue many sequential queries in one
       // transaction (per-purity return/scrap validation and movements,
       // per-output consumed-out movements, other-material reallocation
@@ -494,6 +541,98 @@ export async function receiveFinishedJewelleryAction(
     if (error instanceof jewelleryPosting.PostingError) return { error: error.message };
     console.error("receiveFinishedJewelleryAction failed:", error);
     return { error: "Could not save this receipt. Please try again." };
+  }
+}
+
+export type ReceiptCustodyPreview = {
+  jobCode: string;
+  karigarName: string;
+  sourceLabel: string;
+  sourceFineness: string;
+  outputs: { netWeight: string; purityDisplayName: string; finenessPercent: string; fineWeight: string }[];
+  outputFine: string;
+  returnedFine: string;
+  scrapFine: string;
+  explicitLossFine: string;
+  neededFine: string;
+  jobPendingFine: string;
+  allocation: { fineWeight: string; grossWeight: string; costValue: string } | null;
+  custodyBefore: { gross: string; fine: string; cost: string };
+  custodyAfter: { gross: string; fine: string; cost: string };
+  jobPendingAfterReceipt: string;
+  completesJob: boolean;
+  fingerprint: string;
+};
+
+/** Owner only: what this receipt would take from the Karigar's balance. Writes nothing. */
+export async function previewReceiptCustodyAction(
+  _prev: { error?: string; preview?: ReceiptCustodyPreview } | undefined,
+  formData: FormData
+): Promise<{ error?: string; preview?: ReceiptCustodyPreview }> {
+  await requireOwner();
+  const parsed = receiveFinishedJewellerySchema.safeParse({
+    jobId: formData.get("jobId"),
+    receiveDate: formData.get("receiveDate"),
+    outputs: readJsonArray(formData, "outputsJson"),
+    returnedMetalLines: readJsonArray(formData, "returnedMetalLinesJson"),
+    scrapMetalLines: readJsonArray(formData, "scrapMetalLinesJson"),
+    karigarAddedFineWeight: formData.get("karigarAddedFineWeight") || "0",
+    markJobComplete: formData.get("markJobComplete") || "false",
+  });
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
+  const receiveDate = safeParseDateOnly(parsed.data.receiveDate);
+  if (!receiveDate) return { error: "Enter a valid receive date." };
+  const sourcePurityId = String(formData.get("custodySourcePurityId") ?? "").trim();
+  if (!sourcePurityId) return { error: "Choose the Karigar metal the jewellery was made from." };
+  try {
+    const plan = await planReceiptCustody(prisma, {
+      jobId: parsed.data.jobId,
+      sourcePurityId,
+      receiveDate,
+      outputs: parsed.data.outputs,
+      returnedMetalLines: parsed.data.returnedMetalLines,
+      scrapMetalLines: parsed.data.scrapMetalLines,
+      karigarAddedFineWeight: parsed.data.karigarAddedFineWeight,
+      explicitLossFineWeight: String(formData.get("explicitLossFineWeight") ?? "").trim() || null,
+      markJobComplete: parsed.data.markJobComplete,
+    });
+    const w = (p: { gross: { toFixed: (n: number) => string }; fine: { toFixed: (n: number) => string }; cost: { toFixed: (n: number) => string } }) => ({
+      gross: p.gross.toFixed(3),
+      fine: p.fine.toFixed(3),
+      cost: p.cost.toFixed(2),
+    });
+    return {
+      preview: {
+        jobCode: plan.jobCode,
+        karigarName: plan.karigarName,
+        sourceLabel: `${plan.source.metalType} ${plan.source.displayName}`,
+        sourceFineness: plan.source.finenessPercent.toFixed(3),
+        outputs: plan.outputs.map((o) => ({
+          netWeight: o.netWeight.toFixed(3),
+          purityDisplayName: o.purityDisplayName,
+          finenessPercent: o.finenessPercent.toFixed(3),
+          fineWeight: o.fineWeight.toFixed(3),
+        })),
+        outputFine: plan.outputFine.toFixed(3),
+        returnedFine: plan.returnedFine.toFixed(3),
+        scrapFine: plan.scrapFine.toFixed(3),
+        explicitLossFine: plan.explicitLossFine.toFixed(3),
+        neededFine: plan.neededFine.toFixed(3),
+        jobPendingFine: plan.jobPendingFine.toFixed(3),
+        allocation: plan.allocation
+          ? { fineWeight: plan.allocation.fineWeight.toFixed(3), grossWeight: plan.allocation.grossWeight.toFixed(3), costValue: plan.allocation.costValue.toFixed(2) }
+          : null,
+        custodyBefore: w(plan.custodyBefore),
+        custodyAfter: w(plan.custodyAfter),
+        jobPendingAfterReceipt: plan.jobPendingAfterReceipt.toFixed(3),
+        completesJob: plan.completesJob,
+        fingerprint: receiptCustodyFingerprint(plan),
+      },
+    };
+  } catch (error) {
+    if (error instanceof CustodyError || error instanceof jewelleryPosting.PostingError) return { error: error.message };
+    console.error("previewReceiptCustodyAction failed:", error);
+    return { error: "Could not prepare the preview. Please try again." };
   }
 }
 

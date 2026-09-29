@@ -130,7 +130,7 @@ async function makeJob(name: string, fineGrams: number, opts: { statusOnly?: boo
   if (!opts.statusOnly && fineGrams > 0) {
     await prisma.$transaction(
       (tx) =>
-        issueMaterialsToJewelleryJob(tx, {
+        issueMaterialsToJewelleryJob(tx, { legacyDirectGoldIssue: true,
           ...FY,
           jobId: job.id,
           issueDate: DATE,
@@ -521,7 +521,7 @@ describe("job-to-job metal transfer — integration with a prior revaluation and
     );
     await prisma.$transaction(
       (tx) =>
-        issueMaterialsToJewelleryJob(tx, { ...FY, jobId: a.id, issueDate: DATE, metalLines: [{ metalType: "GOLD", purityId: revalPurityId, grossWeight: "10.917" }], polishedDiamondIds: [], otherMaterialLines: [], idempotencyKey: key("issue"), createdByUserId: ownerId }),
+        issueMaterialsToJewelleryJob(tx, { legacyDirectGoldIssue: true, ...FY, jobId: a.id, issueDate: DATE, metalLines: [{ metalType: "GOLD", purityId: revalPurityId, grossWeight: "10.917" }], polishedDiamondIds: [], otherMaterialLines: [], idempotencyKey: key("issue"), createdByUserId: ownerId }),
       TX
     );
     // Revalue the opening entry from 1,000/gram to 1,200/gram.
@@ -782,7 +782,7 @@ describe("complete a fully-reconciled job without a new receipt", () => {
     const bJob = await makeJob("Reconcile diamond B", 0, { statusOnly: true });
     await prisma.$transaction(
       (tx) =>
-        issueMaterialsToJewelleryJob(tx, {
+        issueMaterialsToJewelleryJob(tx, { legacyDirectGoldIssue: true,
           ...FY, jobId: a.id, issueDate: DATE,
           metalLines: [{ metalType: "GOLD", purityId, grossWeight: String((5 / 0.916).toFixed(3)) }],
           polishedDiamondIds: [stone.id], otherMaterialLines: [], idempotencyKey: key("reconcile-diamond-issue"), createdByUserId: ownerId,

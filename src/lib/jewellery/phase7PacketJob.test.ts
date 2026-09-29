@@ -79,7 +79,7 @@ async function newJob(grossWeight = 10) {
     createdByUserId: "user-1",
   });
   const issue = (packetLines: PacketLine[]) =>
-    issueMaterialsToJewelleryJob(f.tx as never, {
+    issueMaterialsToJewelleryJob(f.tx as never, { legacyDirectGoldIssue: true,
       ...FY,
       jobId: job.id as string,
       issueDate: DATE,

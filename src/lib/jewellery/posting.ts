@@ -902,8 +902,21 @@ export async function issueMaterialsToJewelleryJob(
     otherMaterialLines: OtherMaterialLineInput[];
     idempotencyKey?: string | null;
     createdByUserId: string;
+    /**
+     * Gold is no longer issued straight from the warehouse to a job: it goes
+     * to the Karigar through Karigar Metal and reaches jobs by allocation
+     * (up front, or at receipt time). The app never sets this. It exists only
+     * so tests can reproduce jobs created before that rule, whose directly
+     * issued gold still receives, transfers and cancels normally.
+     */
+    legacyDirectGoldIssue?: boolean;
   }
 ) {
+  if (!input.legacyDirectGoldIssue && input.metalLines.some((l) => l.metalType === "GOLD")) {
+    throw new PostingError(
+      "Gold is not issued to a job directly any more. Give it to the Karigar in Jewellery Jobs → Karigar Metal; it is allocated to this job when the jewellery is received (or allocate it there in advance)."
+    );
+  }
   // Each drawn purity is locked first (the same order Karigar custody uses:
   // purity, then Karigar, then job), so two concurrent draws on one purity
   // cannot both pass the stock check. Then the job, so this can never race a
@@ -1722,6 +1735,14 @@ export async function receiveFinishedJewellery(
     platingCharge: DecimalInput;
     otherExpense: DecimalInput;
     markJobComplete: boolean;
+    /**
+     * Default true (historic behaviour): a receipt that resolves exactly the
+     * metal still pending closes the job's metal. Receipt-time allocation from
+     * Karigar custody passes false: there, pending is topped up to exactly
+     * what this receipt needs, so reaching zero means nothing about whether
+     * more pieces are coming — the job completes only when the Owner says so.
+     */
+    autoCompleteWhenSettled?: boolean;
     isAbnormalLoss: boolean;
     abnormalLossReason?: string | null;
     notes?: string | null;
@@ -2122,7 +2143,7 @@ export async function receiveFinishedJewellery(
   }
 
   const gap = round3(pendingAvailable.minus(resolvedThisReceipt));
-  const isFinalMetal = gap.isZero() || input.markJobComplete;
+  const isFinalMetal = (gap.isZero() && input.autoCompleteWhenSettled !== false) || input.markJobComplete;
   const processLossFineWeight = isFinalMetal ? gap : ZERO;
 
   // Fine-bearing cost pool: drains by fine weight — the resolved share is

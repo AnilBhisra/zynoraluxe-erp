@@ -31,8 +31,16 @@ export type AvailablePacketOption = {
 type MetalLineDraft = { metalType: string; purityId: string; grossWeight: string };
 type OtherMaterialDraft = { description: string; quantity: string; unit: "PCS" | "CT" | "GRAM" | "OTHER"; weight: string; cost: string; note: string };
 
+/**
+ * Gold is never issued here: it goes to the Karigar through Karigar Metal and
+ * reaches a job by allocation, up front or when the jewellery is received
+ * (the server refuses a gold line too). Silver, platinum and Company
+ * Copper/Alloy can still be issued directly.
+ */
+const ISSUABLE_METAL_TYPES = METAL_TYPES.filter((m) => m.value !== "GOLD");
+
 function emptyMetalLine(): MetalLineDraft {
-  return { metalType: "GOLD", purityId: "", grossWeight: "" };
+  return { metalType: ISSUABLE_METAL_TYPES[0]?.value ?? "SILVER", purityId: "", grossWeight: "" };
 }
 function emptyOtherMaterial(): OtherMaterialDraft {
   return { description: "", quantity: "1", unit: "PCS", weight: "", cost: "", note: "" };
@@ -56,7 +64,7 @@ export function IssueMaterialsForm({
   onDone?: () => void;
 }) {
   const [state, formAction, pending] = useActionState(issueMaterialsAction, undefined);
-  const [metalLines, setMetalLines] = useState<MetalLineDraft[]>([emptyMetalLine()]);
+  const [metalLines, setMetalLines] = useState<MetalLineDraft[]>([]);
   const [selectedDiamondIds, setSelectedDiamondIds] = useState<string[]>([]);
   const [diamondSearch, setDiamondSearch] = useState("");
   const [packetDrafts, setPacketDrafts] = useState<Record<string, { pieces: string; carat: string }>>({});
@@ -75,7 +83,7 @@ export function IssueMaterialsForm({
     setMetalLines((prev) => [...prev, emptyMetalLine()]);
   }
   function removeMetalLine(index: number) {
-    setMetalLines((prev) => (prev.length === 1 ? prev : prev.filter((_, i) => i !== index)));
+    setMetalLines((prev) => prev.filter((_, i) => i !== index));
   }
 
   function updateOtherLine(index: number, patch: Partial<OtherMaterialDraft>) {
@@ -184,8 +192,15 @@ export function IssueMaterialsForm({
       <Field label="Issue date" name="issueDate" type="date" defaultValue={new Date().toISOString().slice(0, 10)} required />
 
       <div className="flex flex-col gap-3">
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200" data-testid="gold-via-karigar-metal">
+          <p className="font-medium">Gold is not issued here.</p>
+          <p className="mt-1 text-xs">
+            Give gold to the Karigar in Jewellery Jobs → Karigar Metal. It is taken for this job when you receive the finished jewellery
+            (or allocate it there in advance). Diamonds, packets, silver, platinum, Company Copper/Alloy and other material are issued below.
+          </p>
+        </div>
         <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
-          Metal ({totalGrossWeight.toFixed(3)}g total)
+          Other metal ({totalGrossWeight.toFixed(3)}g total)
         </h3>
         {metalLines.map((line, index) => {
           const purityOptions = purities.filter((p) => p.metalType === line.metalType);
@@ -197,7 +212,7 @@ export function IssueMaterialsForm({
                 onChange={(e) => updateMetalLine(index, { metalType: e.target.value, purityId: "" })}
                 className="h-10 rounded-lg border border-zinc-300 bg-white px-2 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
               >
-                {METAL_TYPES.map((m) => (
+                {ISSUABLE_METAL_TYPES.map((m) => (
                   <option key={m.value} value={m.value}>
                     {m.label}
                   </option>
@@ -226,7 +241,7 @@ export function IssueMaterialsForm({
                 onChange={(e) => updateMetalLine(index, { grossWeight: e.target.value })}
                 className="h-10 rounded-lg border border-zinc-300 bg-white px-2.5 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
               />
-              {metalLines.length > 1 ? (
+              {metalLines.length > 0 ? (
                 <button type="button" onClick={() => removeMetalLine(index)} className="text-xs font-medium text-red-600 hover:underline dark:text-red-400">
                   Remove
                 </button>
@@ -235,7 +250,7 @@ export function IssueMaterialsForm({
           );
         })}
         <Button type="button" variant="secondary" size="md" onClick={addMetalLine} className="self-start">
-          + Add material (another metal line)
+          + Add silver / platinum / copper line
         </Button>
       </div>
 

@@ -367,7 +367,7 @@ describe("Job Manufacturer — returns", () => {
       ])
     ).rejects.toThrow(/open Jewellery Job/);
 
-    await issueMaterialsToJewelleryJob(f.tx as never, {
+    await issueMaterialsToJewelleryJob(f.tx as never, { legacyDirectGoldIssue: true,
       ...FY, jobId: draftJob.id as string, issueDate: DATE, metalLines: [{ metalType: "GOLD", purityId: purity.id as string, grossWeight: 5 }],
       polishedDiamondIds: [], otherMaterialLines: [], createdByUserId: "user-1",
     });

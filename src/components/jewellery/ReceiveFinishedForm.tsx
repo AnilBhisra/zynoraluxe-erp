@@ -1,8 +1,8 @@
 "use client";
 
-import { useActionState, useEffect, useMemo, useState } from "react";
+import { startTransition, useActionState, useEffect, useMemo, useState } from "react";
 
-import { receiveFinishedJewelleryAction } from "@/app/actions/jewellery";
+import { previewReceiptCustodyAction, receiveFinishedJewelleryAction } from "@/app/actions/jewellery";
 import { Field } from "@/components/ui/Field";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
@@ -51,6 +51,39 @@ type OutputDraft = {
 
 type FinalPurityOption = { id: string; displayName: string; finenessPercent: string; isIssued: boolean };
 
+/**
+ * Owner only — one of the Karigar's unallocated Karigar Metal pools that this
+ * job can take its gold from at receipt (same metal, purity and fineness as
+ * any gold the job already holds).
+ */
+export type CustodySourceOption = {
+  purityId: string;
+  metalType: string;
+  displayName: string;
+  finenessPercent: string;
+  unallocatedGross: string;
+  unallocatedFine: string;
+};
+
+type CustodyPreviewState = Awaited<ReturnType<typeof previewReceiptCustodyAction>> | undefined;
+
+/** The job's own metal plus the chosen Karigar Metal pool, as one fine-bearing list. */
+function withCustodySource(fineBearing: IssuedMetalOption[], source: CustodySourceOption | null): IssuedMetalOption[] {
+  if (!source || fineBearing.some((m) => m.purityId === source.purityId)) return fineBearing;
+  return [
+    ...fineBearing,
+    {
+      purityId: source.purityId,
+      metalType: source.metalType,
+      displayName: source.displayName,
+      finenessPercent: source.finenessPercent,
+      isAlloy: false,
+      grossWeight: "0.000",
+      fineWeight: "0.000",
+    },
+  ];
+}
+
 const ZERO = BigInt(0);
 
 function emptyOutput(defaultMetalType: string, defaultPurityId: string, jewelleryType: string): OutputDraft {
@@ -87,6 +120,20 @@ function parseWeight(value: string): bigint | null {
 
 const g = formatThousandths;
 
+function rupees(value: string): string {
+  return Number(value).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/** One label/value pair of the Karigar Metal preview list. */
+function FragmentRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <>
+      <dt className="text-zinc-500 dark:text-zinc-400">{label}</dt>
+      <dd>{children}</dd>
+    </>
+  );
+}
+
 export function ReceiveFinishedForm({
   jobId,
   jobCode,
@@ -97,6 +144,7 @@ export function ReceiveFinishedForm({
   alloyPendingGrossWeight,
   unresolvedDiamonds,
   pendingPackets = [],
+  custodySources = [],
   isOwner,
   onDone,
 }: {
@@ -111,11 +159,24 @@ export function ReceiveFinishedForm({
   alloyPendingGrossWeight: string;
   unresolvedDiamonds: UnresolvedDiamondOption[];
   pendingPackets?: PendingPacketOption[];
+  /** Owner only: the Karigar's compatible unallocated Karigar Metal pools. Empty for Staff. */
+  custodySources?: CustodySourceOption[];
   isOwner: boolean;
   onDone?: () => void;
 }) {
   const [state, formAction, pending] = useActionState(receiveFinishedJewelleryAction, undefined);
-  const fineBearing = useMemo(() => issuedMetal.filter((m) => !m.isAlloy), [issuedMetal]);
+  const [previewState, previewAction, previewPending] = useActionState<CustodyPreviewState, FormData>(previewReceiptCustodyAction, undefined);
+  const [previewedSignature, setPreviewedSignature] = useState<string | null>(null);
+  const issuedFineBearing = useMemo(() => issuedMetal.filter((m) => !m.isAlloy), [issuedMetal]);
+  const custodyOptions = isOwner ? custodySources : [];
+  // Default to the Karigar's balance whenever there is one: metal already on
+  // the job is used first, and only the shortfall is taken from the balance.
+  const [custodySourceId, setCustodySourceId] = useState(custodyOptions[0]?.purityId ?? "");
+  const custodySource = custodyOptions.find((s) => s.purityId === custodySourceId) ?? null;
+  const custodyMode = custodySource !== null;
+  const fineBearing = useMemo(() => withCustodySource(issuedFineBearing, custodySource), [issuedFineBearing, custodySource]);
+  const [receiveDate, setReceiveDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [explicitLoss, setExplicitLoss] = useState("0");
   const companyAlloy = useMemo(() => issuedMetal.find((m) => m.isAlloy) ?? null, [issuedMetal]);
   const defaultMetalType = fineBearing[0]?.metalType ?? "GOLD";
   const defaultIssuedPurityId = fineBearing[0]?.purityId ?? "";
@@ -221,6 +282,24 @@ export function ReceiveFinishedForm({
     setScrapLines((prev) => (prev.length === 1 ? prev : prev.filter((_, i) => i !== index)));
   }
 
+  /** Switching the Karigar Metal pool re-points any output/return/scrap line that no longer has a valid purity. */
+  function chooseCustodySource(purityId: string) {
+    setCustodySourceId(purityId);
+    const next = withCustodySource(issuedFineBearing, custodyOptions.find((s) => s.purityId === purityId) ?? null);
+    const first = next[0];
+    const valid = new Set(next.map((m) => m.purityId));
+    setOutputs((prev) =>
+      prev.map((o) => {
+        if (next.some((m) => m.metalType === o.metalType) && (valid.has(o.purityId) || purities.some((p) => p.id === o.purityId && p.metalType === o.metalType)))
+          return o;
+        return { ...o, metalType: first?.metalType ?? o.metalType, purityId: first?.purityId ?? "" };
+      })
+    );
+    const fixLine = (l: MetalReturnScrapLineDraft) => (valid.has(l.purityId) ? l : { ...l, purityId: first?.purityId ?? "" });
+    setReturnedLines((prev) => prev.map(fixLine));
+    setScrapLines((prev) => prev.map(fixLine));
+  }
+
   const assignedDiamondIds = useMemo(() => new Set(outputs.flatMap((o) => o.diamondIds)), [outputs]);
   const remainingDiamonds = unresolvedDiamonds.filter((d) => !assignedDiamondIds.has(d.polishedDiamondId));
 
@@ -261,12 +340,19 @@ export function ReceiveFinishedForm({
   const returnedFine = returnedFines.reduce<bigint>((sum, v) => sum + (v ?? ZERO), ZERO);
   const scrapFine = scrapFines.reduce<bigint>((sum, v) => sum + (v ?? ZERO), ZERO);
   const karigarAdded = parseWeight(karigarAddedFineWeight) ?? ZERO;
-  const pendingAvailable = toThousandths(pendingFineWeight) + karigarAdded;
+  const jobAvailable = toThousandths(pendingFineWeight) + karigarAdded;
+  const custodyFine = custodySource ? toThousandths(custodySource.unallocatedFine) : ZERO;
+  // With a Karigar Metal pool chosen, the job's own metal is used first and
+  // only the shortfall comes from the balance; the rest of the balance stays
+  // with the Karigar and is never written off by this receipt.
+  const pendingAvailable = jobAvailable + custodyFine;
   const resolvedThisReceipt = outputsFine + returnedFine + scrapFine;
   const exceedsAvailable = resolvedThisReceipt > pendingAvailable;
   const gap = pendingAvailable - resolvedThisReceipt;
-  const willCompleteMetal = gap === ZERO || markJobComplete;
-  const previewLoss = willCompleteMetal && gap > ZERO ? gap : ZERO;
+  const jobGap = jobAvailable - resolvedThisReceipt;
+  const explicitLossWeight = custodyMode && markJobComplete ? parseWeight(explicitLoss) : ZERO;
+  const willCompleteMetal = custodyMode ? markJobComplete : gap === ZERO || markJobComplete;
+  const previewLoss = custodyMode ? (explicitLossWeight ?? ZERO) : willCompleteMetal && gap > ZERO ? gap : ZERO;
   const allDiamondsResolvedThisReceipt = remainingDiamonds.every((d) => diamondResolutions[d.polishedDiamondId]);
   // ---- Packet stones: every entry is explicit; anything not entered stays
   // pending with the Karigar (never assumed lost). ----
@@ -346,8 +432,15 @@ export function ReceiveFinishedForm({
     : invalidReturnOrScrap || returnedAlloyWeight === null
       ? "Check the returned and scrap weights."
       : exceedsAvailable
-        ? "Finished plus returned plus scrap fine weight cannot exceed the fine weight still pending for this job."
-        : alloyMismatch
+        ? custodyMode
+          ? `Finished plus returned plus scrap needs ${g(resolvedThisReceipt)}g fine — more than this job's ${g(jobAvailable)}g plus the Karigar's unallocated ${g(custodyFine)}g fine.`
+          : "Finished plus returned plus scrap fine weight cannot exceed the fine weight still pending for this job." +
+            (isOwner ? "" : " If the gold is in the Karigar's Karigar Metal balance, ask the Owner to receive it.")
+        : explicitLossWeight === null
+          ? "Check the process loss weight."
+          : custodyMode && markJobComplete && explicitLossWeight < jobGap
+            ? `Completing leaves ${g(jobGap)}g fine on this job: record it as process loss (at least ${g(jobGap)}g), or return/scrap it, or leave the job open.`
+            : alloyMismatch
           ? `Alloy Added is ${g(expectedAlloy)}g — the Company / Karigar / Included split must total exactly ${g(expectedAlloy)}g.`
           : companyOverUse
             ? `Company alloy used plus returned alloy cannot exceed the ${alloyPendingGrossWeight}g of Copper/Alloy still with the Karigar.`
@@ -358,39 +451,43 @@ export function ReceiveFinishedForm({
   const isGoldJob = fineBearing.length > 0 && fineBearing.every((m) => m.metalType === "GOLD");
   const fineLabel = isGoldJob ? "Fine Gold Weight" : "Fine metal weight";
 
-  function confirmBeforeSubmit(event: React.FormEvent<HTMLFormElement>) {
-    if (blockReason) {
-      window.alert(blockReason);
-      event.preventDefault();
-      return;
-    }
-    if (packetProblem) {
-      window.alert(packetProblem);
-      event.preventDefault();
-      return;
-    }
-    for (const d of remainingDiamonds) {
-      const resolution = diamondResolutions[d.polishedDiamondId];
-      if (resolution === "DAMAGED_LOST" && (damagedLostReasons[d.polishedDiamondId] ?? "").trim().length < 3) {
-        window.alert(`Give a reason for marking diamond ${d.polishedCode} damaged/lost.`);
-        event.preventDefault();
-        return;
-      }
-    }
-    if (isAbnormalLoss && abnormalLossReason.trim().length < 3) {
-      window.alert("Give a reason for classifying this loss as abnormal.");
-      event.preventDefault();
-      return;
+  function submitReceipt(event: React.FormEvent<HTMLFormElement>) {
+    // Dispatched by hand (not through <form action>) so React never resets the
+    // form after a refused save: controlled selects would otherwise show a
+    // choice that no longer matches what is submitted.
+    event.preventDefault();
+    if (!confirmReceipt()) return;
+    const formData = new FormData(event.currentTarget);
+    startTransition(() => formAction(formData));
+  }
+
+  function confirmReceipt(): boolean {
+    const problem =
+      blockReason ??
+      packetProblem ??
+      remainingDiamonds
+        .filter((d) => diamondResolutions[d.polishedDiamondId] === "DAMAGED_LOST" && (damagedLostReasons[d.polishedDiamondId] ?? "").trim().length < 3)
+        .map((d) => `Give a reason for marking diamond ${d.polishedCode} damaged/lost.`)[0] ??
+      (isAbnormalLoss && abnormalLossReason.trim().length < 3 ? "Give a reason for classifying this loss as abnormal." : null) ??
+      custodyBlock;
+    if (problem) {
+      window.alert(problem);
+      return false;
     }
     const summary = willCompleteJob
       ? `This will COMPLETE job ${jobCode}. Process Loss: ${g(previewLoss)}g fine.`
       : willCompleteMetal
         ? `Metal is fully resolved but some diamonds or packet stones remain with the Karigar — job ${jobCode} will stay Partially Received.`
-        : `Partial receipt for job ${jobCode}. ${g(gap > ZERO ? gap : ZERO)}g fine metal remains with the Karigar.`;
+        : custodyMode
+          ? `Partial receipt for job ${jobCode}. ${freshPreview?.jobPendingAfterReceipt ?? "0.000"}g fine stays on this job.`
+          : `Partial receipt for job ${jobCode}. ${g(gap > ZERO ? gap : ZERO)}g fine metal remains with the Karigar.`;
+    const custodyLine = freshPreview
+      ? freshPreview.allocation
+        ? `\nFrom ${freshPreview.karigarName}'s ${freshPreview.sourceLabel} balance: ${freshPreview.allocation.fineWeight}g fine (${freshPreview.allocation.grossWeight}g gross). ${freshPreview.custodyAfter.fine}g fine stays in the balance.`
+        : `\nNothing is taken from ${freshPreview.karigarName}'s balance; this job's own metal covers it.`
+      : "";
     const alloyLine = expectedAlloy > ZERO ? `\nAlloy Added: ${g(expectedAlloy)}g.` : "";
-    if (!window.confirm(`${summary}${alloyLine}\n\nSave this receipt?`)) {
-      event.preventDefault();
-    }
+    return window.confirm(`${summary}${custodyLine}${alloyLine}\n\nSave this receipt?`);
   }
 
   const outputsForSubmit = outputs
@@ -427,10 +524,46 @@ export function ReceiveFinishedForm({
   }));
   const diamondResolutionsForSubmit = [...setResolutions, ...remainingResolutionsForSubmit];
 
+  // ---- Karigar Metal preview: everything the server plans from, so any edit
+  // after previewing makes the preview stale and blocks the save. ----
+  const explicitLossForSubmit = custodyMode && markJobComplete && explicitLossWeight !== null ? g(explicitLossWeight) : "";
+  const custodyFields: [string, string][] = custodySource
+    ? [
+        ["jobId", jobId],
+        ["receiveDate", receiveDate],
+        ["outputsJson", JSON.stringify(outputsForSubmit)],
+        ["returnedMetalLinesJson", JSON.stringify(returnedLinesForSubmit)],
+        ["scrapMetalLinesJson", JSON.stringify(scrapLinesForSubmit)],
+        ["karigarAddedFineWeight", karigarAddedFineWeight || "0"],
+        ["markJobComplete", markJobComplete ? "true" : "false"],
+        ["custodySourcePurityId", custodySource.purityId],
+        ["explicitLossFineWeight", explicitLossForSubmit],
+      ]
+    : [];
+  const custodySignature = custodyMode ? JSON.stringify(custodyFields) : null;
+  const freshPreview =
+    custodyMode && !previewPending && previewState?.preview && previewedSignature === custodySignature ? previewState.preview : null;
+  const previewError = custodyMode && !previewPending && previewedSignature === custodySignature ? (previewState?.error ?? null) : null;
+  const custodyBlock = custodyMode && !freshPreview ? "Preview the gold taken from the Karigar's balance, then save." : null;
+  // What stays on the job after this receipt before any Karigar Metal is
+  // taken: completing the job must record it as process loss.
+  const leftOnJobWithoutAllocation = jobGap > ZERO ? jobGap : ZERO;
+
+  function runCustodyPreview() {
+    if (!custodySignature) return;
+    if (blockReason) {
+      window.alert(blockReason);
+      return;
+    }
+    const formData = new FormData();
+    for (const [name, value] of custodyFields) formData.set(name, value);
+    setPreviewedSignature(custodySignature);
+    startTransition(() => previewAction(formData));
+  }
+
   return (
     <form
-      action={formAction}
-      onSubmit={confirmBeforeSubmit}
+      onSubmit={submitReceipt}
       className="flex flex-col gap-5 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6"
       noValidate
     >
@@ -447,16 +580,24 @@ export function ReceiveFinishedForm({
       <input type="hidden" name="karigarAlloyGrossWeight" value={karigarSplit !== null ? g(karigarSplit) : ""} />
       <input type="hidden" name="includedAlloyGrossWeight" value={includedSplit !== null ? g(includedSplit) : ""} />
       <input type="hidden" name="karigarAlloyCost" value={karigarAlloyCost || "0"} />
+      {custodySource ? (
+        <>
+          <input type="hidden" name="custodySourcePurityId" value={custodySource.purityId} />
+          <input type="hidden" name="custodyFingerprint" value={freshPreview?.fingerprint ?? ""} />
+          <input type="hidden" name="explicitLossFineWeight" value={explicitLossForSubmit} />
+        </>
+      ) : null}
 
       {state?.error ? <Alert tone="error">{state.error}</Alert> : null}
       {state?.success ? <Alert tone="success">Receipt saved as {state.code}.</Alert> : null}
 
       <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-3 text-sm text-zinc-700 dark:text-zinc-300">
-        {fineBearing.map((m) => (
+        {issuedFineBearing.map((m) => (
           <p key={m.purityId}>
             <span className="font-semibold">{m.displayName} Issued</span> · {m.grossWeight}g gross / {m.fineWeight}g fine
           </p>
         ))}
+        {issuedFineBearing.length === 0 ? <p>No metal has been allocated to this job yet.</p> : null}
         {companyAlloy ? (
           <p>
             <span className="font-semibold">Copper/Alloy issued</span> · {companyAlloy.grossWeight}g · {alloyPendingGrossWeight}g still with Karigar
@@ -467,7 +608,32 @@ export function ReceiveFinishedForm({
         </p>
       </div>
 
-      <Field label="Receive date" name="receiveDate" type="date" defaultValue={new Date().toISOString().slice(0, 10)} required />
+      <Field label="Receive date" name="receiveDate" type="date" value={receiveDate} onChange={(e) => setReceiveDate(e.target.value)} required />
+
+      {custodyOptions.length > 0 ? (
+        <div className="flex flex-col gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100" data-testid="custody-source">
+          <label className="flex flex-col gap-1.5">
+            <span className="font-medium">Gold from the Karigar&apos;s balance (Karigar Metal)</span>
+            <select
+              aria-label="Karigar Metal source"
+              value={custodySourceId}
+              onChange={(e) => chooseCustodySource(e.target.value)}
+              className="h-10 rounded-lg border border-zinc-300 bg-white px-2 text-sm text-zinc-900 dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
+            >
+              {custodyOptions.map((s) => (
+                <option key={s.purityId} value={s.purityId}>
+                  {metalTypeLabel(s.metalType)} {s.displayName} ({s.finenessPercent}%) · {s.unallocatedFine}g fine / {s.unallocatedGross}g gross unallocated
+                </option>
+              ))}
+              {issuedFineBearing.length > 0 ? <option value="">Don&apos;t use it: only the metal already on this job</option> : null}
+            </select>
+          </label>
+          <p className="text-xs">
+            This is the metal the Karigar was given. The finished jewellery&apos;s purity is chosen separately on each output below. Metal already on
+            this job is used first; only the shortfall is taken from this balance, and the rest stays with the Karigar.
+          </p>
+        </div>
+      ) : null}
 
       <div className="flex flex-col gap-3">
         <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
@@ -973,32 +1139,64 @@ export function ReceiveFinishedForm({
         ) : null}
       </div>
 
-      {gap > ZERO ? (
+      {custodyMode || gap > ZERO ? (
         <label className="flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
           <input
             type="checkbox"
             checked={markJobComplete}
-            onChange={(e) => setMarkJobComplete(e.target.checked)}
+            onChange={(e) => {
+              setMarkJobComplete(e.target.checked);
+              if (e.target.checked && custodyMode) setExplicitLoss(g(leftOnJobWithoutAllocation));
+            }}
             className="h-4 w-4 rounded border-zinc-300"
           />
-          This completes the job — no more metal will come back from this Karigar
+          {custodyMode
+            ? "This completes the job — the Karigar's other unallocated gold stays in their balance"
+            : "This completes the job — no more metal will come back from this Karigar"}
         </label>
+      ) : null}
+      {custodyMode && markJobComplete ? (
+        <Field
+          label="Process loss on this job (g fine)"
+          name="explicitLossInput"
+          type="number"
+          step="0.001"
+          min={0}
+          value={explicitLoss}
+          onChange={(e) => setExplicitLoss(e.target.value)}
+          hint={`Enter the loss explicitly — it is never guessed. Metal left on this job after this receipt, before anything is taken from the balance: ${g(leftOnJobWithoutAllocation)}g fine. Any loss above that is taken from the Karigar's balance.`}
+        />
       ) : null}
 
       <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-4 text-sm" aria-live="polite">
         <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Reconciliation (fine metal)</p>
-        <p>
-          Pending with Karigar{karigarAdded > ZERO ? " + Karigar-added" : ""}: <span className="font-semibold">{g(pendingAvailable)}g</span>
-        </p>
+        {custodyMode ? (
+          <p>
+            On this job{karigarAdded > ZERO ? " + Karigar-added" : ""}: <span className="font-semibold">{g(jobAvailable)}g</span> · Karigar&apos;s
+            unallocated balance: <span className="font-semibold">{g(custodyFine)}g</span>
+          </p>
+        ) : (
+          <p>
+            Pending with Karigar{karigarAdded > ZERO ? " + Karigar-added" : ""}: <span className="font-semibold">{g(pendingAvailable)}g</span>
+          </p>
+        )}
         <p>
           {isGoldJob ? "Finished Fine Gold" : "Finished fine metal"}: <span className="font-semibold">{g(outputsFine)}g</span> ·{" "}
           {isGoldJob ? "Returned Gold" : "Returned"}: <span className="font-semibold">{g(returnedFine)}g</span> · Scrap:{" "}
           <span className="font-semibold">{g(scrapFine)}g</span>
         </p>
-        <p>
-          {willCompleteMetal ? "Process Loss" : "Still with Karigar (not yet resolved)"}:{" "}
-          <span className="font-semibold">{willCompleteMetal ? g(previewLoss) : g(gap > ZERO ? gap : ZERO)}g</span>
-        </p>
+        {custodyMode ? (
+          <p>
+            {willCompleteMetal ? "Process Loss" : "Left on this job after this receipt"}:{" "}
+            <span className="font-semibold">{willCompleteMetal ? g(previewLoss) : g(leftOnJobWithoutAllocation)}g</span>
+            {!willCompleteMetal && jobGap < ZERO ? <> · shortfall taken from the Karigar&apos;s balance: <span className="font-semibold">{g(-jobGap)}g</span></> : null}
+          </p>
+        ) : (
+          <p>
+            {willCompleteMetal ? "Process Loss" : "Still with Karigar (not yet resolved)"}:{" "}
+            <span className="font-semibold">{willCompleteMetal ? g(previewLoss) : g(gap > ZERO ? gap : ZERO)}g</span>
+          </p>
+        )}
         {expectedAlloy > ZERO ? (
           <p>
             Alloy Added: <span className="font-semibold">{g(expectedAlloy)}g</span>
@@ -1013,9 +1211,64 @@ export function ReceiveFinishedForm({
             Metal is fully resolved, but unresolved diamonds remain — this job will stay Partially Received.
           </p>
         ) : (
-          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Balances — this job will be marked Partially Received.</p>
+          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+            {custodyMode
+              ? "This job will be marked Partially Received. Tick “This completes the job” when nothing more is coming."
+              : "Balances — this job will be marked Partially Received."}
+          </p>
         )}
       </div>
+
+      {custodySource ? (
+        <div className="flex flex-col gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-4 text-sm" aria-live="polite" data-testid="receipt-custody-preview">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Gold from Karigar Metal</p>
+            <Button type="button" variant="secondary" size="md" onClick={runCustodyPreview} disabled={previewPending || Boolean(blockReason)}>
+              {previewPending ? "Checking…" : freshPreview ? "Preview again" : "Preview gold allocation"}
+            </Button>
+          </div>
+          {previewError ? <Alert tone="error">{previewError}</Alert> : null}
+          {freshPreview ? (
+            <dl className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-[auto_1fr]">
+              <FragmentRow label="Source">
+                {freshPreview.karigarName} · {freshPreview.sourceLabel} ({freshPreview.sourceFineness}%)
+              </FragmentRow>
+              {freshPreview.outputs.map((o, i) => (
+                <FragmentRow key={i} label={`Piece ${i + 1}`}>
+                  {o.netWeight}g net metal at {o.purityDisplayName} ({o.finenessPercent}%) = <strong>{o.fineWeight}g fine</strong>
+                </FragmentRow>
+              ))}
+              <FragmentRow label="Needed">
+                <strong>{freshPreview.neededFine}g fine</strong> (finished {freshPreview.outputFine} + returned {freshPreview.returnedFine} + scrap{" "}
+                {freshPreview.scrapFine} + loss {freshPreview.explicitLossFine})
+              </FragmentRow>
+              <FragmentRow label="Already on this job">{freshPreview.jobPendingFine}g fine</FragmentRow>
+              <FragmentRow label="Taken from balance now">
+                {freshPreview.allocation ? (
+                  <>
+                    <strong>{freshPreview.allocation.fineWeight}g fine</strong> = {freshPreview.allocation.grossWeight}g gross {freshPreview.sourceLabel} · cost{" "}
+                    <strong>₹{rupees(freshPreview.allocation.costValue)}</strong>
+                  </>
+                ) : (
+                  "Nothing — this job's own metal covers it"
+                )}
+              </FragmentRow>
+              <FragmentRow label="Karigar balance">
+                {freshPreview.custodyBefore.fine}g fine / {freshPreview.custodyBefore.gross}g gross → <strong>{freshPreview.custodyAfter.fine}g fine</strong> /{" "}
+                {freshPreview.custodyAfter.gross}g gross remaining (₹{rupees(freshPreview.custodyAfter.cost)})
+              </FragmentRow>
+              <FragmentRow label="Left on this job">{freshPreview.jobPendingAfterReceipt}g fine</FragmentRow>
+              <FragmentRow label="Job">{freshPreview.completesJob ? "Completes (if every stone is resolved)" : "Stays Partially Received"}</FragmentRow>
+            </dl>
+          ) : previewState?.preview && !previewPending ? (
+            <p className="text-xs font-medium text-amber-700 dark:text-amber-400">The receipt changed after the preview. Preview again before saving.</p>
+          ) : !previewError ? (
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              Preview shows exactly how much gold is taken from the Karigar&apos;s balance and what remains, before anything is saved.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       {isOwner && willCompleteMetal && (previewLoss > ZERO || (companyAlloy && alloyPending > ZERO)) ? (
         <label className="flex items-start gap-2 text-sm text-zinc-700 dark:text-zinc-300">
@@ -1066,7 +1319,7 @@ export function ReceiveFinishedForm({
         </div>
       ) : null}
 
-      <Button type="submit" size="lg" disabled={pending || Boolean(blockReason)} className="self-start">
+      <Button type="submit" size="lg" disabled={pending || Boolean(blockReason) || Boolean(custodyBlock)} className="self-start">
         {pending ? "Saving…" : "Receive Finished Jewellery"}
       </Button>
     </form>

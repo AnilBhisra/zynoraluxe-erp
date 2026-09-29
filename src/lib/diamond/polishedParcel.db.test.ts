@@ -202,7 +202,7 @@ async function draftJewelleryJob(name: string) {
 function issueToJob(jobId: string, packetLines: { packetId: string; pieces: number; carat: string }[], k = key("jissue")) {
   return prisma.$transaction(
     (tx) =>
-      issueMaterialsToJewelleryJob(tx, {
+      issueMaterialsToJewelleryJob(tx, { legacyDirectGoldIssue: true,
         ...FY,
         jobId,
         issueDate: DATE,
@@ -586,7 +586,7 @@ describe("existing single-stone records stay whole unless an Owner converts one,
     // Issue the third stone whole to a Jewellery Job, then it is no longer Available.
     const job = await draftJewelleryJob("whole stone ring");
     await prisma.$transaction(
-      (tx) => issueMaterialsToJewelleryJob(tx, { ...FY, jobId: job.id, issueDate: DATE, metalLines: [{ metalType: "GOLD", purityId, grossWeight: "10.000" }], polishedDiamondIds: [issuedStone.id], otherMaterialLines: [], createdByUserId: ownerId }),
+      (tx) => issueMaterialsToJewelleryJob(tx, { legacyDirectGoldIssue: true, ...FY, jobId: job.id, issueDate: DATE, metalLines: [{ metalType: "GOLD", purityId, grossWeight: "10.000" }], polishedDiamondIds: [issuedStone.id], otherMaterialLines: [], createdByUserId: ownerId }),
       TX
     );
     await expect(convert(issuedStone.id, 50, good)).rejects.toThrow(/not available/);

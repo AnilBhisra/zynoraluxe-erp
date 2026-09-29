@@ -64,7 +64,7 @@ async function issue(
     idempotencyKey: options.jobIdempotencyKey,
     createdByUserId: "user-1",
   });
-  return issueMaterialsToJewelleryJob(fixture.tx as never, {
+  return issueMaterialsToJewelleryJob(fixture.tx as never, { legacyDirectGoldIssue: true,
     ...FY,
     jobId: job.id as string,
     issueDate: DATE,

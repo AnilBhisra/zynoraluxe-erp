@@ -1834,7 +1834,7 @@ describe("non-zero otherMaterialCost: authoritativeCost proven against the real 
     jobCode = job.jobCode;
 
     await prisma.$transaction((tx) =>
-      issueMaterialsToJewelleryJob(tx, {
+      issueMaterialsToJewelleryJob(tx, { legacyDirectGoldIssue: true,
         jobId,
         issueDate: new Date("2026-09-23"),
         metalLines: [{ metalType: "GOLD", purityId, grossWeight: "30" }],

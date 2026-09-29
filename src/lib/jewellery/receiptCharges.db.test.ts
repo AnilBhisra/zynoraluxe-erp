@@ -142,7 +142,7 @@ async function makeReceipt(name: string, weights: number[], charges: { labour?: 
   );
   await prisma.$transaction(
     (tx) =>
-      issueMaterialsToJewelleryJob(tx, {
+      issueMaterialsToJewelleryJob(tx, { legacyDirectGoldIssue: true,
         ...FY,
         jobId: job.id,
         issueDate: DATE,
@@ -504,7 +504,7 @@ describe("Add missing charges — everything downstream includes it exactly once
     );
     await prisma.$transaction(
       (tx) =>
-        issueMaterialsToJewelleryJob(tx, {
+        issueMaterialsToJewelleryJob(tx, { legacyDirectGoldIssue: true,
           ...FY, jobId: job.id, issueDate: DATE, metalLines: [{ metalType: "GOLD", purityId, grossWeight: "20" }], polishedDiamondIds: [], otherMaterialLines: [],
           idempotencyKey: key("issue2"), createdByUserId: ownerId,
         }),
