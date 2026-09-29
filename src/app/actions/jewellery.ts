@@ -28,7 +28,13 @@ import {
   type ReceiveFinishedJewelleryInput,
 } from "@/lib/validation/jewellery";
 import { CustodyError } from "@/lib/jewellery/karigarCustody";
-import { planReceiptCustody, receiptCustodyFingerprint, receiveWithCustodyAllocation } from "@/lib/jewellery/receiptCustody";
+import {
+  planReceiptCustody,
+  receiveWithCustodyAllocation,
+  staffSafeMessage,
+  toReceiptCustodyPreview,
+  type ReceiptCustodyPreview,
+} from "@/lib/jewellery/receiptCustody";
 
 export type JewelleryFormState = { error?: string; success?: boolean; code?: string } | undefined;
 
@@ -482,12 +488,11 @@ export async function receiveFinishedJewelleryAction(
     if (existing) return { success: true, code: existing.receiptCode };
   }
 
-  // Receipt-time allocation from the Karigar's metal balance: Owner only
-  // (it moves custody metal), one transaction with the receipt, and refused
-  // if anything changed since the Owner's preview.
+  // Receipt-time allocation from the job's own Karigar's metal balance (Owner
+  // or Staff): one locked transaction with the receipt, refused if anything
+  // changed since the preview. Staff never receive a cost in any reply.
   const custodySourcePurityId = String(formData.get("custodySourcePurityId") ?? "").trim();
   if (custodySourcePurityId) {
-    if (!isOwner) return { error: "Only the Owner can take gold from a Karigar's balance for a receipt." };
     if (!data.idempotencyKey) return { error: "Missing submission key — reload the page and try again." };
     const fingerprint = String(formData.get("custodyFingerprint") ?? "").trim();
     if (!fingerprint) return { error: "Preview the gold allocation first, then save." };
@@ -500,7 +505,7 @@ export async function receiveFinishedJewelleryAction(
             sourcePurityId: custodySourcePurityId,
             explicitLossFineWeight: String(formData.get("explicitLossFineWeight") ?? "").trim() || null,
             expectedFingerprint: fingerprint,
-            owner: { id: user.id, role: user.role },
+            actor: { id: user.id, role: user.role },
           }),
         { timeout: 30000, maxWait: 15000 }
       );
@@ -511,7 +516,7 @@ export async function receiveFinishedJewelleryAction(
         const existing = await prisma.jewelleryReceipt.findUnique({ where: { idempotencyKey: data.idempotencyKey } });
         if (existing) return { success: true, code: existing.receiptCode };
       }
-      if (error instanceof CustodyError || error instanceof jewelleryPosting.PostingError) return { error: error.message };
+      if (error instanceof CustodyError || error instanceof jewelleryPosting.PostingError) return { error: staffSafeMessage(error.message, isOwner) };
       console.error("receiveFinishedJewelleryAction (custody) failed:", error);
       return { error: "Could not save this receipt. Nothing was saved — please try again." };
     }
@@ -544,32 +549,19 @@ export async function receiveFinishedJewelleryAction(
   }
 }
 
-export type ReceiptCustodyPreview = {
-  jobCode: string;
-  karigarName: string;
-  sourceLabel: string;
-  sourceFineness: string;
-  outputs: { netWeight: string; purityDisplayName: string; finenessPercent: string; fineWeight: string }[];
-  outputFine: string;
-  returnedFine: string;
-  scrapFine: string;
-  explicitLossFine: string;
-  neededFine: string;
-  jobPendingFine: string;
-  allocation: { fineWeight: string; grossWeight: string; costValue: string } | null;
-  custodyBefore: { gross: string; fine: string; cost: string };
-  custodyAfter: { gross: string; fine: string; cost: string };
-  jobPendingAfterReceipt: string;
-  completesJob: boolean;
-  fingerprint: string;
-};
+export type { ReceiptCustodyPreview };
 
-/** Owner only: what this receipt would take from the Karigar's balance. Writes nothing. */
+/**
+ * What this receipt would take from the job's Karigar's balance. Writes
+ * nothing. Owner and Staff; the Staff reply carries weights only (no cost,
+ * rate or value), and its fingerprint is an opaque token.
+ */
 export async function previewReceiptCustodyAction(
   _prev: { error?: string; preview?: ReceiptCustodyPreview } | undefined,
   formData: FormData
 ): Promise<{ error?: string; preview?: ReceiptCustodyPreview }> {
-  await requireOwner();
+  const user = await requireUser();
+  const isOwner = user.role === "OWNER";
   const parsed = receiveFinishedJewellerySchema.safeParse({
     jobId: formData.get("jobId"),
     receiveDate: formData.get("receiveDate"),
@@ -596,41 +588,9 @@ export async function previewReceiptCustodyAction(
       explicitLossFineWeight: String(formData.get("explicitLossFineWeight") ?? "").trim() || null,
       markJobComplete: parsed.data.markJobComplete,
     });
-    const w = (p: { gross: { toFixed: (n: number) => string }; fine: { toFixed: (n: number) => string }; cost: { toFixed: (n: number) => string } }) => ({
-      gross: p.gross.toFixed(3),
-      fine: p.fine.toFixed(3),
-      cost: p.cost.toFixed(2),
-    });
-    return {
-      preview: {
-        jobCode: plan.jobCode,
-        karigarName: plan.karigarName,
-        sourceLabel: `${plan.source.metalType} ${plan.source.displayName}`,
-        sourceFineness: plan.source.finenessPercent.toFixed(3),
-        outputs: plan.outputs.map((o) => ({
-          netWeight: o.netWeight.toFixed(3),
-          purityDisplayName: o.purityDisplayName,
-          finenessPercent: o.finenessPercent.toFixed(3),
-          fineWeight: o.fineWeight.toFixed(3),
-        })),
-        outputFine: plan.outputFine.toFixed(3),
-        returnedFine: plan.returnedFine.toFixed(3),
-        scrapFine: plan.scrapFine.toFixed(3),
-        explicitLossFine: plan.explicitLossFine.toFixed(3),
-        neededFine: plan.neededFine.toFixed(3),
-        jobPendingFine: plan.jobPendingFine.toFixed(3),
-        allocation: plan.allocation
-          ? { fineWeight: plan.allocation.fineWeight.toFixed(3), grossWeight: plan.allocation.grossWeight.toFixed(3), costValue: plan.allocation.costValue.toFixed(2) }
-          : null,
-        custodyBefore: w(plan.custodyBefore),
-        custodyAfter: w(plan.custodyAfter),
-        jobPendingAfterReceipt: plan.jobPendingAfterReceipt.toFixed(3),
-        completesJob: plan.completesJob,
-        fingerprint: receiptCustodyFingerprint(plan),
-      },
-    };
+    return { preview: toReceiptCustodyPreview(plan, isOwner) };
   } catch (error) {
-    if (error instanceof CustodyError || error instanceof jewelleryPosting.PostingError) return { error: error.message };
+    if (error instanceof CustodyError || error instanceof jewelleryPosting.PostingError) return { error: staffSafeMessage(error.message, isOwner) };
     console.error("previewReceiptCustodyAction failed:", error);
     return { error: "Could not prepare the preview. Please try again." };
   }

@@ -586,8 +586,19 @@ export type PostCustodyInput = CustodyOperationInput &
     owner: Owner;
   };
 
-export async function postCustodyOperation(tx: Tx, input: PostCustodyInput) {
-  if (input.owner.role !== "OWNER") throw new CustodyError("Only the Owner can post Karigar metal entries.");
+/**
+ * Internal permission, never read from a form: the ONE case where someone other
+ * than the Owner may post a custody entry is the allocation a finished-jewellery
+ * receipt makes for its own job (receiveWithCustodyAllocation), in the same
+ * transaction as that receipt. Issue, return, release, manual allocation and
+ * reversal stay Owner-only.
+ */
+export type CustodyPostOptions = { forReceiptOfJob?: string };
+
+export async function postCustodyOperation(tx: Tx, input: PostCustodyInput, options: CustodyPostOptions = {}) {
+  const receiptAllocation =
+    options.forReceiptOfJob !== undefined && input.kind === "ALLOCATE_TO_JOB" && input.jobId === options.forReceiptOfJob && input.owner.role === "STAFF";
+  if (input.owner.role !== "OWNER" && !receiptAllocation) throw new CustodyError("Only the Owner can post Karigar metal entries.");
   if (!input.idempotencyKey?.trim()) throw new CustodyError("Missing submission key — reload the page and try again.");
 
   // Purity is known up front except for a release (it comes from the job).

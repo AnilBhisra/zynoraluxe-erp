@@ -570,11 +570,11 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
           <SubHeading>24K આપ્યું, 18K / 14K / 9K તૈયાર આવ્યું</SubHeading>
           <Steps>
             <li>24K gold Karigar ને <Btn>Karigar Metal</Btn> tab માંથી આપો (Issue metal to Karigar). Company નું Copper/Alloy આપવું હોય તો Issue Materials માં Copper/Alloy ની line ઉમેરો.</li>
-            <li>Job ખોલી <Btn>Receive Finished Jewellery</Btn> દબાવો (Owner). Job પાસે gold ન હોય તો પણ ચાલે: “Gold from the Karigar&apos;s balance” માં Karigar નું 24K પસંદ થયેલું દેખાશે.</li>
+            <li>Job ખોલી <Btn>Receive Finished Jewellery</Btn> દબાવો (Owner કે Staff). Job પાસે gold ન હોય તો પણ ચાલે: “Gold from the Karigar&apos;s balance” માં Karigar નું 24K પસંદ થયેલું દેખાશે.</li>
             <li>દરેક output માં net weight ભરો અને <Btn>Final Purity</Btn> માં 18K, 14K કે 9K પસંદ કરો. Fine Gold Weight અને Alloy Added આપોઆપ ગણાશે.</li>
             <li>Alloy Added ને વહેંચો: From Company Copper/Alloy, Karigar-added alloy (charge સાથે), કે Included, no separate cost — સરવાળો બરાબર Alloy Added જેટલો જ હોવો જોઈએ.</li>
             <li>Returned Gold, Scrap ભરો; નીચે Reconciliation તપાસો. હિસાબ મળે નહીં ત્યાં સુધી Save થતું નથી.</li>
-            <li><Btn>Preview gold allocation</Btn> દબાવો: job પાસે પહેલેથી હોય એ gold પહેલાં વપરાય, ખૂટતું જ Karigar ના balance માંથી લેવાય. Preview માં કેટલું fine / gross લેવાશે, ખર્ચ, અને Karigar પાસે કેટલું બાકી રહેશે એ દેખાય. પછી જ Save થાય; કંઈ બદલો તો ફરી Preview કરો.</li>
+            <li><Btn>Preview gold allocation</Btn> દબાવો: job પાસે પહેલેથી હોય એ gold પહેલાં વપરાય, ખૂટતું જ Karigar ના balance માંથી લેવાય. Preview માં કેટલું fine / gross લેવાશે અને Karigar પાસે કેટલું બાકી રહેશે એ દેખાય (ખર્ચ ફક્ત Owner ને દેખાય). પછી જ Save થાય; કંઈ બદલો તો ફરી Preview કરો.</li>
             <li>Job પૂરો થયો હોય તો “This completes the job” ટીક કરો અને Process loss જાતે ભરો — loss ક્યારેય અંદાજથી ગણાતો નથી. Karigar પાસે બાકી રહેલું gold એ જ રહે છે, write-off થતું નથી.</li>
           </Steps>
           <Note>ઉદાહરણ (Karigar Metal): Karigar પાસે 10.000 g fine 24K. Job પાસે gold નથી. 4.000 g net 18K આવ્યું → 3.000 g fine (3.003 g gross 24K) job ને લાગે, 7.000 g fine Karigar પાસે રહે. બીજો voucher કે stock માંથી ફરી બાદ થતું નથી.</Note>

@@ -139,14 +139,50 @@ describe("ReceiveFinishedForm — gold from the Karigar's balance (Owner)", () =
   });
 });
 
+// The server sends Staff weights only: every rupee field is null.
+const STAFF_PREVIEW = {
+  ...PREVIEW,
+  outputs: [{ netWeight: "3.520", purityDisplayName: "18K", finenessPercent: "75.000", fineWeight: "2.640" }],
+  outputFine: "2.640",
+  neededFine: "2.640",
+  allocation: { fineWeight: "2.640", grossWeight: "2.643", costValue: null },
+  custodyBefore: { gross: "10.010", fine: "10.000", cost: null },
+  custodyAfter: { gross: "7.367", fine: "7.360", cost: null },
+  fingerprint: "a".repeat(64),
+};
+
 describe("ReceiveFinishedForm — Staff", () => {
-  it("never offers the Karigar's balance or a preview, even if sources were passed", () => {
+  it("Staff receive from the job's Karigar balance: source, finished purity, preview in weights, no ₹ anywhere", async () => {
+    previewMock.mockResolvedValue({ preview: STAFF_PREVIEW });
     const { container } = renderForm(false);
-    expect(screen.queryByLabelText("Karigar Metal source")).toBeNull();
-    expect(screen.queryByTestId("receipt-custody-preview")).toBeNull();
-    expect(container.querySelector('input[name="custodySourcePurityId"]')).toBeNull();
-    expect(container.textContent).not.toContain("₹");
-    expect(container.innerHTML).not.toContain("10.010");
+    expect((screen.getByLabelText("Karigar Metal source") as HTMLSelectElement).value).toBe("p24");
+    fireEvent.change(screen.getByLabelText("Net metal weight"), { target: { value: "3.52" } });
+    fireEvent.change(screen.getByLabelText("Final Purity"), { target: { value: "p18" } });
+    expect([...(screen.getByLabelText("Metal type") as HTMLSelectElement).options].map((o) => o.value)).toEqual(["GOLD"]);
+    const save = screen.getByRole("button", { name: "Receive Finished Jewellery" }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Preview gold allocation" }));
+    });
+    const box = within(screen.getByTestId("receipt-custody-preview"));
+    expect(box.getByText("Taken from balance now").nextSibling?.textContent).toBe("2.640g fine = 2.643g gross GOLD 24K");
+    expect(box.getByText("Karigar balance").nextSibling?.textContent).toContain("7.360g fine / 7.367g gross remaining");
+    expect(save.disabled).toBe(false);
+    expect(hidden(container, "custodyFingerprint")).toBe("a".repeat(64));
+    // No money figure anywhere (the only ₹ are the existing charge-entry labels
+    // Staff type into), and nothing money-related in the preview.
+    expect(container.textContent).not.toMatch(/₹\s*[\d,]/);
+    expect(screen.getByTestId("receipt-custody-preview").textContent).not.toMatch(/₹|cost|rate|value/i);
+  });
+
+  it("a job with no metal and no Karigar balance still lists metals and purities, and says why it cannot be saved", () => {
+    renderForm(false, []);
+    expect([...(screen.getByLabelText("Metal type") as HTMLSelectElement).options].map((o) => o.value)).toEqual(["GOLD"]);
+    fireEvent.change(screen.getByLabelText("Net metal weight"), { target: { value: "3.52" } });
+    const purities = [...(screen.getByLabelText("Final Purity") as HTMLSelectElement).options].map((o) => o.value);
+    expect(purities).toEqual(expect.arrayContaining(["p24", "p18"]));
+    expect(screen.getAllByText(/Ask the Owner to issue the metal to this Karigar in Karigar Metal first/).length).toBeGreaterThan(0);
+    expect((screen.getByRole("button", { name: "Receive Finished Jewellery" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });
 

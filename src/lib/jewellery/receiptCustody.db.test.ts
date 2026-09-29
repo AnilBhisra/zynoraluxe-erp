@@ -16,7 +16,7 @@ import { Decimal } from "@/lib/accounting/money";
 import { prisma } from "@/lib/db/prisma";
 import { createRoughLotWithPieces, issueRoughToKarigar, receivePolishedDiamonds } from "@/lib/diamond/posting";
 import { postFinishedJewellerySale } from "@/lib/jewellery/finishedSalesPosting";
-import { getCustodyBalanceInTx, postCustodyOperation } from "@/lib/jewellery/karigarCustody";
+import { getCustodyBalanceInTx, postCustodyOperation, reverseCustodyEntry } from "@/lib/jewellery/karigarCustody";
 import { reconcileMetalLedger } from "@/lib/jewellery/karigarCustodyReports";
 import {
   completeReconciledJob,
@@ -31,6 +31,8 @@ import {
   planReceiptCustody,
   receiptCustodyFingerprint,
   receiveWithCustodyAllocation,
+  staffSafeMessage,
+  toReceiptCustodyPreview,
   type ReceiveWithCustodyInput,
 } from "@/lib/jewellery/receiptCustody";
 import { assertDisposableTestDb } from "../../../test/setup/dbGuard";
@@ -49,6 +51,8 @@ let k18: string; // 18K 75%
 let seq = 0;
 const key = (label: string) => `rcc-${label}-${Date.now()}-${++seq}`;
 const owner = () => ({ id: ownerId, role: "OWNER" as const });
+const staff = () => ({ id: staffId, role: "STAFF" as const });
+let staffKarigarId: string; // 10.000 g fine for the Staff example
 
 async function clearAll() {
   const { CLEAR_BUSINESS_DATA_SQL } = await import("../../../test/setup/businessTables");
@@ -68,7 +72,9 @@ beforeAll(async () => {
   const [who] = await prisma.$queryRawUnsafe<{ db: string; usr: string; port: number }[]>("select current_database() db, current_user usr, inet_server_port() port");
   assertDisposableTestDb(who);
   ownerId = (await prisma.user.findFirstOrThrow({ where: { role: "OWNER" } })).id;
-  staffId = (await prisma.user.findFirst({ where: { role: "STAFF" } }))?.id ?? ownerId;
+  staffId = (await prisma.user.findFirstOrThrow({ where: { role: "STAFF" } })).id;
+  // The preview fingerprint is an HMAC keyed on the session secret.
+  process.env.SESSION_SECRET ??= "receipt-custody-test-secret-0123456789abcdef";
   await clearAll();
   karigarId = (await prisma.party.create({ data: { name: "Receipt Custody Karigar", type: "KARIGAR", createdByUserId: ownerId } })).id;
   k24 = await upsertPurity("GOLD", "RC 24K", "99.900");
@@ -132,7 +138,7 @@ function input(jobId: string, pieces: Piece[], options: Partial<ReceiveWithCusto
     idempotencyKey: key("rcv"),
     createdByUserId: ownerId,
     sourcePurityId: k24,
-    owner: owner(),
+    actor: owner(),
     ...opts,
   };
 }
@@ -374,9 +380,152 @@ describe("receipt-time allocation — refusals, idempotency, concurrency, rollba
     expect([j.status, pendingFineWeightOf(j).toFixed(3)]).toEqual(["DRAFT", "0.000"]);
   });
 
-  it("only the Owner can take metal from a Karigar's balance at receipt", async () => {
-    const job = await makeJob("Staff try");
-    await expect(receive(input(job.id, [{ net: "1.000", purityId: k24 }], { owner: { id: staffId, role: "STAFF" } }))).rejects.toThrow(/Only the Owner/);
+});
+
+describe("Staff receive against the job's own Karigar balance — weights only, no cost", () => {
+  const asStaff = (jobId: string, pieces: Piece[], options: Parameters<typeof input>[2] = {}) =>
+    input(jobId, pieces, { actor: staff(), createdByUserId: staffId, damagedLostByUserId: staffId, ...options });
+  let savedK: string;
+  beforeAll(async () => {
+    savedK = K;
+    staffKarigarId = (await prisma.party.create({ data: { name: "Receipt Custody Staff Karigar", type: "KARIGAR", createdByUserId: ownerId } })).id;
+    await prisma.$transaction(
+      (tx) => postCustodyOperation(tx, { kind: "ISSUE_TO_KARIGAR", karigarId: staffKarigarId, purityId: k24, fineWeight: "10", entryDate: DATE, reason: "Gold for Staff-received jobs", idempotencyKey: key("issue-staff"), owner: owner(), ...FY }),
+      TX
+    );
+    K = staffKarigarId;
+  });
+  afterAll(() => {
+    K = savedK;
+  });
+
+  it("Staff receive 3.520 g net 18K on a job with no metal: 2.640 g fine allocated, 7.360 g fine remains; recorded as Staff; cost counted once", async () => {
+    const job = await makeJob("Staff no-allocation ring");
+    expect((await jobRow(job.id)).status).toBe("DRAFT");
+    const stockBefore = await prisma.$transaction((tx) => getMetalStockBalanceInTx(tx, "GOLD", k24), TX);
+    const before = await counts();
+    const i = asStaff(job.id, [{ net: "3.520", purityId: k18 }], { alloyIncluded: "0.877" });
+    const p = await plan(i);
+    expect([p.outputFine.toFixed(3), p.jobPendingFine.toFixed(3), p.neededFine.toFixed(3)]).toEqual(["2.640", "0.000", "2.640"]);
+    // Server-side cost: the allocated FINE share of the balance's value (Rs 71,305.80 x 2.640 / 10.000).
+    expect([p.allocation!.fineWeight.toFixed(3), p.allocation!.grossWeight.toFixed(3), p.allocation!.costValue.toFixed(2)]).toEqual(["2.640", "2.643", "18824.73"]);
+    expect([p.custodyAfter.fine.toFixed(3), p.custodyAfter.gross.toFixed(3), p.custodyAfter.cost.toFixed(2)]).toEqual(["7.360", "7.367", "52481.07"]);
+
+    // What Staff are sent: weights, no rupee figure, an opaque fingerprint.
+    const staffView = toReceiptCustodyPreview(p, false);
+    expect([staffView.allocation?.costValue, staffView.custodyBefore.cost, staffView.custodyAfter.cost]).toEqual([null, null, null]);
+    expect([staffView.allocation?.fineWeight, staffView.allocation?.grossWeight, staffView.custodyAfter.fine, staffView.custodyAfter.gross]).toEqual(["2.640", "2.643", "7.360", "7.367"]);
+    expect(staffView.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+    const sent = JSON.stringify(staffView);
+    for (const money of ["18824.73", "71305.80", "52481.07", "₹"]) expect(sent).not.toContain(money);
+    expect(toReceiptCustodyPreview(p, true).allocation?.costValue).toBe("18824.73"); // the Owner still sees it
+
+    const r = await receive({ ...i, expectedFingerprint: staffView.fingerprint });
+    expect(r.replayed).toBe(false);
+    const piece = await prisma.finishedJewellery.findFirstOrThrow({ where: { jobId: job.id } });
+    expect([piece.netMetalWeight.toFixed(3), piece.fineMetalWeight.toFixed(3), piece.alloyAddedWeight.toFixed(3), piece.metalCost.toFixed(2)]).toEqual(["3.520", "2.640", "0.877", "18824.73"]);
+    const c = await custody();
+    expect([c.fineWeight.toFixed(3), c.grossWeight.toFixed(3), c.costValue.toFixed(2)]).toEqual(["7.360", "7.367", "52481.07"]);
+    // The actual actor, on both records.
+    const alloc = await prisma.karigarMetalCustodyEntry.findFirstOrThrow({ where: { jobId: job.id } });
+    expect([alloc.kind, alloc.voucherId, alloc.reference, alloc.createdByUserId]).toEqual(["ALLOCATE_TO_JOB", null, r.receipt.receiptCode, staffId]);
+    expect(r.receipt.createdByUserId).toBe(staffId);
+    // No second stock deduction; one new voucher (the receipt), balanced.
+    const after = await counts();
+    expect([after.vouchers, after.entries]).toEqual([before.vouchers + 1, before.entries + 1]);
+    const stockAfter = await prisma.$transaction((tx) => getMetalStockBalanceInTx(tx, "GOLD", k24), TX);
+    expect([stockAfter.grossWeight.toFixed(3), stockAfter.costValue.toFixed(2)]).toEqual([stockBefore.grossWeight.toFixed(3), stockBefore.costValue.toFixed(2)]);
+    const lines = await prisma.journalEntry.findMany({ where: { voucherId: r.receipt.postingVoucherId! } });
+    const dr = lines.reduce((sum, l) => sum.plus(l.debit), new Decimal(0));
+    const cr = lines.reduce((sum, l) => sum.plus(l.credit), new Decimal(0));
+    expect(dr.toFixed(2)).toBe(cr.toFixed(2));
+    await expectReconciled();
+  });
+
+  it("Staff: metal already on the job is used first; only the shortfall is allocated", async () => {
+    const job = await makeJob("Staff pre-allocated");
+    await prisma.$transaction(
+      (tx) => postCustodyOperation(tx, { kind: "ALLOCATE_TO_JOB", karigarId: K, purityId: k24, jobId: job.id, fineWeight: "1", entryDate: DATE, reason: "Up front", idempotencyKey: key("s-pre"), owner: owner(), ...FY }),
+      TX
+    );
+    const i = asStaff(job.id, [{ net: "3.520", purityId: k18 }], { alloyIncluded: "0.877" });
+    const p = await plan(i);
+    expect([p.jobPendingFine.toFixed(3), p.allocation!.fineWeight.toFixed(3)]).toEqual(["1.000", "1.640"]);
+    await receive({ ...i, expectedFingerprint: toReceiptCustodyPreview(p, false).fingerprint });
+    const entries = await prisma.karigarMetalCustodyEntry.findMany({ where: { jobId: job.id }, orderBy: { createdAt: "asc" } });
+    expect(entries.map((e) => [e.fineWeight.toFixed(3), e.createdByUserId === staffId])).toEqual([
+      ["1.000", false],
+      ["1.640", true],
+    ]);
+    expect(pendingFineWeightOf(await jobRow(job.id)).toFixed(3)).toBe("0.000");
+    await expectReconciled();
+  });
+
+  it("Staff: insufficient balance and a stale preview are refused with nothing written", async () => {
+    const job = await makeJob("Staff too big");
+    const have = (await custody()).fineWeight;
+    const before = await counts();
+    await expect(receive(asStaff(job.id, [{ net: have.plus(1).toFixed(3), purityId: k24 }]))).rejects.toThrow(/has only .* g fine .* unallocated/);
+    expect(await counts()).toEqual(before);
+
+    const stale = await makeJob("Staff stale");
+    const i = asStaff(stale.id, [{ net: "1.000", purityId: k24 }]);
+    const fp = toReceiptCustodyPreview(await plan(i), false).fingerprint;
+    const other = await makeJob("Staff meanwhile");
+    await prisma.$transaction(
+      (tx) => postCustodyOperation(tx, { kind: "ALLOCATE_TO_JOB", karigarId: K, purityId: k24, jobId: other.id, fineWeight: "0.1", entryDate: DATE, reason: "Meanwhile", idempotencyKey: key("s-mid"), owner: owner(), ...FY }),
+      TX
+    );
+    const mid = await counts();
+    await expect(receive({ ...i, expectedFingerprint: fp })).rejects.toThrow(/changed after this preview/);
+    expect(await counts()).toEqual(mid);
+  });
+
+  it("Staff: a double submit posts once; concurrent receipts that together exceed the balance post exactly one", async () => {
+    const job = await makeJob("Staff double");
+    const i = asStaff(job.id, [{ net: "0.500", purityId: k24 }]);
+    const both = await Promise.allSettled([receive(i), receive(i)]);
+    expect(both.some((b) => b.status === "fulfilled")).toBe(true);
+    expect(await receive(i).then((r) => r.replayed)).toBe(true);
+    expect(await prisma.jewelleryReceipt.count({ where: { jobId: job.id } })).toBe(1);
+    expect(await prisma.karigarMetalCustodyEntry.count({ where: { jobId: job.id } })).toBe(1);
+
+    const have = (await custody()).fineWeight;
+    const net = have.times("0.6").dividedBy("0.999").toDecimalPlaces(3).toFixed(3);
+    const a = await makeJob("Staff race A");
+    const b = await makeJob("Staff race B");
+    const results = await Promise.allSettled([receive(asStaff(a.id, [{ net, purityId: k24 }])), receive(asStaff(b.id, [{ net, purityId: k24 }]))]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const left = await custody();
+    expect(left.fineWeight.isNegative() || left.costValue.isNegative()).toBe(false);
+    await expectReconciled();
+  });
+
+  it("Staff still cannot issue, return, release, allocate by hand or reverse Karigar metal", async () => {
+    const job = await makeJob("Staff not allowed");
+    const other = await makeJob("Staff other job");
+    const base = { karigarId: K, purityId: k24, entryDate: DATE, reason: "Staff attempt", owner: staff(), ...FY };
+    const attempts: (() => Promise<unknown>)[] = [
+      () => prisma.$transaction((tx) => postCustodyOperation(tx, { ...base, kind: "ISSUE_TO_KARIGAR", fineWeight: "1", idempotencyKey: key("x1") }), TX),
+      () => prisma.$transaction((tx) => postCustodyOperation(tx, { ...base, kind: "RETURN_TO_STOCK", fineWeight: "1", idempotencyKey: key("x2") }), TX),
+      () => prisma.$transaction((tx) => postCustodyOperation(tx, { ...base, kind: "ALLOCATE_TO_JOB", jobId: job.id, fineWeight: "1", idempotencyKey: key("x3") }), TX),
+      // A receipt's permission covers only an allocation to THAT job.
+      () => prisma.$transaction((tx) => postCustodyOperation(tx, { ...base, kind: "ALLOCATE_TO_JOB", jobId: other.id, fineWeight: "1", idempotencyKey: key("x4") }, { forReceiptOfJob: job.id }), TX),
+      () => prisma.$transaction((tx) => postCustodyOperation(tx, { ...base, kind: "RELEASE_FROM_JOB", jobId: job.id, all: true, idempotencyKey: key("x5") }, { forReceiptOfJob: job.id }), TX),
+    ];
+    const before = await counts();
+    for (const attempt of attempts) await expect(attempt()).rejects.toThrow(/Only the Owner/);
+    const entry = await prisma.karigarMetalCustodyEntry.findFirstOrThrow({ where: { karigarId: K, kind: "ISSUE_TO_KARIGAR" } });
+    await expect(prisma.$transaction((tx) => reverseCustodyEntry(tx, { entryId: entry.id, reason: "Staff attempt", idempotencyKey: key("x6"), owner: staff(), ...FY }), TX)).rejects.toThrow(/Only the Owner/);
+    expect(await counts()).toEqual(before);
+    // The receipt and its allocation must name the same person.
+    await expect(receive(asStaff(job.id, [{ net: "0.100", purityId: k24 }], { createdByUserId: ownerId }))).rejects.toThrow(/same person/);
+  });
+
+  it("Staff-facing messages never carry money", () => {
+    expect(staffSafeMessage("This receipt needs 1.000 g fine more than ZL-JJOB-1 holds.", false)).toContain("1.000 g fine");
+    for (const m of ["Balance value is ₹7,130.58", "Cost Rs 7130 exceeds", "rate changed"]) expect(staffSafeMessage(m, false)).not.toMatch(/₹|Rs|7130|rate/);
+    expect(staffSafeMessage("Balance value is ₹7,130.58", true)).toContain("₹7,130.58");
   });
 });
 

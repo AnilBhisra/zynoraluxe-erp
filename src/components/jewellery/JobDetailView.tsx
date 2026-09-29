@@ -217,7 +217,7 @@ export function JobDetailView({
   chargePanels?: ReceiptChargePanel[] | null;
   /** Owner-only; null/undefined for Staff. */
   transferPanel?: MetalTransferPanelData | null;
-  /** Owner-only; empty for Staff. The Karigar's unallocated gold this job can be received from. */
+  /** The job's Karigar's unallocated metal this job can be received from -- weights only, for Owner and Staff. */
   custodySources?: CustodySourceOption[];
 }) {
   const router = useRouter();
@@ -239,14 +239,14 @@ export function JobDetailView({
     toThousandths(job.pendingFineWeight) > BigInt(0);
   const hasCustody = job.custodyAllocatedFineWeight !== "0.000" || job.custodyReleasedFineWeight !== "0.000";
   const canMarkInProgress = job.status === "MATERIALS_ISSUED";
-  // A job with no gold of its own yet can still be received by the Owner:
-  // the gold is allocated from the Karigar's balance as part of the receipt.
+  // A job with no gold of its own yet can still be received (Owner or Staff):
+  // the gold is allocated from its Karigar's balance as part of the receipt.
   const canReceive =
     job.status === "MATERIALS_ISSUED" ||
     job.status === "IN_PROGRESS" ||
     job.status === "PARTIALLY_RECEIVED" ||
     job.status === "NEEDS_CORRECTION" ||
-    (job.status === "DRAFT" && isOwner && custodySources.length > 0);
+    (job.status === "DRAFT" && custodySources.length > 0);
   const canCancel = isOwner && (job.status === "DRAFT" || job.status === "MATERIALS_ISSUED" || job.status === "IN_PROGRESS");
   const canToggleNeedsCorrection = job.status === "IN_PROGRESS" || job.status === "PARTIALLY_RECEIVED" || job.status === "NEEDS_CORRECTION";
   const hasCompanyAlloy = toThousandths(job.issuedAlloyGrossWeight) > BigInt(0);
@@ -476,7 +476,7 @@ export function JobDetailView({
                 alloyPendingGrossWeight={job.alloyPendingGrossWeight}
                 unresolvedDiamonds={unresolvedDiamonds}
                 pendingPackets={pendingPackets}
-                custodySources={isOwner ? custodySources : []}
+                custodySources={custodySources}
                 isOwner={isOwner}
                 onDone={handleSaved}
               />

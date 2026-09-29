@@ -174,8 +174,9 @@ async function JobsTabContent({
       // Cost data: never fetched for Staff.
       isOwner ? getReceiptChargePanels(detail.id) : Promise.resolve(null),
       isOwner ? getMetalTransferPanel(detail.id) : Promise.resolve(null),
-      // The Karigar's gold balance (with fineness) is Owner-only, like custody itself.
-      isOwner ? listReceiptCustodySources(prisma, detail.id) : Promise.resolve([]),
+      // The job's own Karigar's unallocated metal, as weights only (no cost,
+      // rate or value): Owner and Staff both receive against it.
+      listReceiptCustodySources(prisma, detail.id),
     ]);
     const addedLaterByReceipt = new Map((chargePanels ?? []).map((p) => [p.receiptId, p.addedLaterTotal]));
     // Packet quantities only — no packet cost ever reaches these props.

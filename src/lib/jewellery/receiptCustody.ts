@@ -1,5 +1,7 @@
 import "server-only";
 
+import { createHmac } from "node:crypto";
+
 import type { MetalType, UserRole } from "@/generated/prisma/enums";
 import { Decimal, type DecimalInput, round2, ZERO } from "@/lib/accounting/money";
 import type { Tx } from "@/lib/corrections/types";
@@ -88,7 +90,8 @@ export type ReceiptCustodySource = {
  * The Karigar's unallocated pools a receipt on this job may draw from: all of
  * them for a job holding no fine metal yet, otherwise only the one with the
  * same purity and saved fineness as the job's metal (none if the job already
- * mixes pools). Owner screens only — callers never pass this to Staff.
+ * mixes pools). Weights only -- no cost, rate or value -- so Owner and Staff
+ * receipt forms both get it.
  */
 export async function listReceiptCustodySources(tx: Tx, jobId: string): Promise<ReceiptCustodySource[]> {
   const job = await tx.jewelleryJob.findUnique({ where: { id: jobId }, select: { karigarId: true, status: true } });
@@ -238,9 +241,17 @@ export async function planReceiptCustody(tx: Tx, input: ReceiptCustodyPlanInput)
   };
 }
 
-/** Every figure the Owner saw in the preview; a change in any refuses the post. */
+/**
+ * Every figure behind the preview -- weights AND the Karigar balance's value --
+ * so a change in any refuses the post. It is returned to the browser, and
+ * Staff see it too, so it is an opaque keyed hash (HMAC with the server's
+ * SESSION_SECRET): it reveals no weight, cost or rate, and cannot be guessed
+ * back from candidate values without the secret.
+ */
 export function receiptCustodyFingerprint(plan: ReceiptCustodyPlan): string {
-  return JSON.stringify({
+  const secret = process.env.SESSION_SECRET;
+  if (!secret) throw new Error("SESSION_SECRET is not set. Copy .env.example to .env and generate one with `openssl rand -base64 32`.");
+  const figures = JSON.stringify({
     jobId: plan.jobId,
     source: plan.source.purityId,
     fineness: plan.source.finenessPercent.toFixed(3),
@@ -250,6 +261,75 @@ export function receiptCustodyFingerprint(plan: ReceiptCustodyPlan): string {
     custody: [plan.custodyBefore.gross.toFixed(3), plan.custodyBefore.fine.toFixed(3), plan.custodyBefore.cost.toFixed(2)],
     complete: plan.completesJob,
   });
+  return createHmac("sha256", secret).update(`receipt-custody-preview:${figures}`).digest("hex");
+}
+
+/**
+ * What the receipt form shows. Weights for everyone; the three rupee figures
+ * only when `showCost` (the Owner). For Staff they are null in the response
+ * itself -- never sent, not merely hidden.
+ */
+export type ReceiptCustodyPreview = {
+  jobCode: string;
+  karigarName: string;
+  sourceLabel: string;
+  sourceFineness: string;
+  outputs: { netWeight: string; purityDisplayName: string; finenessPercent: string; fineWeight: string }[];
+  outputFine: string;
+  returnedFine: string;
+  scrapFine: string;
+  explicitLossFine: string;
+  neededFine: string;
+  jobPendingFine: string;
+  allocation: { fineWeight: string; grossWeight: string; costValue: string | null } | null;
+  custodyBefore: { gross: string; fine: string; cost: string | null };
+  custodyAfter: { gross: string; fine: string; cost: string | null };
+  jobPendingAfterReceipt: string;
+  completesJob: boolean;
+  fingerprint: string;
+};
+
+export function toReceiptCustodyPreview(plan: ReceiptCustodyPlan, showCost: boolean): ReceiptCustodyPreview {
+  const money = (v: Decimal) => (showCost ? v.toFixed(2) : null);
+  const balance = (p: ReceiptCustodyPlan["custodyBefore"]) => ({ gross: p.gross.toFixed(3), fine: p.fine.toFixed(3), cost: money(p.cost) });
+  return {
+    jobCode: plan.jobCode,
+    karigarName: plan.karigarName,
+    sourceLabel: `${plan.source.metalType} ${plan.source.displayName}`,
+    sourceFineness: plan.source.finenessPercent.toFixed(3),
+    outputs: plan.outputs.map((o) => ({
+      netWeight: o.netWeight.toFixed(3),
+      purityDisplayName: o.purityDisplayName,
+      finenessPercent: o.finenessPercent.toFixed(3),
+      fineWeight: o.fineWeight.toFixed(3),
+    })),
+    outputFine: plan.outputFine.toFixed(3),
+    returnedFine: plan.returnedFine.toFixed(3),
+    scrapFine: plan.scrapFine.toFixed(3),
+    explicitLossFine: plan.explicitLossFine.toFixed(3),
+    neededFine: plan.neededFine.toFixed(3),
+    jobPendingFine: plan.jobPendingFine.toFixed(3),
+    allocation: plan.allocation
+      ? { fineWeight: plan.allocation.fineWeight.toFixed(3), grossWeight: plan.allocation.grossWeight.toFixed(3), costValue: money(plan.allocation.costValue) }
+      : null,
+    custodyBefore: balance(plan.custodyBefore),
+    custodyAfter: balance(plan.custodyAfter),
+    jobPendingAfterReceipt: plan.jobPendingAfterReceipt.toFixed(3),
+    completesJob: plan.completesJob,
+    fingerprint: receiptCustodyFingerprint(plan),
+  };
+}
+
+/**
+ * Last line of defence for Staff-facing messages on this path: the messages
+ * here carry weights only, but a message that ever mentions money (a rupee
+ * figure, rate or value) is replaced rather than shown to Staff.
+ */
+export function staffSafeMessage(message: string, isOwner: boolean): string {
+  if (isOwner) return message;
+  return /₹|\bRs\.?\s*\d|\brate\b|\bcost\b|\bvalue\b|\bamount\b/i.test(message)
+    ? "This receipt cannot be saved as entered. Ask the Owner to check it."
+    : message;
 }
 
 export type ReceiveWithCustodyInput = ReceiptInput & {
@@ -257,7 +337,8 @@ export type ReceiveWithCustodyInput = ReceiptInput & {
   explicitLossFineWeight?: DecimalInput | null;
   expectedFingerprint?: string | null;
   idempotencyKey: string;
-  owner: { id: string; role: UserRole };
+  /** Who is receiving (Owner or Staff); recorded on the allocation and the receipt. */
+  actor: { id: string; role: UserRole };
 };
 
 /**
@@ -268,7 +349,11 @@ export type ReceiveWithCustodyInput = ReceiptInput & {
  * returns the first receipt without posting anything.
  */
 export async function receiveWithCustodyAllocation(tx: Tx, input: ReceiveWithCustodyInput) {
-  if (input.owner.role !== "OWNER") throw new CustodyError("Only the Owner can take metal from a Karigar's balance for a receipt.");
+  // Owner or Staff may receive against the job's OWN Karigar's balance; the
+  // receipt's createdByUserId and the allocation's createdByUserId are both
+  // this actor. General custody operations remain Owner-only.
+  if (input.actor.role !== "OWNER" && input.actor.role !== "STAFF") throw new CustodyError("You are not allowed to receive finished jewellery.");
+  if (input.createdByUserId !== input.actor.id) throw new CustodyError("Internal check failed: the receipt and the allocation must record the same person.");
   if (!input.idempotencyKey?.trim()) throw new CustodyError("Missing submission key — reload the page and try again.");
 
   const jobForLock = await tx.jewelleryJob.findUnique({ where: { id: input.jobId }, select: { karigarId: true } });
@@ -311,10 +396,10 @@ export async function receiveWithCustodyAllocation(tx: Tx, input: ReceiveWithCus
       entryDate: input.receiveDate,
       reason: `Receipt-time allocation for ${plan.jobCode}`,
       idempotencyKey: `${input.idempotencyKey}:allocation`,
-      owner: input.owner,
+      owner: input.actor,
       fyStartMonth: input.fyStartMonth,
       fyStartDay: input.fyStartDay,
-    });
+    }, { forReceiptOfJob: plan.jobId });
     allocationEntry = posted.entry;
     if (!new Decimal(posted.entry.fineWeight).equals(plan.allocation.fineWeight) || !new Decimal(posted.entry.costValue).equals(plan.allocation.costValue)) {
       throw new CustodyError("Internal check failed: the allocation differs from the preview. Nothing was saved.");

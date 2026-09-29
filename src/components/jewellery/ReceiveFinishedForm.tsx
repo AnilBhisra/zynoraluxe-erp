@@ -52,9 +52,9 @@ type OutputDraft = {
 type FinalPurityOption = { id: string; displayName: string; finenessPercent: string; isIssued: boolean };
 
 /**
- * Owner only — one of the Karigar's unallocated Karigar Metal pools that this
- * job can take its gold from at receipt (same metal, purity and fineness as
- * any gold the job already holds).
+ * One of the job's Karigar's unallocated Karigar Metal pools that this job can
+ * take its gold from at receipt (same metal, purity and fineness as any gold
+ * the job already holds). Weights only -- Owner and Staff both get it.
  */
 export type CustodySourceOption = {
   purityId: string;
@@ -159,7 +159,7 @@ export function ReceiveFinishedForm({
   alloyPendingGrossWeight: string;
   unresolvedDiamonds: UnresolvedDiamondOption[];
   pendingPackets?: PendingPacketOption[];
-  /** Owner only: the Karigar's compatible unallocated Karigar Metal pools. Empty for Staff. */
+  /** The job's Karigar's compatible unallocated Karigar Metal pools (weights only; Owner and Staff). */
   custodySources?: CustodySourceOption[];
   isOwner: boolean;
   onDone?: () => void;
@@ -168,13 +168,18 @@ export function ReceiveFinishedForm({
   const [previewState, previewAction, previewPending] = useActionState<CustodyPreviewState, FormData>(previewReceiptCustodyAction, undefined);
   const [previewedSignature, setPreviewedSignature] = useState<string | null>(null);
   const issuedFineBearing = useMemo(() => issuedMetal.filter((m) => !m.isAlloy), [issuedMetal]);
-  const custodyOptions = isOwner ? custodySources : [];
+  const custodyOptions = custodySources;
   // Default to the Karigar's balance whenever there is one: metal already on
   // the job is used first, and only the shortfall is taken from the balance.
   const [custodySourceId, setCustodySourceId] = useState(custodyOptions[0]?.purityId ?? "");
   const custodySource = custodyOptions.find((s) => s.purityId === custodySourceId) ?? null;
   const custodyMode = custodySource !== null;
   const fineBearing = useMemo(() => withCustodySource(issuedFineBearing, custodySource), [issuedFineBearing, custodySource]);
+  // No metal on the job and no Karigar Metal to take it from.
+  const noMetalSource = fineBearing.length === 0;
+  const metalTypeChoices = noMetalSource
+    ? [...new Set(purities.filter((p) => p.metalType !== "ALLOY").map((p) => p.metalType))]
+    : [...new Set(fineBearing.map((p) => p.metalType))];
   const [receiveDate, setReceiveDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [explicitLoss, setExplicitLoss] = useState("0");
   const companyAlloy = useMemo(() => issuedMetal.find((m) => m.isAlloy) ?? null, [issuedMetal]);
@@ -214,6 +219,14 @@ export function ReceiveFinishedForm({
   function finalPurityOptions(metalType: string): FinalPurityOption[] {
     const sources = fineBearing.filter((m) => m.metalType === metalType);
     const issued = sources.map((s) => ({ id: s.purityId, displayName: s.displayName, finenessPercent: s.finenessPercent, isIssued: true }));
+    if (noMetalSource) {
+      // Nothing to receive against yet: still list the purities (never an
+      // empty list); the block reason below says why it cannot be saved.
+      return purities
+        .filter((p) => p.metalType === metalType && toThousandths(p.finenessPercent) > ZERO)
+        .sort((a, b) => Number(toThousandths(b.finenessPercent) - toThousandths(a.finenessPercent)))
+        .map((p) => ({ id: p.id, displayName: p.displayName, finenessPercent: p.finenessPercent, isIssued: false }));
+    }
     if (sources.length !== 1) return issued;
     const sourceFineness = toThousandths(sources[0].finenessPercent);
     const lower = purities
@@ -427,7 +440,9 @@ export function ReceiveFinishedForm({
     if (field === "included") setIncludedAlloyInput(value);
   }
 
-  const blockReason = invalidOutput
+  const blockReason = noMetalSource && outputs.some((o) => Number(o.netMetalWeight) > 0)
+    ? "This job holds no metal and its Karigar has no unallocated Karigar Metal to receive it from. Ask the Owner to issue the metal to this Karigar in Karigar Metal first."
+    : invalidOutput
     ? "Check each output: enter a valid net metal weight and a Final Purity no finer than the issued metal."
     : invalidReturnOrScrap || returnedAlloyWeight === null
       ? "Check the returned and scrap weights."
@@ -435,7 +450,7 @@ export function ReceiveFinishedForm({
         ? custodyMode
           ? `Finished plus returned plus scrap needs ${g(resolvedThisReceipt)}g fine — more than this job's ${g(jobAvailable)}g plus the Karigar's unallocated ${g(custodyFine)}g fine.`
           : "Finished plus returned plus scrap fine weight cannot exceed the fine weight still pending for this job." +
-            (isOwner ? "" : " If the gold is in the Karigar's Karigar Metal balance, ask the Owner to receive it.")
+            (custodyOptions.length > 0 ? " Choose the Karigar's balance above to take the shortfall from it." : "")
         : explicitLossWeight === null
           ? "Check the process loss weight."
           : custodyMode && markJobComplete && explicitLossWeight < jobGap
@@ -689,12 +704,12 @@ export function ReceiveFinishedForm({
                   aria-label="Metal type"
                   value={output.metalType}
                   onChange={(e) => {
-                    const nextPurity = fineBearing.find((p) => p.metalType === e.target.value)?.purityId ?? "";
+                    const nextPurity = fineBearing.find((p) => p.metalType === e.target.value)?.purityId ?? finalPurityOptions(e.target.value)[0]?.id ?? "";
                     updateOutput(index, { metalType: e.target.value, purityId: nextPurity });
                   }}
                   className="h-9 rounded-lg border border-zinc-300 bg-white px-2 text-xs dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
                 >
-                  {[...new Set(fineBearing.map((p) => p.metalType))].map((mt) => (
+                  {metalTypeChoices.map((mt) => (
                     <option key={mt} value={mt}>
                       {metalTypeLabel(mt)}
                     </option>
@@ -706,6 +721,7 @@ export function ReceiveFinishedForm({
                   onChange={(e) => updateOutput(index, { purityId: e.target.value })}
                   className="h-9 rounded-lg border border-zinc-300 bg-white px-2 text-xs dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
                 >
+                  {output.purityId === "" ? <option value="">Final Purity: choose…</option> : null}
                   {purityOptions.map((p) => (
                     <option key={p.id} value={p.id}>
                       Final Purity: {p.displayName}
@@ -1246,8 +1262,13 @@ export function ReceiveFinishedForm({
               <FragmentRow label="Taken from balance now">
                 {freshPreview.allocation ? (
                   <>
-                    <strong>{freshPreview.allocation.fineWeight}g fine</strong> = {freshPreview.allocation.grossWeight}g gross {freshPreview.sourceLabel} · cost{" "}
-                    <strong>₹{rupees(freshPreview.allocation.costValue)}</strong>
+                    <strong>{freshPreview.allocation.fineWeight}g fine</strong> = {freshPreview.allocation.grossWeight}g gross {freshPreview.sourceLabel}
+                    {freshPreview.allocation.costValue !== null ? (
+                      <>
+                        {" "}
+                        · cost <strong>₹{rupees(freshPreview.allocation.costValue)}</strong>
+                      </>
+                    ) : null}
                   </>
                 ) : (
                   "Nothing — this job's own metal covers it"
@@ -1255,7 +1276,8 @@ export function ReceiveFinishedForm({
               </FragmentRow>
               <FragmentRow label="Karigar balance">
                 {freshPreview.custodyBefore.fine}g fine / {freshPreview.custodyBefore.gross}g gross → <strong>{freshPreview.custodyAfter.fine}g fine</strong> /{" "}
-                {freshPreview.custodyAfter.gross}g gross remaining (₹{rupees(freshPreview.custodyAfter.cost)})
+                {freshPreview.custodyAfter.gross}g gross remaining
+                {freshPreview.custodyAfter.cost !== null ? ` (₹${rupees(freshPreview.custodyAfter.cost)})` : ""}
               </FragmentRow>
               <FragmentRow label="Left on this job">{freshPreview.jobPendingAfterReceipt}g fine</FragmentRow>
               <FragmentRow label="Job">{freshPreview.completesJob ? "Completes (if every stone is resolved)" : "Stays Partially Received"}</FragmentRow>
