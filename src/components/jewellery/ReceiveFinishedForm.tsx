@@ -194,11 +194,12 @@ export function ReceiveFinishedForm({
   const issuedFineBearing = useMemo(() => issuedMetal.filter((m) => !m.isAlloy), [issuedMetal]);
   const custodyOptions = custodySources;
   // Customer-owned gold: the default whenever the job already holds some, or
-  // when it has no Company metal and no Karigar Metal to take it from.
+  // when the job holds no Company metal (a Customer's job whose gold is theirs);
+  // "Company gold" stays one choice away.
   const [customerKey, setCustomerKey] = useState(() => {
     const onJob = customerGoldSources.find((s) => toThousandths(s.onJobFine) > ZERO);
     if (onJob) return customerKeyOf(onJob);
-    return issuedFineBearing.length === 0 && custodySources.length === 0 && customerGoldSources[0] ? customerKeyOf(customerGoldSources[0]) : "";
+    return issuedFineBearing.length === 0 && customerGoldSources[0] ? customerKeyOf(customerGoldSources[0]) : "";
   });
   const customerSource = customerGoldSources.find((s) => customerKeyOf(s) === customerKey) ?? null;
   const customerMode = customerSource !== null;
@@ -673,7 +674,9 @@ export function ReceiveFinishedForm({
   const freshCustomerPreview =
     customerMode && !cgPreviewPending && cgPreviewState?.preview && cgPreviewedSignature === customerSignature ? cgPreviewState.preview : null;
   const customerPreviewError = customerMode && !cgPreviewPending && cgPreviewedSignature === customerSignature ? (cgPreviewState?.error ?? null) : null;
-  const customerBlock = customerMode && !freshCustomerPreview ? "Preview the Customer's gold used by this receipt, then save." : null;
+  // A mixed Customer + Company receipt is an Owner decision (the Customer's share) — Staff never make it.
+  const mixedStaffBlock = mixedJob && !isOwner ? "This job holds both Customer and Company gold. Only the Owner can record a mixed receipt and decide the Customer's share." : null;
+  const customerBlock = mixedStaffBlock ?? (customerMode && !freshCustomerPreview ? "Preview the Customer's gold used by this receipt, then save." : null);
 
   function runCustomerPreview() {
     if (!customerSignature) return;
@@ -1396,11 +1399,12 @@ export function ReceiveFinishedForm({
         <div className="flex flex-col gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-4 text-sm" aria-live="polite" data-testid="receipt-customer-gold-preview">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Customer-owned gold used</p>
-            <Button type="button" variant="secondary" size="md" onClick={runCustomerPreview} disabled={cgPreviewPending || Boolean(blockReason)}>
+            <Button type="button" variant="secondary" size="md" onClick={runCustomerPreview} disabled={cgPreviewPending || Boolean(blockReason) || Boolean(mixedStaffBlock)}>
               {cgPreviewPending ? "Checking…" : freshCustomerPreview ? "Preview again" : "Preview Customer gold"}
             </Button>
           </div>
           {blockReason ? <p className="text-xs font-medium text-red-600 dark:text-red-400">{blockReason}</p> : null}
+          {mixedStaffBlock ? <Alert tone="error">{mixedStaffBlock}</Alert> : null}
           {customerPreviewError ? <Alert tone="error">{customerPreviewError}</Alert> : null}
           {freshCustomerPreview ? (
             <dl className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-[auto_1fr]">
@@ -1430,6 +1434,15 @@ export function ReceiveFinishedForm({
                 with {freshCustomerPreview.karigarName} {freshCustomerPreview.karigarAfter.fine}g · safe {freshCustomerPreview.safeAfter.fine}g · on this job{" "}
                 {freshCustomerPreview.onJobAfter.fine}g fine — still the Customer&apos;s
               </FragmentRow>
+              {freshCustomerPreview.mixed ? (
+                <FragmentRow label="Company gold (separate)">
+                  <span data-testid="mixed-company-side">
+                    on job {freshCustomerPreview.company.pendingBefore}g fine · in pieces {freshCustomerPreview.company.finishedFine}g · returned {freshCustomerPreview.company.returnedFine}g · scrap{" "}
+                    {freshCustomerPreview.company.scrapFine}g · process loss {freshCustomerPreview.company.processLossFine}g · left pending {freshCustomerPreview.company.pendingAfter}g
+                    {freshCustomerPreview.company.costMoved !== null ? ` · Company gold cost carried once: ₹${freshCustomerPreview.company.costMoved} (Customer gold ₹0)` : ""}
+                  </span>
+                </FragmentRow>
+              ) : null}
               <FragmentRow label="Job">{freshCustomerPreview.completesJob ? "Customer gold completed (job completes when every stone is resolved)" : "Stays open"}</FragmentRow>
             </dl>
           ) : cgPreviewState?.preview && !cgPreviewPending ? (

@@ -319,6 +319,9 @@ async function JobsTabContent({
         chargesAddedLater: isOwner ? (addedLaterByReceipt.get(r.id) ?? "0.00") : null,
         karigarAlloyCost: ownerOnly(isOwner, r.karigarAlloyCost.toFixed(2)),
         unabsorbedCost: ownerOnly(isOwner, r.unabsorbedCost.toFixed(2)),
+        customerGold: r.reversalSnapshot !== null,
+        reversedAt: r.reversedAt ? r.reversedAt.toISOString() : null,
+        reversalReason: r.reversalReason,
       })),
       finishedOutputs: await Promise.all(
         detail.finishedOutputs.map(async (f) => ({
@@ -336,6 +339,7 @@ async function JobsTabContent({
           totalCost: ownerOnly(isOwner, f.totalCost.toFixed(2)),
           totalCostCurrent: ownerOnly(isOwner, formatCarryingAmount(f.totalCostCurrent)),
           qcStatus: f.qcStatus,
+          status: f.status,
           photoUrl: await resolveJewelleryAssetUrl(f.photoAssetId),
         }))
       ),
@@ -562,7 +566,10 @@ async function CustomerGoldTabContent({ customerId, isOwner }: { customerId: str
       ])
     : [null, []];
   return (
+    // Keyed by Customer: switching Customer resets every open form (an unsaved
+    // intake and its photo are discarded, never carried over to another Customer).
     <CustomerGoldTab
+      key={selected?.id ?? "none"}
       isOwner={isOwner}
       customers={customers.map((c) => ({ id: c.id, name: c.name }))}
       selectedCustomerId={selected?.id ?? ""}

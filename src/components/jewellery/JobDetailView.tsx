@@ -26,6 +26,7 @@ import type { MetalTransferPanel as MetalTransferPanelData } from "@/lib/jewelle
 import { FixJobStatusButton } from "@/components/jewellery/FixJobStatusButton";
 import { CompleteReconciledJobButton } from "@/components/jewellery/CompleteReconciledJobButton";
 import { JobCustomerGoldPanel, type SerializedJobCustomerGold } from "@/components/jewellery/JobCustomerGoldPanel";
+import { ReceiptReversalPanel } from "@/components/jewellery/ReceiptReversalPanel";
 import { Button } from "@/components/ui/Button";
 import { jewelleryTypeLabel } from "@/lib/jewellery/types";
 import { formatThousandths, toThousandths } from "@/lib/jewellery/metalMath";
@@ -144,6 +145,10 @@ export type SerializedJobDetail = {
     chargesAddedLater: string | null;
     karigarAlloyCost: string | null;
     unabsorbedCost: string | null;
+    /** A Customer Gold receipt: the Owner may reverse it (the server decides whether anything blocks it). */
+    customerGold: boolean;
+    reversedAt: string | null;
+    reversalReason: string | null;
   }[];
   finishedOutputs: {
     id: string;
@@ -165,6 +170,7 @@ export type SerializedJobDetail = {
      * carried at right now. This is what the page displays. */
     totalCostCurrent: string | null;
     qcStatus: string;
+    status: string;
     photoUrl: string | null;
   }[];
   timeline: { id: string; type: string; detail: string; costValue: string | null; sourceDocument: string | null; createdAt: string }[];
@@ -529,7 +535,18 @@ export function JobDetailView({
               <tbody className="divide-y divide-[var(--border)]">
                 {job.receipts.map((r) => (
                   <tr key={r.id}>
-                    <td className="px-3 py-2 font-medium text-zinc-800 dark:text-zinc-200">{r.receiptCode}</td>
+                    <td className="px-3 py-2 font-medium text-zinc-800 dark:text-zinc-200">
+                      {r.receiptCode}
+                      {r.reversedAt ? (
+                        <span className="block text-xs font-normal text-red-700 dark:text-red-400" data-testid={`receipt-reversed-${r.receiptCode}`}>
+                          Reversed {new Date(r.reversedAt).toLocaleDateString("en-IN")} — {r.reversalReason}
+                        </span>
+                      ) : isOwner && r.customerGold ? (
+                        <span className="block">
+                          <ReceiptReversalPanel receiptId={r.id} receiptCode={r.receiptCode} onDone={() => router.refresh()} />
+                        </span>
+                      ) : null}
+                    </td>
                     <td className="px-3 py-2">{new Date(r.receiveDate).toLocaleDateString("en-IN")}</td>
                     <td className="px-3 py-2">
                       {r.returnedMetalFineWeight}g
@@ -583,10 +600,11 @@ export function JobDetailView({
                     Qty {o.quantity} · {o.netMetalWeight}g net / {o.fineMetalWeight}g fine
                     {toThousandths(o.alloyAddedWeight) > BigInt(0) ? ` · Alloy Added ${o.alloyAddedWeight}g` : ""} · QC:{" "}
                     {o.qcStatus.replace(/_/g, " ")}
-                    {isOwner && o.totalCostCurrent !== null ? ` · ${money(o.totalCostCurrent)}` : ""}
+                    {o.status === "RECEIPT_REVERSED" ? " · Receipt reversed — this piece no longer exists" : ""}
+                    {isOwner && o.totalCostCurrent !== null && o.status !== "RECEIPT_REVERSED" ? ` · ${money(o.totalCostCurrent)}` : ""}
                   </p>
                 </div>
-                {isOwner ? (
+                {isOwner && o.status !== "RECEIPT_REVERSED" && o.status !== "CUSTOMER_AWAITING_DELIVERY" && o.status !== "DELIVERED_TO_CUSTOMER" ? (
                   <button
                     type="button"
                     onClick={() => setShowOverrideForReceipt((cur) => (cur === o.receiptId ? null : o.receiptId))}

@@ -41,6 +41,7 @@ const PREVIEW = {
   onJobAfter: { gross: "0.000", fine: "0.000" },
   completesJob: false,
   mixed: false,
+  company: { pendingBefore: "0.000", finishedFine: "0.000", returnedFine: "0.000", scrapFine: "0.000", processLossFine: "0.000", pendingAfter: "0.000", costMoved: null as string | null },
   fingerprint: "cg-fp-1",
 };
 
@@ -131,12 +132,56 @@ describe("ReceiveFinishedForm — Customer-owned gold", () => {
     expect(screen.getByText(/Company gold returned/)).toBeTruthy();
   });
 
-  it("choosing 'Company gold' switches back to the Karigar Metal flow; a Company job never defaults to Customer gold", () => {
+  it("a Customer's job with no Company metal defaults to the Customer's gold even when the Karigar also holds Company metal; 'Company gold' is one choice away", () => {
     renderForm({ isOwner: true, custody: [KARIGAR_24K] });
     const src = screen.getByLabelText("Customer gold source") as HTMLSelectElement;
-    expect(src.value).toBe("");
-    expect((screen.getByLabelText("Karigar Metal source") as HTMLSelectElement).value).toBe("p24");
-    fireEvent.change(src, { target: { value: "p24|99.900" } });
+    expect(src.value).toBe("p24|99.900");
     expect(screen.queryByLabelText("Karigar Metal source")).toBeNull();
+    fireEvent.change(src, { target: { value: "" } });
+    expect((screen.getByLabelText("Karigar Metal source") as HTMLSelectElement).value).toBe("p24");
+  });
+
+  it("a job with no Customer gold source (a Company job) never shows Customer gold", () => {
+    renderForm({ isOwner: true, custody: [KARIGAR_24K], customer: [] });
+    expect(screen.queryByLabelText("Customer gold source")).toBeNull();
+    expect((screen.getByLabelText("Karigar Metal source") as HTMLSelectElement).value).toBe("p24");
+  });
+
+  it("a mixed job with Company metal defaults to Company gold until the Customer's gold is on it", () => {
+    renderForm({ isOwner: true, issuedMetal: [{ purityId: "p24", metalType: "GOLD", displayName: "24K", finenessPercent: "99.900", isAlloy: false, grossWeight: "2.002", fineWeight: "2.000" }] });
+    expect((screen.getByLabelText("Customer gold source") as HTMLSelectElement).value).toBe("");
+  });
+});
+
+describe("ReceiveFinishedForm — mixed Customer + Company gold", () => {
+  const COMPANY_24K: IssuedMetalOption = { purityId: "p24", metalType: "GOLD", displayName: "24K", finenessPercent: "99.900", isAlloy: false, grossWeight: "2.002", fineWeight: "2.000" };
+  it("Staff are told only the Owner decides a mixed receipt; they cannot preview or save it", () => {
+    renderForm({ isOwner: false, customer: [{ ...CUSTOMER_24K, onJobFine: "1.000" }], issuedMetal: [COMPANY_24K] });
+    expect(screen.getByText(/Only the Owner can record a mixed receipt/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Preview Customer gold" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Receive Finished Jewellery" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("the Owner's preview shows the Company gold separately, with its cost carried once and the Customer's at ₹0", async () => {
+    cgPreviewMock.mockResolvedValue({
+      preview: {
+        ...PREVIEW,
+        mixed: true,
+        customerFineForOutputs: "2.000",
+        companyFineForOutputs: "2.000",
+        company: { pendingBefore: "2.000", finishedFine: "2.000", returnedFine: "0.000", scrapFine: "0.000", processLossFine: "0.000", pendingAfter: "0.000", costMoved: "14014.00" },
+      },
+    });
+    const { container } = renderForm({ isOwner: true, customer: [{ ...CUSTOMER_24K, onJobFine: "1.000" }], issuedMetal: [COMPANY_24K] });
+    fireEvent.change(screen.getByLabelText("Net metal weight"), { target: { value: "4.004" } });
+    fireEvent.change(screen.getByLabelText("Customer's share of the finished pieces' fine gold (g)"), { target: { value: "2.000" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Preview Customer gold" }));
+    });
+    expect((cgPreviewMock.mock.calls[0][1] as FormData).get("customerFineForOutputs")).toBe("2.000");
+    const side = screen.getByTestId("mixed-company-side").textContent ?? "";
+    expect(side).toContain("in pieces 2.000g");
+    expect(side).toContain("Company gold cost carried once: ₹14014.00 (Customer gold ₹0)");
+    expect(hidden(container, "customerFineForOutputs")).toBe("2.000");
   });
 });

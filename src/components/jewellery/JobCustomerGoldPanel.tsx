@@ -83,7 +83,7 @@ export function JobCustomerGoldPanel({ data, isOwner, onDone }: { data: Serializ
           <ul className="mt-2 flex flex-col gap-1 text-xs" data-testid="job-customer-pieces">
             {data.pieces.map((p) => (
               <li key={p.id}>
-                {p.finishedCode} · {p.status === "DELIVERED_TO_CUSTOMER" ? "Delivered" : "Ready for delivery"} · net {p.netMetalWeight}g · Customer gold {p.customerGoldFineWeight}g fine
+                {p.finishedCode} · {p.status === "DELIVERED_TO_CUSTOMER" ? "Delivered" : p.status === "RECEIPT_REVERSED" ? "Receipt reversed" : "Ready for delivery"} · net {p.netMetalWeight}g · Customer gold {p.customerGoldFineWeight}g fine
                 {p.companyCost !== null ? ` · Company work cost ₹${p.companyCost} (Customer gold ₹0)` : ""}
               </li>
             ))}
