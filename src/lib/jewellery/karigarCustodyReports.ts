@@ -399,6 +399,12 @@ export async function reconcileMetalLedger(tx: Tx): Promise<{ lines: Reconciliat
     else finished = finished.plus(c);
   }
 
+  const awaiting = await tx.finishedJewellery.findMany({
+    where: { status: "CUSTOMER_AWAITING_DELIVERY" },
+    select: { metalCost: true, diamondCost: true, labourAllocated: true },
+  });
+  const customerPieces = awaiting.reduce((s, p) => s.plus(p.metalCost).plus(p.diamondCost).plus(p.labourAllocated), ZERO);
+
   const line = (accountCode: string, label: string, ledger: Decimal, parts: { label: string; value: Decimal }[]): ReconciliationLine => {
     const expected = round2(parts.reduce((s, p) => s.plus(p.value), ZERO));
     return { accountCode, label, ledger, expected, difference: round2(ledger.minus(expected)), parts: parts.map((p) => ({ ...p, value: round2(p.value) })) };
@@ -417,6 +423,10 @@ export async function reconcileMetalLedger(tx: Tx): Promise<{ lines: Reconciliat
       ]),
       line(SYSTEM_ACCOUNT_CODES.FINISHED_JEWELLERY_INVENTORY, "Finished Jewellery Inventory", await ledgerOf(SYSTEM_ACCOUNT_CODES.FINISHED_JEWELLERY_INVENTORY), [
         { label: "Available finished pieces (authoritative cost)", value: finished },
+      ]),
+      // Customer Gold: the Company's own cost in Customer-owned pieces not yet delivered.
+      line(SYSTEM_ACCOUNT_CODES.CUSTOMER_JEWELLERY_WIP, "Customer Jewellery Work Awaiting Delivery", await ledgerOf(SYSTEM_ACCOUNT_CODES.CUSTOMER_JEWELLERY_WIP), [
+        { label: "Company cost in Customer-owned pieces awaiting delivery", value: customerPieces },
       ]),
     ],
   };

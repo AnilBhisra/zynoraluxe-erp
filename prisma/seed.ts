@@ -63,6 +63,8 @@ const SYSTEM_ACCOUNTS: AccountSeed[] = [
     name: "Finished Jewellery Inventory",
     type: "ASSET",
   },
+  // Customer Gold (also created by migration 20261005090000_customer_gold).
+  { code: SYSTEM_ACCOUNT_CODES.CUSTOMER_JEWELLERY_WIP, name: "Customer Jewellery Work Awaiting Delivery", type: "ASSET" },
   // Phase 6
   { code: SYSTEM_ACCOUNT_CODES.SALES_RETURNS, name: "Sales Returns", type: "INCOME" },
   // Phase 7

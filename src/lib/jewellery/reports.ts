@@ -854,6 +854,9 @@ export async function listFinishedJewelleryStock(filters?: {
   includeCost?: boolean;
 }): Promise<FinishedJewelleryStockRow[]> {
   const where = {
+    // Company Finished Stock only: a Customer-owned piece (Customer Gold) is never
+    // Company stock -- it is listed under Customer jewellery awaiting delivery.
+    ownership: "COMPANY" as const,
     ...(filters?.status ? { status: filters.status } : {}),
     ...(filters?.search
       ? {

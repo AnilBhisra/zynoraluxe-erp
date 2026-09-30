@@ -32,6 +32,7 @@ import {
   type MetalStockMovementKind,
 } from "@/lib/jewellery/metalMath";
 import { nextJewelleryCode } from "@/lib/jewellery/numbering";
+import { customerGoldOnJobInTx } from "@/lib/jewellery/customerGoldLedger";
 
 export { PostingError };
 
@@ -194,7 +195,7 @@ async function getJobPurityPendingFineWeightInTx(tx: Tx, jobId: string, purityId
  * kept as its own small local helper rather than generalizing the shared
  * one, to avoid any risk of changing its (locked, tested) money-rounding
  * behavior used everywhere else. */
-function allocateWeightProportionally(total: Decimal, targets: { key: string; weight: Decimal }[]): Map<string, Decimal> {
+export function allocateWeightProportionally(total: Decimal, targets: { key: string; weight: Decimal }[]): Map<string, Decimal> {
   const result = new Map<string, Decimal>();
   if (targets.length === 0) return result;
   const totalWeight = targets.reduce((sum, t) => sum.plus(t.weight), ZERO);
@@ -1314,6 +1315,9 @@ export async function cancelJewelleryJob(
   const job = await tx.jewelleryJob.findUnique({ where: { id: input.jobId } });
   if (!job) throw new PostingError("Job not found.");
   if (job.status === "CANCELLED") throw new PostingError("This job has already been cancelled.");
+  if ((await customerGoldOnJobInTx(tx, job.id)).length > 0) {
+    throw new PostingError("This job holds Customer-owned gold. Release it back to the Karigar (Customer Gold) before cancelling the job.");
+  }
 
   if (job.status === "DRAFT") {
     return tx.jewelleryJob.update({
@@ -1622,6 +1626,11 @@ export async function assessJobReconciliation(tx: Tx, jobId: string): Promise<Jo
     }
   }
 
+  const customerGold = await customerGoldOnJobInTx(tx, jobId);
+  if (customerGold.length > 0) {
+    return { ok: false, reason: `${job.jobCode} still holds ${customerGold[0].fine.toFixed(3)}g fine of the Customer's own gold — receive, return, scrap or record it first.` };
+  }
+
   return { ok: true };
 }
 
@@ -1684,6 +1693,27 @@ export type DiamondResolutionInput = {
 export type MetalReturnScrapLineInput = { purityId: string; grossWeight: DecimalInput };
 
 /**
+ * Customer Gold (CUSTOMER_GOLD_DESIGN.md §2.3). Passed ONLY by
+ * receiveWithCustomerGold, which posts the Customer-gold ledger entries in the
+ * same transaction. The Customer's fine gold in each output is excluded from
+ * every Company figure: metal reconciliation, WIP relief, consumption records,
+ * returns and scrap. A piece holding Customer gold is Customer-owned: status
+ * CUSTOMER_AWAITING_DELIVERY, no PRODUCED_IN movement, and the Company's own
+ * cost in it (stones, alloy, charges, any approved Company gold) is debited to
+ * 1340 instead of 1330.
+ */
+export type CustomerGoldReceiptPart = {
+  customerId: string;
+  purityId: string;
+  metalType: MetalType;
+  finenessPercent: Decimal;
+  /** Customer-owned fine gold in each output, by the outputs' input order (0 for none). */
+  fineByOutput: Decimal[];
+  /** True when this receipt also returns, scraps or records loss of Customer gold (ledger entries). */
+  resolvesCustomerGold: boolean;
+};
+
+/**
  * Phase 7 — how bulk packet stones issued to a job are accounted for at
  * receipt time. Pieces and carat are explicit because a packet is a bulk
  * quantity, not one identified stone. Anything left unresolved simply stays
@@ -1743,6 +1773,8 @@ export async function receiveFinishedJewellery(
      * more pieces are coming — the job completes only when the Owner says so.
      */
     autoCompleteWhenSettled?: boolean;
+    /** Internal: see CustomerGoldReceiptPart. Never read from a form. */
+    customerGold?: CustomerGoldReceiptPart | null;
     isAbnormalLoss: boolean;
     abnormalLossReason?: string | null;
     notes?: string | null;
@@ -1760,6 +1792,13 @@ export async function receiveFinishedJewellery(
   if (job.status === "CANCELLED") throw new PostingError("This job has been cancelled.");
   if (job.status === "COMPLETED") throw new PostingError("This job is already completed.");
   if (job.status === "DRAFT") throw new PostingError("Issue materials to this job before receiving.");
+  const customerGold = input.customerGold ?? null;
+  if (!customerGold && (await customerGoldOnJobInTx(tx, job.id)).length > 0) {
+    throw new PostingError("This job holds Customer-owned gold. Receive it with the Customer gold section so the Customer's gold is recorded (and never counted as Company metal).");
+  }
+  if (customerGold && job.customerId !== customerGold.customerId) {
+    throw new PostingError("Internal check failed: the Customer gold does not belong to this job's Customer. Nothing was saved.");
+  }
 
   if (input.isAbnormalLoss && (!input.abnormalLossReason || input.abnormalLossReason.trim().length < 3)) {
     throw new PostingError("Give a short reason for classifying this loss as abnormal.");
@@ -1791,6 +1830,19 @@ export async function receiveFinishedJewellery(
     );
   }
   const isAlloyLine = (line: MetalReturnScrapLineInput) => alloyPurityId !== null && line.purityId === alloyPurityId;
+  // Where a finished piece's fine metal can come from: the job's Company-issued
+  // purities, plus the Customer's pool on a Customer-gold receipt. Return and
+  // scrap lines stay Company-only (the Customer's are ledger entries).
+  const outputSourceFineness = new Map(finenessSnapshotByPurityId);
+  const outputSourceMetalType = new Map(metalTypeByPurityId);
+  if (customerGold) {
+    const companyFineness = outputSourceFineness.get(customerGold.purityId);
+    if (companyFineness && !companyFineness.equals(customerGold.finenessPercent)) {
+      throw new PostingError("The job's Company gold and the Customer's gold are at different finenesses — a mixed job must use one purity and fineness.");
+    }
+    outputSourceFineness.set(customerGold.purityId, customerGold.finenessPercent);
+    outputSourceMetalType.set(customerGold.purityId, customerGold.metalType);
+  }
 
   // ---- Resolve return/scrap lines — EACH line must explicitly name a
   // purity that was actually issued to THIS job; never a silent default
@@ -1858,7 +1910,8 @@ export async function receiveFinishedJewellery(
     scrapGross.isZero() &&
     alloyReturnedGross.isZero() &&
     input.diamondResolutions.length === 0 &&
-    packetResolutions.length === 0
+    packetResolutions.length === 0 &&
+    !customerGold?.resolvesCustomerGold
   ) {
     throw new PostingError("Record at least one finished output, return, scrap amount, or diamond resolution.");
   }
@@ -1886,11 +1939,11 @@ export async function receiveFinishedJewellery(
 
     let finenessPercentSnapshot: Decimal;
     let sourcePurityId: string;
-    const issuedSnapshot = finenessSnapshotByPurityId.get(output.purityId);
+    const issuedSnapshot = outputSourceFineness.get(output.purityId);
     if (issuedSnapshot) {
       // Same purity as issued — Phase 4 behaviour, unchanged: the job's own
       // issue-time fineness snapshot, and the consumed metal is this purity.
-      if (metalTypeByPurityId.get(output.purityId) !== output.metalType) {
+      if (outputSourceMetalType.get(output.purityId) !== output.metalType) {
         throw new PostingError("One of the outputs' metal type does not match its selected purity.");
       }
       finenessPercentSnapshot = issuedSnapshot;
@@ -1904,12 +1957,12 @@ export async function receiveFinishedJewellery(
       // fine-bearing purity of this metal — with two (e.g. 22K + 18K) there
       // is no unambiguous source to trace the fine metal back to, so the
       // Phase 4 "must be an issued purity" rule still applies.
-      const sameMetalSources = [...metalTypeByPurityId.entries()].filter(([, metalType]) => metalType === output.metalType);
+      const sameMetalSources = [...outputSourceMetalType.entries()].filter(([, metalType]) => metalType === output.metalType);
       if (sameMetalSources.length !== 1) {
         throw new PostingError("Each output's metal purity must be one of the purities issued to this job.");
       }
       sourcePurityId = sameMetalSources[0][0];
-      const sourceFineness = finenessSnapshotByPurityId.get(sourcePurityId)!;
+      const sourceFineness = outputSourceFineness.get(sourcePurityId)!;
       const outputPurity = await tx.metalPurity.findUnique({ where: { id: output.purityId } });
       if (!outputPurity || !outputPurity.isActive || outputPurity.metalType !== output.metalType) {
         throw new PostingError("The selected final purity was not found, is inactive, or does not match the output's metal.");
@@ -1925,7 +1978,7 @@ export async function receiveFinishedJewellery(
       }
     }
 
-    const sourceFinenessPercentSnapshot = finenessSnapshotByPurityId.get(sourcePurityId)!;
+    const sourceFinenessPercentSnapshot = outputSourceFineness.get(sourcePurityId)!;
     const metal = computeOutputMetal({
       netWeight: netMetalWeight.toFixed(3),
       outputFinenessPercent: finenessPercentSnapshot.toFixed(3),
@@ -1959,6 +2012,25 @@ export async function receiveFinishedJewellery(
   thisFinishedFineWeight = round3(thisFinishedFineWeight);
   expectedAlloyAdded = round3(expectedAlloyAdded);
   const hasOutputs = resolvedOutputs.length > 0;
+
+  // Customer-owned fine per output (0 on an ordinary receipt) and the Company's share.
+  const customerFineByOutput = resolvedOutputs.map((o, i) => {
+    if (!customerGold) return ZERO;
+    const c = round3(customerGold.fineByOutput[i] ?? ZERO);
+    if (c.isNegative() || c.greaterThan(o.fineWeight)) {
+      throw new PostingError("Internal check failed: a piece's Customer gold exceeds its fine weight. Nothing was saved.");
+    }
+    if (c.greaterThan(0) && o.sourcePurityId !== customerGold.purityId) {
+      throw new PostingError("A piece made from the Customer's gold must use the Customer's gold purity as its source.");
+    }
+    return c;
+  });
+  if (customerGold && customerGold.fineByOutput.length !== resolvedOutputs.length) {
+    throw new PostingError("Internal check failed: Customer gold split does not match the outputs. Nothing was saved.");
+  }
+  const customerFinishedFineWeight = round3(customerFineByOutput.reduce((sum, c) => sum.plus(c), ZERO));
+  const companyFineByOutput = resolvedOutputs.map((o, i) => round3(o.fineWeight.minus(customerFineByOutput[i])));
+  const companyFinishedFineWeight = round3(thisFinishedFineWeight.minus(customerFinishedFineWeight));
 
   // ---- Resolve + validate diamond resolutions ----
   const uniqueResolutionIds = new Set(input.diamondResolutions.map((r) => r.polishedDiamondId));
@@ -2134,11 +2206,12 @@ export async function receiveFinishedJewellery(
 
   const pendingFineWeightBefore = pendingFineWeightOf(job);
   const pendingAvailable = round3(pendingFineWeightBefore.plus(karigarAddedFineWeight));
-  const resolvedThisReceipt = round3(thisFinishedFineWeight.plus(returnedFineWeight).plus(scrapFineWeight));
+  // Company metal only: the Customer's fine gold is reconciled in its own ledger.
+  const resolvedThisReceipt = round3(companyFinishedFineWeight.plus(returnedFineWeight).plus(scrapFineWeight));
 
   if (resolvedThisReceipt.greaterThan(pendingAvailable)) {
     throw new PostingError(
-      `Finished (${thisFinishedFineWeight.toFixed(3)}g) plus returned (${returnedFineWeight.toFixed(3)}g) plus scrap (${scrapFineWeight.toFixed(3)}g) fine weight exceeds the ${pendingAvailable.toFixed(3)}g still pending for this job.`
+      `Finished (${companyFinishedFineWeight.toFixed(3)}g${customerGold ? " Company" : ""}) plus returned (${returnedFineWeight.toFixed(3)}g) plus scrap (${scrapFineWeight.toFixed(3)}g) fine weight exceeds the ${pendingAvailable.toFixed(3)}g still pending for this job.`
     );
   }
 
@@ -2298,7 +2371,13 @@ export async function receiveFinishedJewellery(
   // output's own Alloy Added (other-material uses otherMaterialReallocation,
   // computed above across this job's whole output history) ----
   const byFineWeight = resolvedOutputs.map((o, i) => ({ key: String(i), weight: o.fineWeight }));
-  const metalAllocation = hasOutputs ? allocateProportionally(finishedPortionCost, byFineWeight) : [];
+  // Company metal cost belongs to the Company fine in each piece (all of it on
+  // an ordinary receipt); only if no piece holds Company fine does it fall back
+  // to total fine (e.g. Karigar-added metal on a Customer-gold job).
+  const byCompanyFine = companyFineByOutput.some((w) => w.greaterThan(0))
+    ? companyFineByOutput.map((w, i) => ({ key: String(i), weight: w }))
+    : byFineWeight;
+  const metalAllocation = hasOutputs ? allocateProportionally(finishedPortionCost, byCompanyFine) : [];
   const chargesAllocation = hasOutputs && chargesToFinished.greaterThan(0) ? allocateProportionally(chargesToFinished, byFineWeight) : [];
   const alloyCostToOutputs = round2(alloyToFinishedCost.plus(karigarAlloyCost));
   const alloyWeights = expectedAlloyAdded.greaterThan(0)
@@ -2307,6 +2386,21 @@ export async function receiveFinishedJewellery(
       ? byFineWeight
       : resolvedOutputs.map((o, i) => ({ key: String(i), weight: o.netMetalWeight }));
   const alloyAllocation = hasOutputs && alloyCostToOutputs.greaterThan(0) ? allocateProportionally(alloyCostToOutputs, alloyWeights) : [];
+
+  // Per piece: the Company's authoritative inventory cost (metal incl. alloy +
+  // stones + charges). A Customer-owned piece's share goes to 1340.
+  const outputCompanyInventoryCost = resolvedOutputs.map((resolved, i) => {
+    const metal = round2((metalAllocation.find((a) => a.key === String(i))?.amount ?? ZERO).plus(alloyAllocation.find((a) => a.key === String(i))?.amount ?? ZERO));
+    const labour = chargesAllocation.find((a) => a.key === String(i))?.amount ?? ZERO;
+    const stones = issueLines
+      .filter((l) => resolved.input.diamondIds.includes(l.polishedDiamondId))
+      .reduce((sum, l) => sum.plus(new Decimal(l.costAtIssue)), ZERO)
+      .plus(resolvedPacketResolutions.filter((r) => r.resolution === "SET" && r.setInOutputIndex === i).reduce((sum, r) => sum.plus(r.costValue), ZERO));
+    return round2(metal.plus(stones).plus(labour));
+  });
+  const customerPiecesInventoryCost = round2(
+    outputCompanyInventoryCost.reduce((sum, c, i) => (customerFineByOutput[i].greaterThan(0) ? sum.plus(c) : sum), ZERO)
+  );
 
   // ---- Journal lines — built first so the voucher amount is the posting's
   // real total debit ----
@@ -2321,11 +2415,21 @@ export async function receiveFinishedJewellery(
   const finishedInventoryDebit = round2(
     finishedPortionCost.plus(alloyCostToOutputs).plus(chargesToFinished).plus(setDiamondCost).plus(setPacketCost)
   );
-  if (finishedInventoryDebit.greaterThan(0)) {
+  // Company pieces → 1330; the Company's own cost in Customer-owned pieces → 1340.
+  const companyFinishedDebit = round2(finishedInventoryDebit.minus(customerPiecesInventoryCost));
+  if (companyFinishedDebit.isNegative()) throw new PostingError("Internal check failed: piece costs exceed the finished total. Nothing was saved.");
+  if (companyFinishedDebit.greaterThan(0)) {
     journalLines.push({
       accountCode: SYSTEM_ACCOUNT_CODES.FINISHED_JEWELLERY_INVENTORY,
-      debit: finishedInventoryDebit,
+      debit: companyFinishedDebit,
       description: `Receipt ${receiptCode}`,
+    });
+  }
+  if (customerPiecesInventoryCost.greaterThan(0)) {
+    journalLines.push({
+      accountCode: SYSTEM_ACCOUNT_CODES.CUSTOMER_JEWELLERY_WIP,
+      debit: customerPiecesInventoryCost,
+      description: `Company cost in Customer-owned jewellery ${receiptCode}`,
     });
   }
   if (returnedCost.greaterThan(0)) {
@@ -2402,23 +2506,29 @@ export async function receiveFinishedJewellery(
   }
   const totalDebit = round2(journalLines.reduce((sum, line) => sum.plus(new Decimal(line.debit ?? 0)), ZERO));
 
-  const voucher = await createVoucherHeader(
-    tx,
-    {
-      date: input.receiveDate,
-      fyStartMonth: input.fyStartMonth,
-      fyStartDay: input.fyStartDay,
-      currencyCode: "INR",
-      exchangeRate: 1,
-      note: `Jewellery receipt ${receiptCode} for job ${job.jobCode}`,
-      idempotencyKey: input.idempotencyKey,
-      createdByUserId: input.createdByUserId,
-    },
-    "JEWELLERY_RECEIPT",
-    { amount: totalDebit }
-  );
+  // A receipt of Customer-owned gold with no Company cost at all (no stones,
+  // charges or Company metal) has nothing to post: no voucher. Every other
+  // receipt posts exactly as before.
+  const voucher =
+    customerGold && totalDebit.isZero()
+      ? null
+      : await createVoucherHeader(
+          tx,
+          {
+            date: input.receiveDate,
+            fyStartMonth: input.fyStartMonth,
+            fyStartDay: input.fyStartDay,
+            currencyCode: "INR",
+            exchangeRate: 1,
+            note: `Jewellery receipt ${receiptCode} for job ${job.jobCode}`,
+            idempotencyKey: input.idempotencyKey,
+            createdByUserId: input.createdByUserId,
+          },
+          "JEWELLERY_RECEIPT",
+          { amount: totalDebit }
+        );
 
-  await insertBalancedJournalLines(tx, voucher.id, journalLines);
+  if (voucher) await insertBalancedJournalLines(tx, voucher.id, journalLines);
 
   const receipt = await tx.jewelleryReceipt.create({
     data: {
@@ -2442,13 +2552,14 @@ export async function receiveFinishedJewellery(
       returnedAlloyGrossWeight: alloyReturnedGross.toFixed(3),
       alloyLossGrossWeight: alloyLossGross.toFixed(3),
       unabsorbedCost: unabsorbedCost.toFixed(2),
+      customerGoldFineWeight: customerFinishedFineWeight.toFixed(3),
       labourCharge: round2(input.labourCharge ?? 0).toFixed(2),
       makingCharge: round2(input.makingCharge ?? 0).toFixed(2),
       settingCharge: round2(input.settingCharge ?? 0).toFixed(2),
       platingCharge: round2(input.platingCharge ?? 0).toFixed(2),
       otherExpense: round2(input.otherExpense ?? 0).toFixed(2),
       notes: input.notes || null,
-      postingVoucherId: voucher.id,
+      postingVoucherId: voucher?.id ?? null,
       idempotencyKey: input.idempotencyKey ?? null,
       createdByUserId: input.createdByUserId,
     },
@@ -2516,10 +2627,25 @@ export async function receiveFinishedJewellery(
         photoAssetId: resolved.input.photoAssetId || null,
         qcStatus: resolved.input.qcStatus,
         notes: resolved.input.notes || null,
+        ...(customerFineByOutput[i].greaterThan(0)
+          ? {
+              ownership: "CUSTOMER" as const,
+              customerId: customerGold!.customerId,
+              customerGoldFineWeight: customerFineByOutput[i].toFixed(3),
+              status: "CUSTOMER_AWAITING_DELIVERY" as const,
+            }
+          : {}),
         createdByUserId: input.createdByUserId,
       },
     });
     createdOutputs.push(output);
+    if (customerFineByOutput[i].greaterThan(0)) {
+      // Customer-owned: never Company Finished Stock, so no stock-ledger entry.
+      if (!round2(metalCost.plus(diamondCostForOutput).plus(labourAllocated)).equals(outputCompanyInventoryCost[i])) {
+        throw new PostingError("Internal check failed: piece cost mismatch. Nothing was saved.");
+      }
+      continue;
+    }
 
     // Phase 6: every FinishedJewellery output enters the stock ledger
     // exactly once, atomically with its own creation. `costValue` is the
@@ -2762,7 +2888,9 @@ export async function receiveFinishedJewellery(
   // fine-bearing purities by their issued fine-weight share. ----
   for (let i = 0; i < resolvedOutputs.length; i++) {
     const o = resolvedOutputs[i];
-    if (o.fineWeight.greaterThan(0)) {
+    // Only Company metal of a Company-issued purity is consumed from the Company's job ledger.
+    const companyFine = companyFineByOutput[i];
+    if (companyFine.greaterThan(0) && metalTypeByPurityId.has(o.sourcePurityId)) {
       const metalCostShare = metalAllocation.find((a) => a.key === String(i))?.amount ?? ZERO;
       await tx.metalStockMovement.create({
         data: {
@@ -2770,7 +2898,7 @@ export async function receiveFinishedJewellery(
           metalType: metalTypeByPurityId.get(o.sourcePurityId)!,
           purityId: o.sourcePurityId,
           grossWeight: "0.000",
-          fineWeight: o.fineWeight.toFixed(3),
+          fineWeight: companyFine.toFixed(3),
           costValue: metalCostShare.toFixed(2),
           sourceDocument: receiptCode,
           jewelleryJobId: job.id,
@@ -2845,7 +2973,8 @@ export async function receiveFinishedJewellery(
   const updatedJob = await tx.jewelleryJob.update({
     where: { id: job.id },
     data: {
-      receivedFineWeight: round3(new Decimal(job.receivedFineWeight).plus(thisFinishedFineWeight)).toFixed(3),
+      // Company fine only: Customer-owned gold is reconciled in its own ledger.
+      receivedFineWeight: round3(new Decimal(job.receivedFineWeight).plus(companyFinishedFineWeight)).toFixed(3),
       returnedMetalFineWeight: round3(new Decimal(job.returnedMetalFineWeight).plus(returnedFineWeight)).toFixed(3),
       scrapFineWeight: round3(new Decimal(job.scrapFineWeight).plus(scrapFineWeight)).toFixed(3),
       karigarAddedFineWeight: round3(new Decimal(job.karigarAddedFineWeight).plus(karigarAddedFineWeight)).toFixed(3),
@@ -2880,6 +3009,8 @@ export async function overrideFinishedJewelleryAllocation(
   const receipt = await tx.jewelleryReceipt.findUnique({ where: { id: input.receiptId }, include: { outputs: true } });
   if (!receipt) throw new PostingError("Receipt not found.");
 
+  const customerPiece = receipt.outputs.find((o) => o.ownership === "CUSTOMER");
+  if (customerPiece) throw new PostingError(`${customerPiece.finishedCode} is Customer-owned jewellery (made from the Customer's own gold). It is delivered and billed to the Customer from its job — never sold, adjusted or re-costed as Company stock.`);
   const outputIds = new Set(receipt.outputs.map((o) => o.id));
   for (const adj of input.adjustments) {
     if (!outputIds.has(adj.finishedJewelleryId)) throw new PostingError("One or more outputs do not belong to this receipt.");

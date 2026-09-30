@@ -8,6 +8,7 @@ import type { Tx } from "@/lib/corrections/types";
 import { round3 } from "@/lib/diamond/allocation";
 import { nextJewelleryCode } from "@/lib/jewellery/numbering";
 import { declareCustodyAware, getMetalStockBalanceInTx, pendingFineWeightOf } from "@/lib/jewellery/posting";
+import { assertCompanyGoldAllowedOnJob } from "@/lib/jewellery/customerGold";
 
 /**
  * Karigar metal custody — company metal issued to a named Karigar without a
@@ -335,6 +336,14 @@ export async function planCustodyOperation(tx: Tx, input: CustodyOperationInput)
         throw new CustodyError(`${karigar.name} holds no unallocated ${purity.displayName}.`);
       }
       const fineness = custody.finenessPercentSnapshot;
+      // Company gold onto a job holding a Customer's own gold: only with the Owner's mix approval.
+      if (input.jobId) {
+        try {
+          await assertCompanyGoldAllowedOnJob(tx, input.jobId, { purityId: purity.id, finenessPercent: fineness });
+        } catch (error) {
+          throw new CustodyError(error instanceof Error ? error.message : "This job cannot take Company gold.");
+        }
+      }
       let gross: Decimal;
       let fine: Decimal;
       let cost: Decimal;

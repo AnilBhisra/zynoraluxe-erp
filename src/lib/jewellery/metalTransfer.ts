@@ -7,6 +7,7 @@ import { postCorrection, reverseCorrection } from "@/lib/corrections/engine";
 import { CorrectionError, fingerprintPlan, type CorrectionPlan, type DownstreamUse, type PlannedImpact, type Tx } from "@/lib/corrections/types";
 import { nextJewelleryCode } from "@/lib/jewellery/numbering";
 import { declareCustodyAware, pendingFineWeightOf } from "@/lib/jewellery/posting";
+import { assertCompanyGoldAllowedOnJob } from "@/lib/jewellery/customerGold";
 
 /**
  * Audited job-to-job reallocation of unresolved fine-bearing metal between two
@@ -221,6 +222,11 @@ export async function planJobMetalTransfer(
   if (!sourceCheck.ok) throw new CorrectionError(sourceCheck.reason);
   const destinationCheck = await assessDestination(tx, destination, source.karigarId, metalType, purityId, finenessPercentSnapshot);
   if (!destinationCheck.ok) throw new CorrectionError(destinationCheck.reason);
+  try {
+    await assertCompanyGoldAllowedOnJob(tx, destination.id, { purityId, finenessPercent: finenessPercentSnapshot });
+  } catch (error) {
+    throw new CorrectionError(error instanceof Error ? error.message : "The destination job cannot take Company gold.");
+  }
 
   const sourcePendingBefore = pendingFineWeightOf(source);
   if (fineWeight.greaterThan(sourcePendingBefore)) {

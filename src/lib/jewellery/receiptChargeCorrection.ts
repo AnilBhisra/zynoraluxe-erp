@@ -81,6 +81,9 @@ type PieceRow = {
 export async function checkPiecesUntouched(tx: Tx, pieces: PieceRow[], verb: "added" | "reversed"): Promise<ReceiptChargeEligibility> {
   const action = verb === "added" ? "Charges can only be added" : "This correction can only be reversed";
   for (const p of pieces) {
+    if (p.status === "CUSTOMER_AWAITING_DELIVERY" || p.status === "DELIVERED_TO_CUSTOMER") {
+      return { ok: false, reason: `${p.finishedCode} is Customer-owned jewellery (made from the Customer's own gold). It is delivered and billed to the Customer from its job — never sold, adjusted or re-costed as Company stock.` };
+    }
     if (p.status !== "AVAILABLE") {
       const word = await describeUnavailable(tx, p);
       return {

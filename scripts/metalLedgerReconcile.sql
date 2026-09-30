@@ -5,6 +5,8 @@
 -- 1320 Jewellery WIP        vs open jobs' metal/alloy WIP + unresolved stones
 --                              + unallocated Karigar custody (0 before the custody migration)
 -- 1330 Finished Jewellery   vs AVAILABLE pieces at authoritative cost (metal + diamond + labour)
+-- 1340 Customer Jewellery   vs Company cost in Customer-owned pieces awaiting delivery
+--                              (only once account 1340 exists: 4 lines before the Customer Gold migration, 5 after)
 -- Posted revaluations are added to the pool/WIP/finished figure they restate.
 -- Works before and after the custody migration: movement types are compared
 -- as text and no custody column is referenced. The transaction is READ ONLY.
@@ -25,7 +27,7 @@ reval as (
 led as (
   select a.code, round(coalesce(sum(j.debit), 0) - coalesce(sum(j.credit), 0), 2) as bal
   from accounts a left join journal_entries j on j."accountId" = a.id
-  where a.code in ('1300', '1310', '1320', '1330') group by a.code
+  where a.code in ('1300', '1310', '1320', '1330', '1340') group by a.code
 ),
 jobs as (select * from jewellery_jobs where status <> 'CANCELLED'),
 rec as (
@@ -38,8 +40,13 @@ rec as (
     + coalesce((select d from reval where target = 'JOB_WIP'), 0)
     + (select coalesce(sum(k * "costValue"), 0) from eff)
   union all select '1330',
-      (select coalesce(sum("metalCost" + "diamondCost" + "labourAllocated"), 0) from finished_jewellery where status = 'AVAILABLE')
+      (select coalesce(sum("metalCost" + "diamondCost" + "labourAllocated"), 0) from finished_jewellery where status::text = 'AVAILABLE')
     + coalesce((select d from reval where target = 'FINISHED_JEWELLERY'), 0)
+  -- Customer Gold (reported only once account 1340 exists): Company cost in
+  -- Customer-owned pieces awaiting delivery. Status compared as text so this
+  -- script also runs, unchanged, on a database without that status value.
+  union all select '1340',
+      (select coalesce(sum("metalCost" + "diamondCost" + "labourAllocated"), 0) from finished_jewellery where status::text = 'CUSTOMER_AWAITING_DELIVERY')
 )
 select led.code || '|' || led.bal || '|' || round(rec.expected, 2) || '|' || round(led.bal - rec.expected, 2)
 from led join rec on rec.code = led.code order by led.code;

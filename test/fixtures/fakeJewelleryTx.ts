@@ -278,6 +278,13 @@ export function createFakeJewelleryTx() {
       findFirst: async () => null,
       findMany: async () => [],
     },
+    // Customer Gold: the Company flows only ask "does this job hold Customer
+    // gold?" — never here (the real flows are covered by customerGold.db.test.ts).
+    customerGoldEntry: {
+      findFirst: async () => null,
+      findMany: async () => [],
+      count: async () => 0,
+    },
     jewelleryDiamondIssueLine: {
       create: async ({ data }: { data: Row }) => {
         const row = { id: nextId("jdil"), resolvedAs: null, ...data };
@@ -356,6 +363,11 @@ export function createFakeJewelleryTx() {
         if (!where) return rows;
         return rows.filter((r) => matchesWhere(r, where));
       },
+      // Only the Customer-ownership guard uses this: { id: { in }, ownership }.
+      findFirst: async ({ where }: { where: { id?: { in?: string[] }; ownership?: string } }) =>
+        [...finishedJewelleryRows.values()].find(
+          (r) => (!where.id?.in || where.id.in.includes(r.id as string)) && (where.ownership === undefined || (r.ownership ?? "COMPANY") === where.ownership)
+        ) ?? null,
       update: async ({ where, data }: { where: { id: string }; data: Row }) => {
         const row = finishedJewelleryRows.get(where.id);
         if (!row) throw new Error("finished jewellery not found");

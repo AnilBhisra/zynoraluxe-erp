@@ -150,6 +150,11 @@ export async function postFinishedJewellerySale(
   // and the whole transaction throws and rolls back — including any
   // OTHER items in this same multi-item sale that WERE just claimed a
   // statement ago. No partial sale is possible. ----
+  const customerOwned = await tx.finishedJewellery.findFirst({
+    where: { id: { in: input.items.map((i) => i.finishedJewelleryId) }, ownership: "CUSTOMER" },
+    select: { finishedCode: true },
+  });
+  if (customerOwned) throw new PostingError(`${customerOwned.finishedCode} is Customer-owned jewellery (made from the Customer's own gold). It is delivered and billed to the Customer from its job — never sold, adjusted or re-costed as Company stock.`);
   const claimedOutputs = [];
   for (const item of input.items) {
     const claim = await tx.finishedJewellery.updateMany({
@@ -640,6 +645,8 @@ export async function adjustFinishedJewelleryStock(
   if (!input.reason || input.reason.trim().length < 5) {
     throw new PostingError("Give a specific reason (at least 5 characters) for this manual adjustment.");
   }
+  const piece = await tx.finishedJewellery.findUnique({ where: { id: input.finishedJewelleryId }, select: { finishedCode: true, ownership: true } });
+  if (piece?.ownership === "CUSTOMER") throw new PostingError(`${piece.finishedCode} is Customer-owned jewellery (made from the Customer's own gold). It is delivered and billed to the Customer from its job — never sold, adjusted or re-costed as Company stock.`);
   const targetStatus = input.direction === "IN" ? "AVAILABLE" : "SOLD";
   const fromStatus = input.direction === "IN" ? "SOLD" : "AVAILABLE";
   // Deliberately narrow: only ever toggles between AVAILABLE and SOLD —

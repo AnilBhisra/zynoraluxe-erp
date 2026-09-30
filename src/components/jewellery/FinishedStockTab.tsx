@@ -33,7 +33,7 @@ export type SerializedFinishedStockRow = {
   grossWeight: string | null;
   diamondCount: number;
   totalCarat: string;
-  status: "AVAILABLE" | "SOLD" | "RETURNED_DAMAGED";
+  status: "AVAILABLE" | "SOLD" | "RETURNED_DAMAGED" | "CUSTOMER_AWAITING_DELIVERY" | "DELIVERED_TO_CUSTOMER";
   producedAt: string;
   photoUrl: string | null;
   saleCode: string | null;

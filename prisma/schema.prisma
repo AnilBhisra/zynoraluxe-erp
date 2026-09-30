@@ -118,6 +118,16 @@ model User {
   correctionsApproved Correction[]      @relation("CorrectionApprovedBy")
   correctionBatches   CorrectionBatch[] @relation("CorrectionBatchCreatedBy")
 
+  // Customer Gold (see CUSTOMER_GOLD_DESIGN.md)
+  customerGoldReceiptsCreated    CustomerGoldReceipt[]       @relation("CustomerGoldReceiptCreatedBy")
+  customerGoldEntriesCreated     CustomerGoldEntry[]         @relation("CustomerGoldEntryCreatedBy")
+  customerGoldPurchasesApproved  CustomerGoldPurchase[]      @relation("CustomerGoldPurchaseApprovedBy")
+  customerJewelleryBillsCreated  CustomerJewelleryBill[]     @relation("CustomerJewelleryBillCreatedBy")
+  customerJewelleryBillsReversed CustomerJewelleryBill[]     @relation("CustomerJewelleryBillReversedBy")
+  customerDeliveriesMade         CustomerJewelleryDelivery[] @relation("CustomerJewelleryDeliveryDeliveredBy")
+  customerDeliveriesReversed     CustomerJewelleryDelivery[] @relation("CustomerJewelleryDeliveryReversedBy")
+  customerGoldMixApprovals       JewelleryJob[]              @relation("JewelleryJobCustomerGoldMixApprovedBy")
+
   @@map("users")
 }
 
@@ -216,6 +226,15 @@ model Party {
   costSheetsAsCustomer CostSheet[] @relation("CostSheetCustomer")
 
   finishedJewellerySalesAsCustomer FinishedJewellerySale[] @relation("FinishedJewellerySaleCustomer")
+
+  // Customer Gold: gold this party owns (as Customer) or holds (as Karigar).
+  customerGoldReceipts        CustomerGoldReceipt[]       @relation("CustomerGoldReceiptCustomer")
+  customerGoldEntries         CustomerGoldEntry[]         @relation("CustomerGoldEntryCustomer")
+  customerGoldHeldAsKarigar   CustomerGoldEntry[]         @relation("CustomerGoldEntryKarigar")
+  customerGoldPurchases       CustomerGoldPurchase[]      @relation("CustomerGoldPurchaseCustomer")
+  customerJewelleryBills      CustomerJewelleryBill[]     @relation("CustomerJewelleryBillCustomer")
+  customerJewelleryDeliveries CustomerJewelleryDelivery[] @relation("CustomerJewelleryDeliveryCustomer")
+  customerOwnedPieces         FinishedJewellery[]         @relation("FinishedJewelleryCustomer")
 
   @@index([type])
   @@index([name])
@@ -439,6 +458,11 @@ model Voucher {
   polishedPurchaseCancellation PolishedPurchase?     @relation("PolishedPurchaseCancellationVoucher")
   packetProcessJobWip          PacketProcessJob?     @relation("PacketProcessJobWip")
   packetProcessReceiptPost     PacketProcessReceipt? @relation("PacketProcessReceiptPosting")
+
+  customerJewelleryBill             CustomerJewelleryBill?     @relation("CustomerJewelleryBillVoucher")
+  customerJewelleryBillReversal     CustomerJewelleryBill?     @relation("CustomerJewelleryBillReversalVoucher")
+  customerJewelleryDeliveryCogs     CustomerJewelleryDelivery? @relation("CustomerJewelleryDeliveryCogsVoucher")
+  customerJewelleryDeliveryReversal CustomerJewelleryDelivery? @relation("CustomerJewelleryDeliveryReversalVoucher")
 
   @@index([voucherType])
   @@index([partyId])
@@ -1118,15 +1142,18 @@ model MetalPurity {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  metalPurchases      MetalPurchase[]
-  metalStockMovements MetalStockMovement[]
-  jobsAsTargetPurity  JewelleryJob[]             @relation("JewelleryJobTargetPurity")
-  metalIssueLines     JewelleryMetalIssueLine[]
-  finishedJewellery   FinishedJewellery[]
-  costSheetMetalLines CostSheetMetalLine[]
-  metalRevaluations   MetalRevaluation[]
-  metalTransfers      JewelleryMetalTransfer[]
-  metalCustodyEntries KarigarMetalCustodyEntry[]
+  metalPurchases        MetalPurchase[]
+  metalStockMovements   MetalStockMovement[]
+  jobsAsTargetPurity    JewelleryJob[]             @relation("JewelleryJobTargetPurity")
+  metalIssueLines       JewelleryMetalIssueLine[]
+  finishedJewellery     FinishedJewellery[]
+  costSheetMetalLines   CostSheetMetalLine[]
+  metalRevaluations     MetalRevaluation[]
+  metalTransfers        JewelleryMetalTransfer[]
+  metalCustodyEntries   KarigarMetalCustodyEntry[]
+  customerGoldReceipts  CustomerGoldReceipt[]      @relation("CustomerGoldReceiptPurity")
+  customerGoldEntries   CustomerGoldEntry[]        @relation("CustomerGoldEntryPurity")
+  customerGoldPurchases CustomerGoldPurchase[]     @relation("CustomerGoldPurchasePurity")
 
   @@unique([metalType, displayName])
   @@map("metal_purities")
@@ -1182,6 +1209,9 @@ model MetalPurchase {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  /// Set when this purchase is an Owner-approved purchase/exchange of a Customer's gold.
+  customerGoldPurchase CustomerGoldPurchase? @relation("CustomerGoldPurchaseMetalPurchase")
 
   @@index([supplierId])
   @@index([purchaseDate])
@@ -1344,11 +1374,18 @@ model JewelleryJob {
   targetFinishedWeight Decimal?     @db.Decimal(10, 3)
   specialInstructions  String?
 
-  status                      JewelleryJobStatus  @default(DRAFT)
+  status JewelleryJobStatus @default(DRAFT)
+
+  /// Customer Gold: explicit Owner approval for one job to hold BOTH this
+  /// Customer's gold and Company gold (same purity and fineness only).
+  customerGoldMixApprovedAt       DateTime?
+  customerGoldMixApprovedByUserId String?
+  customerGoldMixApprovedBy       User?               @relation("JewelleryJobCustomerGoldMixApprovedBy", fields: [customerGoldMixApprovedByUserId], references: [id])
+  customerGoldMixReason           String?
   // Set only while status is NEEDS_CORRECTION: the status this job actually
   // had before being flagged, so clearing the flag restores it exactly
   // instead of guessing — see setJewelleryJobNeedsCorrection.
-  statusBeforeNeedsCorrection JewelleryJobStatus?
+  statusBeforeNeedsCorrection     JewelleryJobStatus?
 
   // Cumulative snapshots at issue time (never recomputed later).
   issuedMetalFineWeight   Decimal @default(0) @db.Decimal(10, 3)
@@ -1436,6 +1473,9 @@ model JewelleryJob {
   metalTransfersOut         JewelleryMetalTransfer[]     @relation("MetalTransferSource")
   metalTransfersIn          JewelleryMetalTransfer[]     @relation("MetalTransferDestination")
   metalCustodyEntries       KarigarMetalCustodyEntry[]
+  customerGoldEntries       CustomerGoldEntry[]          @relation("CustomerGoldEntryJob")
+  customerJewelleryBills    CustomerJewelleryBill[]      @relation("CustomerJewelleryBillJob")
+  customerDeliveries        CustomerJewelleryDelivery[]  @relation("CustomerJewelleryDeliveryJob")
 
   @@index([karigarId])
   @@index([customerId])
@@ -1706,6 +1746,8 @@ model JewelleryReceipt {
   // with no output) — expensed to Business Expenses instead of leaving
   // value in Finished Jewellery Inventory with no item behind it.
   unabsorbedCost           Decimal @default(0) @db.Decimal(14, 2)
+  /// Customer-owned fine gold consumed into this receipt's pieces (Customer Gold). Never Company cost.
+  customerGoldFineWeight   Decimal @default(0) @db.Decimal(10, 3)
 
   labourCharge  Decimal @default(0) @db.Decimal(14, 2)
   makingCharge  Decimal @default(0) @db.Decimal(14, 2)
@@ -1725,8 +1767,9 @@ model JewelleryReceipt {
 
   createdAt DateTime @default(now())
 
-  outputs           FinishedJewellery[]
-  packetResolutions JewelleryPacketResolution[]
+  outputs             FinishedJewellery[]
+  packetResolutions   JewelleryPacketResolution[]
+  customerGoldEntries CustomerGoldEntry[]         @relation("CustomerGoldEntryReceipt")
 
   @@index([jobId])
   @@map("jewellery_receipts")
@@ -1812,21 +1855,33 @@ model FinishedJewellery {
   // src/lib/jewellery/finishedSalesPosting.ts.
   status FinishedJewelleryStockStatus @default(AVAILABLE)
 
+  /// Customer Gold: a piece holding Customer-owned gold belongs to that
+  /// Customer. It never enters Company Finished Stock (no PRODUCED_IN, status
+  /// CUSTOMER_AWAITING_DELIVERY), cannot be sold or adjusted, and the
+  /// Company's own cost in it sits in 1340 until it is delivered.
+  ownership              FinishedJewelleryOwnership @default(COMPANY)
+  customerId             String?
+  customer               Party?                     @relation("FinishedJewelleryCustomer", fields: [customerId], references: [id])
+  customerGoldFineWeight Decimal                    @default(0) @db.Decimal(10, 3)
+
   createdByUserId String
   createdBy       User   @relation("FinishedJewelleryCreatedBy", fields: [createdByUserId], references: [id])
 
   createdAt DateTime @default(now())
 
-  diamonds          JewelleryDiamondIssueLine[]
-  packetResolutions JewelleryPacketResolution[]
-  costSheets        CostSheet[]
-  stockMovements    FinishedJewelleryStockMovement[]
-  saleLines         FinishedJewellerySaleLine[]
-  metalRevaluations MetalRevaluation[]
+  diamonds              JewelleryDiamondIssueLine[]
+  packetResolutions     JewelleryPacketResolution[]
+  costSheets            CostSheet[]
+  stockMovements        FinishedJewelleryStockMovement[]
+  saleLines             FinishedJewellerySaleLine[]
+  metalRevaluations     MetalRevaluation[]
+  customerGoldEntries   CustomerGoldEntry[]              @relation("CustomerGoldEntryPiece")
+  customerDeliveryItems CustomerJewelleryDeliveryItem[]
 
   @@index([jobId])
   @@index([receiptId])
   @@index([status])
+  @@index([ownership, customerId])
   @@map("finished_jewellery")
 }
 
@@ -1855,6 +1910,9 @@ model FinishedJewellery {
 enum FinishedJewelleryStockStatus {
   AVAILABLE
   SOLD
+  // Customer Gold: a Customer-owned piece. Never Company Finished Stock.
+  CUSTOMER_AWAITING_DELIVERY
+  DELIVERED_TO_CUSTOMER
   // A damaged/not-for-resale return lands here, permanently out of the
   // sellable pool — never AVAILABLE again from this status. There is no
   // separate "returned sellable" status: that transition goes straight
@@ -2127,6 +2185,11 @@ enum JewellerySequenceType {
   FINISHED_JEWELLERY_RETURN
   JEWELLERY_METAL_TRANSFER
   KARIGAR_METAL_CUSTODY
+  CUSTOMER_GOLD_RECEIPT
+  CUSTOMER_GOLD_ENTRY
+  CUSTOMER_GOLD_PURCHASE
+  CUSTOMER_JEWELLERY_BILL
+  CUSTOMER_JEWELLERY_DELIVERY
 }
 
 model JewellerySequence {
@@ -3468,4 +3531,297 @@ model JewelleryReceiptChargeCorrectionLine {
   @@index([chargeCorrectionId], map: "jrccl_chargeCorrectionId_idx")
   @@index([finishedJewelleryId], map: "jrccl_finishedJewelleryId_idx")
   @@map("jewellery_receipt_charge_correction_lines")
+}
+
+// ---------------------------------------------------------------------------
+// Customer Gold — a Customer's own gold, held in custody for manufacturing.
+// Never Company stock, never Company cost. See CUSTOMER_GOLD_DESIGN.md.
+// ---------------------------------------------------------------------------
+
+/// Where a Customer's gold physically is. Each ledger entry moves weight from one location to another.
+enum CustomerGoldLocation {
+  CUSTOMER
+  SAFE
+  KARIGAR
+  JOB
+  FINISHED
+  DELIVERED
+  RETURNED
+  LOSS
+  SCRAP
+  PURCHASED
+}
+
+enum CustomerGoldEntryKind {
+  INTAKE
+  ISSUE_TO_KARIGAR
+  RETURN_FROM_KARIGAR
+  ALLOCATE_TO_JOB
+  RELEASE_FROM_JOB
+  CONSUME_TO_FINISHED
+  JOB_RETURN
+  JOB_SCRAP
+  JOB_LOSS
+  RETURN_TO_CUSTOMER
+  SCRAP_RETURN_TO_CUSTOMER
+  DELIVER
+  CONVERT_TO_COMPANY
+}
+
+enum CustomerGoldInputBasis {
+  GROSS
+  FINE
+}
+
+/// How an Owner-approved purchase/exchange of Customer gold is settled.
+enum CustomerGoldSettlement {
+  PAY_CUSTOMER
+  CREDIT_TO_INVOICE
+}
+
+enum FinishedJewelleryOwnership {
+  COMPANY
+  CUSTOMER
+}
+
+enum CustomerJewelleryDocStatus {
+  POSTED
+  REVERSED
+}
+
+/// The acknowledgment given to the Customer for gold received for manufacturing.
+model CustomerGoldReceipt {
+  id          String   @id @default(cuid())
+  receiptCode String   @unique
+  customerId  String
+  customer    Party    @relation("CustomerGoldReceiptCustomer", fields: [customerId], references: [id])
+  intakeDate  DateTime
+
+  metalType               MetalType
+  purityId                String
+  purity                  MetalPurity            @relation("CustomerGoldReceiptPurity", fields: [purityId], references: [id])
+  finenessPercentSnapshot Decimal                @db.Decimal(6, 3)
+  /// What was typed: the gross weight as weighed, or the fine weight. Both are stored.
+  inputBasis              CustomerGoldInputBasis
+  grossWeight             Decimal                @db.Decimal(10, 3)
+  /// Stone / dust / non-metal deducted from the weighed gross.
+  deductionWeight         Decimal                @default(0) @db.Decimal(10, 3)
+  netGrossWeight          Decimal                @db.Decimal(10, 3)
+  fineWeight              Decimal                @db.Decimal(10, 3)
+
+  reference     String?
+  reason        String
+  photoAssetId  String?
+  /// Documentation / insurance only. Never Company inventory cost; Owner-only.
+  declaredValue Decimal? @db.Decimal(14, 2)
+
+  idempotencyKey  String?  @unique
+  createdByUserId String
+  createdBy       User     @relation("CustomerGoldReceiptCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt       DateTime @default(now())
+
+  entries CustomerGoldEntry[]
+
+  @@index([customerId])
+  @@map("customer_gold_receipts")
+}
+
+/// Append-only custody ledger of Customer-owned gold. A pool is Customer +
+/// metal + purity + fineness snapshot; each entry moves weight between two
+/// locations of one pool. A reversal is a new entry (reversalOfEntryId) with
+/// the opposite effect; nothing is edited or deleted.
+model CustomerGoldEntry {
+  id        String                @id @default(cuid())
+  entryCode String                @unique
+  kind      CustomerGoldEntryKind
+
+  customerId              String
+  customer                Party       @relation("CustomerGoldEntryCustomer", fields: [customerId], references: [id])
+  metalType               MetalType
+  purityId                String
+  purity                  MetalPurity @relation("CustomerGoldEntryPurity", fields: [purityId], references: [id])
+  finenessPercentSnapshot Decimal     @db.Decimal(6, 3)
+  grossWeight             Decimal     @db.Decimal(10, 3)
+  fineWeight              Decimal     @db.Decimal(10, 3)
+
+  fromLocation CustomerGoldLocation
+  toLocation   CustomerGoldLocation
+
+  /// Scope of a KARIGAR location (from or to).
+  karigarId             String?
+  karigar               Party?                     @relation("CustomerGoldEntryKarigar", fields: [karigarId], references: [id])
+  /// Scope of a JOB location.
+  jobId                 String?
+  job                   JewelleryJob?              @relation("CustomerGoldEntryJob", fields: [jobId], references: [id])
+  /// Scope of a FINISHED location.
+  finishedJewelleryId   String?
+  finishedJewellery     FinishedJewellery?         @relation("CustomerGoldEntryPiece", fields: [finishedJewelleryId], references: [id])
+  jewelleryReceiptId    String?
+  jewelleryReceipt      JewelleryReceipt?          @relation("CustomerGoldEntryReceipt", fields: [jewelleryReceiptId], references: [id])
+  customerGoldReceiptId String?
+  customerGoldReceipt   CustomerGoldReceipt?       @relation(fields: [customerGoldReceiptId], references: [id])
+  purchaseId            String?
+  purchase              CustomerGoldPurchase?      @relation(fields: [purchaseId], references: [id])
+  deliveryId            String?
+  delivery              CustomerJewelleryDelivery? @relation(fields: [deliveryId], references: [id])
+
+  entryDate DateTime
+  reason    String
+  reference String?
+
+  reversalOfEntryId String?            @unique
+  reversalOf        CustomerGoldEntry? @relation("CustomerGoldEntryReversal", fields: [reversalOfEntryId], references: [id])
+  reversedBy        CustomerGoldEntry? @relation("CustomerGoldEntryReversal")
+
+  idempotencyKey  String?  @unique
+  createdByUserId String
+  createdBy       User     @relation("CustomerGoldEntryCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt       DateTime @default(now())
+
+  @@index([customerId, purityId])
+  @@index([jobId])
+  @@index([karigarId])
+  @@index([finishedJewelleryId])
+  @@map("customer_gold_entries")
+}
+
+/// Owner-approved purchase/exchange of a Customer's gold into Company stock.
+/// Posts through createMetalPurchase (Dr 1300 / Cr 2000 Customer).
+model CustomerGoldPurchase {
+  id           String   @id @default(cuid())
+  purchaseCode String   @unique
+  customerId   String
+  customer     Party    @relation("CustomerGoldPurchaseCustomer", fields: [customerId], references: [id])
+  purchaseDate DateTime
+
+  metalType               MetalType
+  purityId                String
+  purity                  MetalPurity @relation("CustomerGoldPurchasePurity", fields: [purityId], references: [id])
+  finenessPercentSnapshot Decimal     @db.Decimal(6, 3)
+  grossWeight             Decimal     @db.Decimal(10, 3)
+  fineWeight              Decimal     @db.Decimal(10, 3)
+
+  rateBasis     MetalRateBasis
+  rate          Decimal                @db.Decimal(14, 4)
+  approvedValue Decimal                @db.Decimal(14, 2)
+  settlement    CustomerGoldSettlement
+  /// True when the gold came out of the Customer's custody SAFE balance (a CONVERT_TO_COMPANY entry).
+  fromCustody   Boolean                @default(false)
+
+  metalPurchaseId String        @unique
+  metalPurchase   MetalPurchase @relation("CustomerGoldPurchaseMetalPurchase", fields: [metalPurchaseId], references: [id])
+
+  reason           String
+  reference        String?
+  approvedByUserId String
+  approvedBy       User     @relation("CustomerGoldPurchaseApprovedBy", fields: [approvedByUserId], references: [id])
+  approvedAt       DateTime
+  idempotencyKey   String?  @unique
+  createdAt        DateTime @default(now())
+
+  entries CustomerGoldEntry[]
+
+  @@index([customerId])
+  @@map("customer_gold_purchases")
+}
+
+/// Owner's bill to the Customer for making, Company diamonds/materials,
+/// other charges and GST. Customer-owned gold is never a bill line.
+model CustomerJewelleryBill {
+  id         String       @id @default(cuid())
+  billCode   String       @unique
+  customerId String
+  customer   Party        @relation("CustomerJewelleryBillCustomer", fields: [customerId], references: [id])
+  jobId      String
+  job        JewelleryJob @relation("CustomerJewelleryBillJob", fields: [jobId], references: [id])
+  billDate   DateTime
+
+  makingCharge   Decimal      @default(0) @db.Decimal(14, 2)
+  diamondCharge  Decimal      @default(0) @db.Decimal(14, 2)
+  materialCharge Decimal      @default(0) @db.Decimal(14, 2)
+  otherCharge    Decimal      @default(0) @db.Decimal(14, 2)
+  taxableValue   Decimal      @db.Decimal(14, 2)
+  gstTreatment   GstTreatment
+  gstRatePercent Decimal?     @db.Decimal(5, 2)
+  taxAmount      Decimal      @default(0) @db.Decimal(14, 2)
+  grandTotal     Decimal      @db.Decimal(14, 2)
+  /// Credit from an approved purchase/exchange of this Customer's gold, applied to this bill.
+  creditApplied  Decimal      @default(0) @db.Decimal(14, 2)
+  amountDue      Decimal      @db.Decimal(14, 2)
+  description    String?
+
+  voucherId String  @unique
+  voucher   Voucher @relation("CustomerJewelleryBillVoucher", fields: [voucherId], references: [id])
+
+  status            CustomerJewelleryDocStatus @default(POSTED)
+  reversedAt        DateTime?
+  reversedByUserId  String?
+  reversedBy        User?                      @relation("CustomerJewelleryBillReversedBy", fields: [reversedByUserId], references: [id])
+  reversalReason    String?
+  reversalVoucherId String?                    @unique
+  reversalVoucher   Voucher?                   @relation("CustomerJewelleryBillReversalVoucher", fields: [reversalVoucherId], references: [id])
+
+  idempotencyKey  String?  @unique
+  createdByUserId String
+  createdBy       User     @relation("CustomerJewelleryBillCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt       DateTime @default(now())
+
+  @@index([customerId])
+  @@index([jobId])
+  @@map("customer_jewellery_bills")
+}
+
+/// Hand-over of Customer-owned finished jewellery to the Customer.
+model CustomerJewelleryDelivery {
+  id           String       @id @default(cuid())
+  deliveryCode String       @unique
+  customerId   String
+  customer     Party        @relation("CustomerJewelleryDeliveryCustomer", fields: [customerId], references: [id])
+  jobId        String
+  job          JewelleryJob @relation("CustomerJewelleryDeliveryJob", fields: [jobId], references: [id])
+  deliveryDate DateTime
+
+  deliveredByUserId String
+  deliveredBy       User    @relation("CustomerJewelleryDeliveryDeliveredBy", fields: [deliveredByUserId], references: [id])
+  receivedByName    String
+  reference         String?
+  notes             String?
+
+  /// Company cost moved out of 1340 into COGS on delivery (never shown to Staff).
+  companyCostTotal      Decimal @db.Decimal(14, 2)
+  customerGoldFineTotal Decimal @db.Decimal(10, 3)
+
+  cogsVoucherId String?  @unique
+  cogsVoucher   Voucher? @relation("CustomerJewelleryDeliveryCogsVoucher", fields: [cogsVoucherId], references: [id])
+
+  status            CustomerJewelleryDocStatus @default(POSTED)
+  reversedAt        DateTime?
+  reversedByUserId  String?
+  reversedBy        User?                      @relation("CustomerJewelleryDeliveryReversedBy", fields: [reversedByUserId], references: [id])
+  reversalReason    String?
+  reversalVoucherId String?                    @unique
+  reversalVoucher   Voucher?                   @relation("CustomerJewelleryDeliveryReversalVoucher", fields: [reversalVoucherId], references: [id])
+
+  idempotencyKey String?  @unique
+  createdAt      DateTime @default(now())
+
+  items   CustomerJewelleryDeliveryItem[]
+  entries CustomerGoldEntry[]
+
+  @@index([customerId])
+  @@index([jobId])
+  @@map("customer_jewellery_deliveries")
+}
+
+model CustomerJewelleryDeliveryItem {
+  id                     String                    @id @default(cuid())
+  deliveryId             String
+  delivery               CustomerJewelleryDelivery @relation(fields: [deliveryId], references: [id])
+  finishedJewelleryId    String
+  finishedJewellery      FinishedJewellery         @relation(fields: [finishedJewelleryId], references: [id])
+  companyCost            Decimal                   @db.Decimal(14, 2)
+  customerGoldFineWeight Decimal                   @db.Decimal(10, 3)
+
+  @@unique([deliveryId, finishedJewelleryId])
+  @@map("customer_jewellery_delivery_items")
 }

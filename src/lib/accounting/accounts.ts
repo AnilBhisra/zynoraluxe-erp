@@ -30,6 +30,10 @@ export const SYSTEM_ACCOUNT_CODES = {
   SCRAP_METAL_INVENTORY: "1310",
   JEWELLERY_WIP: "1320",
   FINISHED_JEWELLERY_INVENTORY: "1330",
+  // Customer Gold — the Company's OWN cost (diamonds, charges, Company
+  // materials) in Customer-owned pieces awaiting delivery. Customer-owned gold
+  // itself never has Company value. Moved to COGS when the piece is delivered.
+  CUSTOMER_JEWELLERY_WIP: "1340",
   // Phase 6 — Finished Jewellery Sales, Stock, COGS and Actual P&L.
   // SALES_RETURNS is a contra-revenue account (INCOME type, but always
   // presented in P&L as a deduction from Gross Sales — see
