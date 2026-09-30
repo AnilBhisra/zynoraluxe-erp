@@ -3,6 +3,23 @@
 -- finished_jewellery and jewellery_receipts, and one idempotent insert of the
 -- system account 1340. No existing row, column type or constraint is changed and
 -- nothing is backfilled: every existing piece stays ownership COMPANY.
+-- Guard FIRST, before any change: account code 1340 must be free, or already be
+-- exactly this system account (same id, or same name and type). Anything else
+-- is a conflict and the migration stops here with nothing changed — an
+-- existing 1340 is never reused for a different purpose and never modified.
+DO $guard$
+DECLARE existing RECORD;
+BEGIN
+  SELECT id, name, type::text AS type INTO existing FROM "accounts" WHERE code = '1340';
+  IF FOUND AND NOT (existing.id = 'sysacct_1340_customer_jewellery' OR (existing.name = 'Customer Jewellery Work Awaiting Delivery' AND existing.type = 'ASSET')) THEN
+    RAISE EXCEPTION 'Account code 1340 already exists as "%" (%, id %). Customer Gold needs 1340 for Customer Jewellery Work Awaiting Delivery; refusing to reuse it. Nothing was changed.', existing.name, existing.type, existing.id;
+  END IF;
+  IF EXISTS (SELECT 1 FROM "accounts" WHERE id = 'sysacct_1340_customer_jewellery' AND code <> '1340') THEN
+    RAISE EXCEPTION 'Account id sysacct_1340_customer_jewellery already exists under another code. Nothing was changed.';
+  END IF;
+END
+$guard$;
+
 -- CreateEnum
 CREATE TYPE "CustomerGoldLocation" AS ENUM ('CUSTOMER', 'SAFE', 'KARIGAR', 'JOB', 'FINISHED', 'DELIVERED', 'RETURNED', 'LOSS', 'SCRAP', 'PURCHASED');
 
@@ -397,7 +414,8 @@ ALTER TABLE "customer_jewellery_delivery_items" ADD CONSTRAINT "customer_jewelle
 ALTER TABLE "customer_jewellery_delivery_items" ADD CONSTRAINT "customer_jewellery_delivery_items_finishedJewelleryId_fkey" FOREIGN KEY ("finishedJewelleryId") REFERENCES "finished_jewellery"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- System account for the Company's own cost in Customer-owned pieces awaiting
--- delivery. Created only if missing; an existing 1340 is never modified.
+-- delivery. Created only if missing; the guard at the top of this file has already
+-- refused any conflicting 1340, so an existing row here is this same account.
 INSERT INTO "accounts" ("id", "code", "name", "type", "isSystem", "isActive", "createdAt", "updatedAt")
 VALUES ('sysacct_1340_customer_jewellery', '1340', 'Customer Jewellery Work Awaiting Delivery', 'ASSET', true, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 ON CONFLICT ("code") DO NOTHING;
