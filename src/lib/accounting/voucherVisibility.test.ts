@@ -24,6 +24,10 @@ const EXPECTED_STAFF_VISIBLE: Record<VoucherType, boolean | "follows reversed vo
   // Phase 8 — both carry cost figures, so both stay Owner-only.
   OPENING_STOCK: false,
   CORRECTION: false,
+  // Customer Gold — the bill carries prices and credit, the delivery the
+  // Company's cost moved to COGS: both Owner-only.
+  CUSTOMER_JEWELLERY_BILL: false,
+  CUSTOMER_JEWELLERY_DELIVERY: false,
 };
 
 type Where = Record<string, unknown>;

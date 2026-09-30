@@ -29,6 +29,8 @@ const TYPE_LABELS: Record<VoucherListRow["voucherType"], string> = {
   STOCK_ADJUSTMENT: "Stock Adjustment",
   OPENING_STOCK: "Opening Stock",
   CORRECTION: "Correction",
+  CUSTOMER_JEWELLERY_BILL: "Customer Jewellery Bill",
+  CUSTOMER_JEWELLERY_DELIVERY: "Customer Jewellery Delivery",
 };
 
 function formatMoney(value: string) {

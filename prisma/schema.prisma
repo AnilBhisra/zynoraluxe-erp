@@ -354,6 +354,11 @@ enum VoucherType {
   // original (that is REVERSAL); this is a compensating entry that leaves
   // the original voucher, movement and snapshot completely untouched.
   CORRECTION
+  // Customer Gold — the Owner's bill to a Customer for making, Company stones /
+  // materials and GST on jewellery made from the Customer's own gold, and the
+  // Company cost moved to COGS when that jewellery is delivered.
+  CUSTOMER_JEWELLERY_BILL
+  CUSTOMER_JEWELLERY_DELIVERY
 }
 
 // Concurrency-safe voucher numbering: one row per (type, financial year),
