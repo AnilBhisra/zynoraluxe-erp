@@ -66,9 +66,20 @@ export function JewelleryPhotoUploadField({
     formData.set("category", category);
     formData.set("uploadRef", ref);
 
+    // If the UI gives up on this attempt (timeout) but the server still
+    // finishes the upload afterwards, that late asset is deleted — a timed-out
+    // attempt never leaves an orphaned photo in storage.
+    let gaveUp = false;
+    const call = uploadJewelleryPhotoAction(undefined, formData);
+    call.then(
+      (late) => {
+        if (gaveUp && late?.success && late.assetId) fireAndForgetDelete(late.assetId);
+      },
+      () => undefined
+    );
     try {
       const result = await withClientTimeout(
-        uploadJewelleryPhotoAction(undefined, formData),
+        call,
         UPLOAD_CLIENT_TIMEOUT_MS,
         `Upload timed out. Check your connection and try again. (ref ${ref})`
       );
@@ -87,6 +98,7 @@ export function JewelleryPhotoUploadField({
         setError(result?.error ?? `Upload failed. (ref ${ref})`);
       }
     } catch (err) {
+      if (err instanceof ClientTimeoutError) gaveUp = true;
       if (attempt !== attemptRef.current) return;
       setPending(false);
       setError(err instanceof ClientTimeoutError ? err.message : describeUploadFailure(err, prepared.sentBytes, ref));

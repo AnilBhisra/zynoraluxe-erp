@@ -1,6 +1,9 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
+const discardMock = vi.fn<(...args: unknown[]) => Promise<{ discarded: boolean }>>(async () => ({ discarded: true }));
+const reversalPreviewMock = vi.fn();
+const reverseMock = vi.fn<(...args: unknown[]) => Promise<{ success: boolean; code: string }>>(async () => ({ success: true, code: "ZL-JREC-TEST" }));
 vi.mock("@/app/actions/customerGold", () => ({
   approveCustomerGoldMixAction: vi.fn(),
   billCustomerJewelleryAction: vi.fn(),
@@ -15,12 +18,17 @@ vi.mock("@/app/actions/customerGold", () => ({
   purchaseCustomerGoldAction: vi.fn(),
   receiveCustomerGoldAction: vi.fn(),
   reverseCustomerGoldEntryAction: vi.fn(),
+  discardCustomerGoldPhotoAction: (...args: unknown[]) => discardMock(...args),
+  previewCustomerGoldReceiptReversalAction: (...args: unknown[]) => reversalPreviewMock(...args),
+  reverseCustomerGoldReceiptAction: (...args: unknown[]) => reverseMock(...args),
 }));
 vi.mock("@/app/actions/jewellery", () => ({ uploadJewelleryPhotoAction: vi.fn(), deleteJewelleryPhotoAction: vi.fn() }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }) }));
 
 import { CustomerGoldTab, type CustomerGoldTabData } from "./CustomerGoldTab";
 import { JobCustomerGoldPanel, type SerializedJobCustomerGold } from "./JobCustomerGoldPanel";
+import { ReceiptReversalPanel } from "./ReceiptReversalPanel";
+import { act } from "@testing-library/react";
 
 const POOL = {
   customerId: "c1",
@@ -139,5 +147,63 @@ describe("Job Customer Gold panel", () => {
     render(<JobCustomerGoldPanel data={{ ...PANEL, pieces: [{ ...PANEL.pieces[0], companyCost: "10200.00" }], bills: [], creditAvailable: "14000.00" }} isOwner={true} onDone={() => {}} />);
     expect(screen.getByTestId("job-customer-pieces").textContent).toContain("Company work cost ₹10200.00 (Customer gold ₹0)");
     expect(screen.getByTestId("job-customer-bill")).toBeTruthy();
+  });
+});
+
+describe("Receipt reversal panel (Owner)", () => {
+  const PLAN = {
+    receiptId: "r1",
+    receiptCode: "ZL-JREC-9",
+    jobId: "j1",
+    jobCode: "ZL-JJOB-9",
+    customerName: "Asha",
+    blockers: [] as string[],
+    pieces: [{ id: "f1", finishedCode: "ZL-FJ-9", customerGoldFineWeight: "3.996" }],
+    goldBack: [{ label: "With Karigar", fine: "3.996", gross: "4.000" }],
+    diamondsBack: ["ZL-POL-1 (set)"],
+    packetStonesBack: [],
+    voucher: { number: "JWL-REC/1", lines: [{ account: "1340 Customer Jewellery Work Awaiting Delivery", debit: "0.00", credit: "1300.00" }] },
+    jobStatusAfter: "MATERIALS_ISSUED",
+    jobPendingFineAfter: "0.000",
+  };
+  it("a blocked reversal lists each exact dependency and offers no confirm", async () => {
+    reversalPreviewMock.mockResolvedValue({ plan: { ...PLAN, blockers: ["ZL-FJ-9 was delivered to the Customer in ZL-CJD-1 — reverse that delivery first."] } });
+    render(<ReceiptReversalPanel receiptId="r1" receiptCode="ZL-JREC-9" onDone={() => {}} />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Reverse ZL-JREC-9" }));
+    });
+    expect(screen.getByTestId("reversal-blockers").textContent).toContain("delivered to the Customer in ZL-CJD-1");
+    expect(screen.queryByRole("button", { name: /Confirm reversal/ })).toBeNull();
+  });
+  it("a clear reversal shows what goes back and needs a 10-character reason before confirming", async () => {
+    reversalPreviewMock.mockResolvedValue({ plan: PLAN });
+    render(<ReceiptReversalPanel receiptId="r1" receiptCode="ZL-JREC-9" onDone={() => {}} />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Reverse ZL-JREC-9" }));
+    });
+    const effects = screen.getByTestId("reversal-effects").textContent ?? "";
+    expect(effects).toContain("mark ZL-FJ-9 as reversed");
+    expect(effects).toContain("Customer gold with karigar: 3.996 g fine");
+    const confirm = screen.getByRole("button", { name: "Confirm reversal of ZL-JREC-9" }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText(/Reason for reversing/), { target: { value: "Weight entered wrongly" } });
+    expect(confirm.disabled).toBe(false);
+    await act(async () => {
+      fireEvent.click(confirm);
+    });
+    const sent = reverseMock.mock.calls[0][1] as unknown as FormData;
+    expect([sent.get("receiptId"), sent.get("reason")]).toEqual(["r1", "Weight entered wrongly"]);
+  });
+});
+
+describe("Customer gold intake photo is never left orphaned", () => {
+  it("closing an intake after a photo was uploaded discards that photo", async () => {
+    const { unmount } = render(<CustomerGoldTab {...tabData(true)} />);
+    fireEvent.click(screen.getByRole("button", { name: "Receive gold from Asha Patel" }));
+    fireEvent.click(screen.getByLabelText(/Customer-owned gold — for manufacturing/));
+    expect(screen.getByText("Photo of the gold (optional)")).toBeTruthy();
+    unmount();
+    // No photo uploaded → nothing to discard.
+    expect(discardMock).not.toHaveBeenCalled();
   });
 });

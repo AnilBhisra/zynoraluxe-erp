@@ -1,9 +1,10 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useActionState, useEffect, useState, useTransition } from "react";
+import { useActionState, useEffect, useRef, useState, useTransition } from "react";
 
 import {
+  discardCustomerGoldPhotoAction,
   postCustomerGoldTransferAction,
   previewCustomerGoldIntakeAction,
   previewCustomerGoldPurchaseAction,
@@ -188,6 +189,30 @@ function IntakeForm({ customerId, purities, onDone }: { customerId: string; puri
   const [previewed, setPreviewed] = useState("");
   const current = JSON.stringify({ purityId, basis, weight, deduction, intakeDate, reference, reason, declared });
   const preview = previewState?.preview && previewed === current ? previewState.preview : null;
+  // A photo uploaded for an intake that is then abandoned (closed, another
+  // choice, navigated away) or never saved is discarded — never left orphaned
+  // in storage. The server refuses to discard anything a record points at.
+  const photoRef = useRef<string | null>(null);
+  const savedRef = useRef(false);
+  useEffect(() => {
+    photoRef.current = photoAssetId;
+  }, [photoAssetId]);
+  useEffect(() => {
+    if (postState?.success) savedRef.current = true;
+  }, [postState?.success]);
+  useEffect(() => {
+    const discard = () => {
+      if (photoRef.current && !savedRef.current) {
+        void discardCustomerGoldPhotoAction(photoRef.current);
+        photoRef.current = null;
+      }
+    };
+    window.addEventListener("pagehide", discard);
+    return () => {
+      window.removeEventListener("pagehide", discard);
+      discard();
+    };
+  }, []);
   useEffect(() => {
     if (postState?.success) onDone();
   }, [postState?.success, onDone]);
@@ -757,7 +782,7 @@ function StatementView({ statement, isOwner, onDone }: { statement: CustomerGold
           <ul className="mt-2 flex flex-col gap-1 text-xs" data-testid="cg-pieces">
             {statement.pieces.map((p) => (
               <li key={p.id}>
-                {p.finishedCode} ({p.jobCode}) · {p.status === "DELIVERED_TO_CUSTOMER" ? "Delivered" : "Awaiting delivery"} · net {p.netMetalWeight} g · Customer gold {p.customerGoldFineWeight} g fine
+                {p.finishedCode} ({p.jobCode}) · {p.status === "DELIVERED_TO_CUSTOMER" ? "Delivered" : p.status === "RECEIPT_REVERSED" ? "Receipt reversed" : "Awaiting delivery"} · net {p.netMetalWeight} g · Customer gold {p.customerGoldFineWeight} g fine
                 {p.companyCost !== null ? ` · Company cost ₹${p.companyCost} (Customer gold ₹0 — excluded from Company material cost)` : ""}
               </li>
             ))}

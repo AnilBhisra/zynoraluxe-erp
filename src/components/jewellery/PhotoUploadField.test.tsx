@@ -55,6 +55,28 @@ describe("JewelleryPhotoUploadField", () => {
     expect(onUploaded).not.toHaveBeenCalled();
   });
 
+  it("a success that arrives only after the client gave up (timeout) is deleted — never an orphaned photo", async () => {
+    vi.useFakeTimers();
+    const late = deferred<{ success: boolean; assetId: string }>();
+    mockUpload.mockReturnValue(late.promise);
+    const onUploaded = vi.fn();
+    const { container, getByText } = render(
+      <JewelleryPhotoUploadField category="jewellery-finished" label="Photo of the gold" assetId={null} onUploaded={onUploaded} />
+    );
+    fireEvent.change(container.querySelector('input[type="file"]') as HTMLInputElement, { target: { files: [makeFile()] } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(45_000);
+    });
+    expect(getByText(/upload timed out/i)).toBeInTheDocument();
+    await act(async () => {
+      late.resolve({ success: true, assetId: "asset-late" });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(onUploaded).not.toHaveBeenCalled();
+    expect(mockDelete).toHaveBeenCalledTimes(1);
+    expect((mockDelete.mock.calls[0][0] as FormData).get("assetId")).toBe("asset-late");
+  });
+
   it("ignores a late-arriving success from an abandoned attempt and cleans up its orphaned upload instead of clobbering newer state", async () => {
     const first = deferred<{ success: true; assetId: string }>();
     const second = deferred<{ success: true; assetId: string }>();

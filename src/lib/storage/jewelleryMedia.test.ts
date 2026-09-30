@@ -364,3 +364,22 @@ describe("apikey-only compatibility (sb_secret is not a JWT)", () => {
     }
   });
 });
+
+describe("a failed upload never leaves an orphaned object behind", () => {
+  it("storage refusing the upload (500) → the same object path is deleted", async () => {
+    const fn = vi.fn(async (_url: unknown, init?: RequestInit) => ({ ok: init?.method !== "POST", status: init?.method === "POST" ? 500 : 200 }) as Response);
+    vi.stubGlobal("fetch", fn);
+    await expect(uploadJewelleryAsset("jewellery-finished", file(JPEG_BYTES, "image/jpeg"))).rejects.toBeInstanceOf(JewelleryStorageError);
+    await vi.waitFor(() => expect(fn).toHaveBeenCalledTimes(2));
+    const [uploadUrl] = fn.mock.calls[0] as [string, RequestInit];
+    const [deleteUrl, deleteInit] = fn.mock.calls[1] as [string, RequestInit];
+    expect(deleteInit.method).toBe("DELETE");
+    expect(deleteUrl).toBe(uploadUrl);
+  });
+
+  it("a successful upload deletes nothing", async () => {
+    const fn = mockFetchOnce({ ok: true, status: 200 });
+    await uploadJewelleryAsset("jewellery-finished", file(JPEG_BYTES, "image/jpeg"));
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+});

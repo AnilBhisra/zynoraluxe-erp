@@ -1,5 +1,7 @@
 import "server-only";
 
+import { after } from "next/server";
+
 /**
  * Storage abstraction for Jewellery-module photos (design image, finished
  * photo). Deliberately a SEPARATE module from src/lib/storage/
@@ -156,25 +158,49 @@ export async function uploadJewelleryAsset(
 
   const objectPath = buildObjectPath(category, extensionForMime(file.type));
 
-  const response = await fetchStorage(
-    `${config.url}/storage/v1/object/${config.bucket}/${objectPath}`,
-    {
-      method: "POST",
-      headers: {
-        apikey: config.secretKey,
-        "Content-Type": file.type,
-        "x-upsert": "false",
+  // A failed or timed-out upload never hands its object path to anyone, so
+  // nothing will ever reference it: remove whatever storage may have kept of
+  // it (best effort) before reporting the failure — no orphaned object.
+  let response: Response;
+  try {
+    response = await fetchStorage(
+      `${config.url}/storage/v1/object/${config.bucket}/${objectPath}`,
+      {
+        method: "POST",
+        headers: {
+          apikey: config.secretKey,
+          "Content-Type": file.type,
+          "x-upsert": "false",
+        },
+        body: bytes,
       },
-      body: bytes,
-    },
-    UPLOAD_TIMEOUT_MS
-  );
+      UPLOAD_TIMEOUT_MS
+    );
+  } catch (error) {
+    removeAbandonedObject(objectPath);
+    throw error;
+  }
 
   if (!response.ok) {
+    removeAbandonedObject(objectPath);
     throw new JewelleryStorageError(`Upload failed (${response.status}). Please try again.`);
   }
 
   return { assetId: objectPath };
+}
+
+/**
+ * Deletes an object path whose upload failed or timed out, after the response
+ * (Next's after(): the user's retry is never slowed by it), or in the
+ * background outside a request. Best effort; a failure changes nothing.
+ */
+function removeAbandonedObject(objectPath: string) {
+  const run = () => deleteJewelleryAsset(objectPath).catch(() => false);
+  try {
+    after(run);
+  } catch {
+    void run();
+  }
 }
 
 /** Short-lived signed URL for viewing a stored asset. Returns null if
