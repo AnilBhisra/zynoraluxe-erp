@@ -743,6 +743,27 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
             Owner statement માં સૌથી નવી entry જ <Btn>Reverse this entry</Btn> થી ઉલટાવી શકે — કારણ લખવું ફરજિયાત (ઓછામાં ઓછા 10 અક્ષર). પછીની entry એના પર આધારિત હોય તો પહેલાં એ ઉલટાવવી પડે. Delivery અને Bill પણ Owner જ ઉલટાવી શકે. કશું delete થતું નથી — દરેક સુધારો નવી entry તરીકે નોંધાય છે.
           </p>
 
+          <SubHeading>ખોટી Receipt સુધારવી (Owner)</SubHeading>
+          <BadgeRow>
+            <OwnerOnlyBadge />
+            <CautionBadge />
+          </BadgeRow>
+          <Steps>
+            <li>
+              Job page → Receipts માં ખોટી receipt ની નીચે <Btn>Reverse ZL-JREC-…</Btn> દબાવો. સૌથી નવી receipt પહેલાં ઉલટાવવી પડે.
+            </li>
+            <li>શું પાછું જશે તે દેખાશે: ગ્રાહકનું સોનું (Karigar / safe માં), piece “reversed”, હીરા/packet ના પથ્થર પાછા Job પર, અને voucher નો mirror.</li>
+            <li>
+              કોઈ અવરોધ હોય (piece delivered, bill posted, પછીની receipt, પાછું આપેલું સોનું વપરાઈ ગયું…) તો ચોક્કસ કારણ અને code દેખાશે — પહેલાં એ ઉલટાવો.
+            </li>
+            <li>
+              કારણ લખો (ઓછામાં ઓછા 10 અક્ષર) → <Btn>Confirm reversal of …</Btn>. પછી સાચા વજન/purity સાથે ફરીથી <Btn>Receive Finished Jewellery</Btn> કરો.
+            </li>
+          </Steps>
+          <Note>
+            ગ્રાહક + Company બંનેનું સોનું એક Job પર (mixed): Owner ની મંજૂરી, Company સોનું Karigar Metal થી પહેલાં Job પર, અને receipt વખતે ગ્રાહકનો હિસ્સો Owner જ લખે. Staff mixed receipt કરી શકતા નથી.
+          </Note>
+
           <SubHeading>Reports</SubHeading>
           <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
             Customer Gold tab માં: દરેક ગ્રાહકની balances (safe, Karigar પાસે, Job પર, તૈયાર-delivery બાકી, delivered, પાછું આપેલું, loss, scrap), Karigar-wise, Job-wise, delivery બાકી અને
