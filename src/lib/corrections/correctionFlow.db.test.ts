@@ -120,6 +120,13 @@ afterAll(async () => {
   await clearBusinessData();
 });
 
+
+/** The job total is exactly materials + Karigar-supplied + charges -- each counted once. */
+function expectTotalIsMaterialsPlusCharges(detail: Awaited<ReturnType<typeof getJewelleryJobDetail>> & object) {
+  const sum = amount(detail.materialsSubtotal).plus(detail.karigarSuppliedCost).plus(detail.totalLabourCharge);
+  expect(amount(detail.totalManufacturingCost).toFixed(2)).toBe(sum.toFixed(2));
+}
+
 describe("opening metal stock posts its own balanced voucher (defect D-2)", () => {
   const key = "phase8-opening-24k";
 
@@ -808,10 +815,12 @@ describe("R1 and R2 as one cumulative production correction batch", () => {
     const owner = serializeJobCostSummary(detail, true);
     expect(owner.issuedMetalCost).toBe("159840.01");
     expect(owner.issuedDiamondCost).toBe("20102.04"); // unchanged — diamonds never revalued
-    expect(owner.totalIssuedCost).toBe("179942.05");
+    expect(owner.materialsSubtotal).toBe("179942.05");
+    expectTotalIsMaterialsPlusCharges(detail);
     const staff = serializeJobCostSummary(detail, false);
     expect(staff.issuedMetalCost).toBeNull();
-    expect(staff.totalIssuedCost).toBeNull();
+    expect(staff.materialsSubtotal).toBeNull();
+    expect(staff.totalManufacturingCost).toBeNull();
 
     const fj86Output = detail.finishedOutputs.find((o) => o.id === fj86Id)!;
     expect(fj86Output.totalCost.toFixed(2)).toBe("56971.05"); // original, unchanged — for OverrideAllocationForm
@@ -821,8 +830,8 @@ describe("R1 and R2 as one cumulative production correction batch", () => {
     // The job list must show the exact same total as the detail page.
     const rows = await listJewelleryJobs({ search: "ZL-JJOB-2026-000068" });
     const listRow = rows.find((r) => r.id === job68Id)!;
-    expect(isUnavailable(listRow.totalIssuedCost)).toBe(false);
-    expect(amount(listRow.totalIssuedCost).toFixed(2)).toBe("179942.05");
+    expect(isUnavailable(listRow.totalManufacturingCost)).toBe(false);
+    expect(amount(listRow.totalManufacturingCost).toFixed(2)).toBe(amount(detail.totalManufacturingCost).toFixed(2));
 
     // The finished-stock list must show the same carrying cost as the job
     // detail's own finished-output line for the same piece.
@@ -847,7 +856,8 @@ describe("R1 and R2 as one cumulative production correction batch", () => {
     const owner = serializeJobCostSummary(detail, true);
     expect(owner.issuedMetalCost).toBe("31836.87");
     expect(owner.issuedDiamondCost).toBe("11880.00"); // unchanged
-    expect(owner.totalIssuedCost).toBe("43716.87");
+    expect(owner.materialsSubtotal).toBe("43716.87");
+    expectTotalIsMaterialsPlusCharges(detail);
 
     const fj87Output = detail.finishedOutputs.find((o) => o.id === fj87Id)!;
     expect(fj87Output.totalCost.toFixed(2)).toBe("29623.63"); // original, unchanged
@@ -865,7 +875,7 @@ describe("R1 and R2 as one cumulative production correction batch", () => {
 
     const rows = await listJewelleryJobs({ search: "ZL-JJOB-2026-000069" });
     const listRow = rows.find((r) => r.id === job69Id)!;
-    expect(amount(listRow.totalIssuedCost).toFixed(2)).toBe("43716.87");
+    expect(amount(listRow.totalManufacturingCost).toFixed(2)).toBe(amount(detail.totalManufacturingCost).toFixed(2));
   }, 30_000);
 
   // ---------------------------------------------------------------------------
@@ -1355,9 +1365,14 @@ describe("R1 and R2 as one cumulative production correction batch", () => {
     const fj87Output = job69Detail.finishedOutputs.find((o) => o.id === fj87Id)!;
     expect(amount(fj87Output.totalCostCurrent).toFixed(2)).toBe("29623.63");
 
+    const job68After = (await getJewelleryJobDetail(job68Id))!;
+    expect(amount(job68After.materialsSubtotal).toFixed(2)).toBe("92826.01");
+    expect(amount(job69Detail.materialsSubtotal).toFixed(2)).toBe("28782.51");
+    expectTotalIsMaterialsPlusCharges(job68After);
+    expectTotalIsMaterialsPlusCharges(job69Detail);
     const rows = await listJewelleryJobs({ search: "ZL-JJOB-2026" });
-    expect(amount(rows.find((r) => r.id === job68Id)!.totalIssuedCost).toFixed(2)).toBe("92826.01");
-    expect(amount(rows.find((r) => r.id === job69Id)!.totalIssuedCost).toFixed(2)).toBe("28782.51");
+    expect(amount(rows.find((r) => r.id === job68Id)!.totalManufacturingCost).toFixed(2)).toBe(amount(job68After.totalManufacturingCost).toFixed(2));
+    expect(amount(rows.find((r) => r.id === job69Id)!.totalManufacturingCost).toFixed(2)).toBe(amount(job69Detail.totalManufacturingCost).toFixed(2));
   }, 30_000);
 
   it("after rollback, a NEW sale of FJ-86 posts COGS at the ORIGINAL Rs 56,971.05 again — write behavior restored, not just display", async () => {
@@ -1660,11 +1675,12 @@ describe("carrying cost fails closed when a revalued purity cannot be replayed",
     expect(isUnavailable(detail.issuedMetalCost)).toBe(true);
     expect(detail.issuedMetalCost).toBe(CARRYING_COST_UNAVAILABLE);
     expect(isUnavailable(detail.remainingWipCost)).toBe(true);
-    expect(isUnavailable(detail.totalIssuedCost)).toBe(true);
+    expect(isUnavailable(detail.materialsSubtotal)).toBe(true);
+    expect(isUnavailable(detail.totalManufacturingCost)).toBe(true);
 
     const rows = await listJewelleryJobs({ search: "ZL-JJOB-REPLAYFAIL" });
     const listRow = rows.find((r) => r.id === jobId)!;
-    expect(isUnavailable(listRow.totalIssuedCost)).toBe(true);
+    expect(isUnavailable(listRow.totalManufacturingCost)).toBe(true);
 
     // A sanitized diagnostic was logged (identifiers and a reason only).
     expect(consoleErrorSpy).toHaveBeenCalled();
@@ -1677,11 +1693,11 @@ describe("carrying cost fails closed when a revalued purity cannot be replayed",
     const detail = (await getJewelleryJobDetail(jobId))!;
     const owner = serializeJobCostSummary(detail, true);
     expect(owner.issuedMetalCost).toBe("Current cost unavailable — reconciliation required");
-    expect(owner.totalIssuedCost).toBe("Current cost unavailable — reconciliation required");
+    expect(owner.totalManufacturingCost).toBe("Current cost unavailable — reconciliation required");
 
     const staff = serializeJobCostSummary(detail, false);
     expect(staff.issuedMetalCost).toBeNull();
-    expect(staff.totalIssuedCost).toBeNull();
+    expect(staff.totalManufacturingCost).toBeNull();
   });
 
   it("blocks a sale of the affected piece entirely — nothing claimed, nothing posted", async () => {

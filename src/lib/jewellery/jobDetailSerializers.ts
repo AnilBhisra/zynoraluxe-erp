@@ -8,15 +8,25 @@ import { ownerOnly } from "@/lib/security/ownerOnly";
 // never carries it; packet identity, pieces and carat stay visible to Staff.
 // Kept out of the page so jobDetailSerializers.test.ts covers the redaction.
 
-export function serializeJobCostSummary(
-  detail: Pick<JewelleryJobDetail, "issuedMetalCost" | "issuedDiamondCost" | "otherMaterialCost" | "totalIssuedCost">,
-  isOwner: boolean
-): Pick<SerializedJobDetail, "issuedMetalCost" | "issuedDiamondCost" | "otherMaterialCost" | "totalIssuedCost"> {
+type CostSummaryKey =
+  | "issuedMetalCost"
+  | "issuedDiamondCost"
+  | "otherMaterialCost"
+  | "materialsSubtotal"
+  | "karigarSuppliedCost"
+  | "totalLabourCharge"
+  | "totalManufacturingCost";
+
+/** The job's cost breakdown (jobManufacturingCost): materials + Karigar-supplied + charges = total. Owner only. */
+export function serializeJobCostSummary(detail: Pick<JewelleryJobDetail, CostSummaryKey>, isOwner: boolean): Pick<SerializedJobDetail, CostSummaryKey> {
   return {
     issuedMetalCost: ownerOnly(isOwner, formatCarryingAmount(detail.issuedMetalCost)),
     issuedDiamondCost: ownerOnly(isOwner, detail.issuedDiamondCost.toFixed(2)),
     otherMaterialCost: ownerOnly(isOwner, detail.otherMaterialCost.toFixed(2)),
-    totalIssuedCost: ownerOnly(isOwner, formatCarryingAmount(detail.totalIssuedCost)),
+    materialsSubtotal: ownerOnly(isOwner, formatCarryingAmount(detail.materialsSubtotal)),
+    karigarSuppliedCost: ownerOnly(isOwner, detail.karigarSuppliedCost.toFixed(2)),
+    totalLabourCharge: ownerOnly(isOwner, detail.totalLabourCharge.toFixed(2)),
+    totalManufacturingCost: ownerOnly(isOwner, formatCarryingAmount(detail.totalManufacturingCost)),
   };
 }
 

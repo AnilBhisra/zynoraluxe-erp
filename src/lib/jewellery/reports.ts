@@ -5,7 +5,7 @@ import { Decimal, type DecimalInput, round2, ZERO } from "@/lib/accounting/money
 import { round3 } from "@/lib/diamond/allocation";
 import { shapeLabel } from "@/lib/diamond/shapes";
 import { getAuthoritativeInventoryCost } from "@/lib/jewellery/finishedSalesPosting";
-import { jobIssuedCosts } from "@/lib/jewellery/jobIssuedCost";
+import { jobManufacturingCost } from "@/lib/jewellery/jobIssuedCost";
 import { canStillIssueMaterials, pendingFineWeightOf, sumMetalPool } from "@/lib/jewellery/posting";
 import {
   CARRYING_COST_UNAVAILABLE,
@@ -162,10 +162,15 @@ export type JewelleryJobRow = {
   status: JewelleryJobStatus;
   issuedMetalFineWeight: Decimal;
   pendingFineWeight: Decimal;
-  totalIssuedCost: CarryingAmount;
+  /** Materials + Karigar-supplied + charges (jobManufacturingCost); the same figure on the list and the detail. */
+  totalManufacturingCost: CarryingAmount;
 };
 
 export { pendingFineWeightOf };
+
+function sumKarigarAlloyCost(receipts: { karigarAlloyCost: Decimal | string | number }[]): Decimal {
+  return round2(receipts.reduce((sum, r) => sum.plus(r.karigarAlloyCost), new Decimal(0)));
+}
 
 export async function listJewelleryJobs(filters?: {
   status?: JewelleryJobStatus[];
@@ -185,7 +190,7 @@ export async function listJewelleryJobs(filters?: {
           ]
         : undefined,
     },
-    include: { karigar: true, customer: true },
+    include: { karigar: true, customer: true, receipts: { select: { karigarAlloyCost: true } } },
     orderBy: { issueDate: "desc" },
     take: 300,
   });
@@ -215,9 +220,9 @@ export async function listJewelleryJobs(filters?: {
       status: j.status,
       issuedMetalFineWeight: round3(j.issuedMetalFineWeight),
       pendingFineWeight: pendingFineWeightOf(j),
-      totalIssuedCost: isUnavailable(issuedMetalCost)
+      totalManufacturingCost: isUnavailable(issuedMetalCost)
         ? CARRYING_COST_UNAVAILABLE
-        : jobIssuedCosts({ ...j, issuedMetalCost }).totalIssuedCost,
+        : jobManufacturingCost({ ...j, issuedMetalCost }, sumKarigarAlloyCost(j.receipts)).totalManufacturingCost,
     };
   });
 }
@@ -235,7 +240,12 @@ export type JewelleryJobDetail = JewelleryJobRow & {
   issuedMetalCost: CarryingAmount;
   issuedDiamondCost: Decimal;
   otherMaterialCost: Decimal;
+  /** Metal (incl. Company alloy) + diamonds + packets + other material. */
+  materialsSubtotal: CarryingAmount;
+  /** Karigar-added material + Karigar alloy charges. */
+  karigarSuppliedCost: Decimal;
   remainingWipCost: CarryingAmount;
+  /** Labour + making + setting + plating + other expense, including charges added later. */
   totalLabourCharge: Decimal;
   receivedFineWeight: Decimal;
   returnedMetalFineWeight: Decimal;
@@ -434,9 +444,15 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
   ]);
   const carryingIssuedMetalCost = jobCarrying.get(job.id)?.issuedMetalCost ?? new Decimal(job.issuedMetalCost);
   const carryingRemainingWipCost = jobCarrying.get(job.id)?.remainingWipCost ?? new Decimal(job.remainingWipCost);
+  const karigarAlloyCost = sumKarigarAlloyCost(job.receipts);
+  const storedCosts = jobManufacturingCost(job, karigarAlloyCost);
   const issuedCosts = isUnavailable(carryingIssuedMetalCost)
-    ? { issuedDiamondCost: jobIssuedCosts(job).issuedDiamondCost, totalIssuedCost: CARRYING_COST_UNAVAILABLE as CarryingAmount }
-    : jobIssuedCosts({ ...job, issuedMetalCost: carryingIssuedMetalCost });
+    ? {
+        ...storedCosts,
+        materialsSubtotal: CARRYING_COST_UNAVAILABLE as CarryingAmount,
+        totalManufacturingCost: CARRYING_COST_UNAVAILABLE as CarryingAmount,
+      }
+    : jobManufacturingCost({ ...job, issuedMetalCost: carryingIssuedMetalCost }, karigarAlloyCost);
 
   const timeline: JewelleryJobDetail["timeline"] = [
     ...metalMovements.map((m) => ({
@@ -480,8 +496,10 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
     issuedMetalCost: carryingIssuedMetalCost,
     issuedDiamondCost: issuedCosts.issuedDiamondCost,
     otherMaterialCost: round2(job.otherMaterialCost),
+    materialsSubtotal: issuedCosts.materialsSubtotal,
+    karigarSuppliedCost: issuedCosts.karigarSuppliedCost,
     remainingWipCost: carryingRemainingWipCost,
-    totalLabourCharge: round2(job.totalLabourCharge),
+    totalLabourCharge: issuedCosts.chargesTotal,
     receivedFineWeight: round3(job.receivedFineWeight),
     returnedMetalFineWeight: round3(job.returnedMetalFineWeight),
     scrapFineWeight: round3(job.scrapFineWeight),
@@ -496,7 +514,7 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
       new Decimal(job.issuedAlloyGrossWeight).minus(job.consumedAlloyGrossWeight).minus(job.returnedAlloyGrossWeight)
     ),
     pendingFineWeight: pendingFineWeightOf(job),
-    totalIssuedCost: issuedCosts.totalIssuedCost,
+    totalManufacturingCost: issuedCosts.totalManufacturingCost,
     karigarId: job.karigarId,
     custodyAllocatedFineWeight: round3(job.custodyAllocatedFineWeight ?? 0),
     custodyReleasedFineWeight: round3(job.custodyReleasedFineWeight ?? 0),

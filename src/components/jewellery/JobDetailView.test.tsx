@@ -60,7 +60,10 @@ function job(isOwner: boolean): SerializedJobDetail {
     remainingAlloyWipCost: cost("0.00"),
     alloyPendingGrossWeight: "0.000",
     pendingFineWeight: "1.053",
-    totalIssuedCost: cost("175497.43"),
+    // 1,40,500.00 metal (incl. Company alloy) + 34,997.43 packets = 1,75,497.43; + 3,000.00 charges.
+    materialsSubtotal: cost("175497.43"),
+    karigarSuppliedCost: cost("0.00"),
+    totalManufacturingCost: cost("178497.43"),
     cancellationReason: null,
     isCompleted: true,
     finalMetalLossFineWeight: "1.053",
@@ -120,9 +123,10 @@ describe("JobDetailView — packet stones issued", () => {
     expect(b.textContent).toContain("Set 30 pcs / 3.000ct");
 
     expect(screen.queryByText("Diamond cost issued")).toBeNull();
-    expect(screen.queryByText("Total manufacturing cost issued")).toBeNull();
+    expect(screen.queryByText("Total manufacturing cost")).toBeNull();
+    expect(screen.queryByText("Materials subtotal")).toBeNull();
     expect(container.textContent).not.toContain("₹");
-    for (const secret of ["10212.58", "24784.85", "34997.43", "175497.43"]) expect(container.innerHTML).not.toContain(secret);
+    for (const secret of ["10212.58", "24784.85", "34997.43", "175497.43", "178497.43"]) expect(container.innerHTML).not.toContain(secret);
   });
 
   it("shows the Owner packet costs and packet-inclusive diamond and total cost issued", () => {
@@ -131,6 +135,10 @@ describe("JobDetailView — packet stones issued", () => {
     expect(screen.getByTestId("packet-line-ZL-PKT-2026-000001").textContent).toContain("20 pcs / 2.000ct · ₹10212.58");
     expect(screen.getByTestId("packet-line-ZL-PKT-2026-000002").textContent).toContain("₹24784.85");
     expect(screen.getByText("Diamond cost issued").nextSibling?.textContent).toBe("₹34997.43");
-    expect(screen.getByText("Total manufacturing cost issued").nextSibling?.textContent).toBe("₹175497.43");
+    // Materials + charges = total, each shown once.
+    expect(screen.getByText("Materials subtotal").nextSibling?.textContent).toBe("₹175497.43");
+    expect(screen.getByText("Charges (labour, making, setting, plating, other)").nextSibling?.textContent).toBe("₹3000.00");
+    expect(screen.getByText("Total manufacturing cost").nextSibling?.textContent).toBe("₹178497.43");
+    expect(screen.queryByText("Karigar-supplied material")).toBeNull(); // nothing supplied by the Karigar
   });
 });

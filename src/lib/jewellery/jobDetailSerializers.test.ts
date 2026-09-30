@@ -28,7 +28,7 @@ vi.mock("@/lib/db/prisma", () => ({
   },
 }));
 
-import { jobIssuedCosts } from "./jobIssuedCost";
+import { jobManufacturingCost } from "./jobIssuedCost";
 import { serializeJobCostSummary, serializeJobPacketLines } from "./jobDetailSerializers";
 import { getJewelleryJobDetail } from "./reports";
 import type { Decimal } from "@/lib/accounting/money";
@@ -126,17 +126,51 @@ beforeEach(() => {
   mocks.stockMovementFindMany.mockResolvedValue([]);
 });
 
-describe("Jewellery Job issued cost includes packet stones", () => {
-  it("adds packet cost to diamond cost issued and to the total manufacturing cost issued", () => {
-    const costs = jobIssuedCosts({ issuedMetalCost: "140500.00", issuedDiamondCost: "0.00", issuedPacketDiamondCost: "10212.58", otherMaterialCost: "0.00" });
-    expect(costs.issuedDiamondCost.toFixed(2)).toBe("10212.58");
-    expect(costs.totalIssuedCost.toFixed(2)).toBe("150712.58");
+const noExtras = { karigarAddedCost: "0.00", totalLabourCharge: "0.00" };
+const figures = (c: ReturnType<typeof jobManufacturingCost>) =>
+  [c.issuedDiamondCost, c.materialsSubtotal, c.karigarSuppliedCost, c.chargesTotal, c.totalManufacturingCost].map((d) => d.toFixed(2));
+
+describe("Jewellery Job manufacturing cost = materials + Karigar-supplied + charges, each once", () => {
+  it("adds packet cost to diamond cost issued and to the materials subtotal", () => {
+    const costs = jobManufacturingCost({ issuedMetalCost: "140500.00", issuedDiamondCost: "0.00", issuedPacketDiamondCost: "10212.58", otherMaterialCost: "0.00", ...noExtras }, 0);
+    expect(figures(costs)).toEqual(["10212.58", "150712.58", "0.00", "0.00", "150712.58"]);
   });
 
   it("sums individually costed diamonds, packets and other material exactly once", () => {
-    const costs = jobIssuedCosts({ issuedMetalCost: "140500.00", issuedDiamondCost: "8000.00", issuedPacketDiamondCost: "34997.43", otherMaterialCost: "250.50" });
-    expect(costs.issuedDiamondCost.toFixed(2)).toBe("42997.43");
-    expect(costs.totalIssuedCost.toFixed(2)).toBe("183747.93");
+    const costs = jobManufacturingCost({ issuedMetalCost: "140500.00", issuedDiamondCost: "8000.00", issuedPacketDiamondCost: "34997.43", otherMaterialCost: "250.50", ...noExtras }, 0);
+    expect(figures(costs)).toEqual(["42997.43", "183747.93", "0.00", "0.00", "183747.93"]);
+  });
+
+  // The two jobs reported, each from its OWN recorded figures (production, read-only).
+  it("ZL-JJOB-2026-000001: 48,384.00 metal + 24,961.25 packets = 73,345.25 materials; + 5,166.00 making = 78,511.25", () => {
+    const costs = jobManufacturingCost(
+      { issuedMetalCost: "48384.00", issuedDiamondCost: "0.00", issuedPacketDiamondCost: "24961.25", otherMaterialCost: "0.00", karigarAddedCost: "0.00", totalLabourCharge: "5166.00" },
+      "0.00"
+    );
+    expect(figures(costs)).toEqual(["24961.25", "73345.25", "0.00", "5166.00", "78511.25"]);
+  });
+
+  it("ZL-JJOB-2026-000002: 66,592.00 metal + 20,101.17 packets = 86,693.17 materials; + 6,571.00 making + 3,450.00 other = 96,714.17", () => {
+    const costs = jobManufacturingCost(
+      { issuedMetalCost: "66592.00", issuedDiamondCost: "0.00", issuedPacketDiamondCost: "20101.17", otherMaterialCost: "0.00", karigarAddedCost: "0.00", totalLabourCharge: "10021.00" },
+      "0.00"
+    );
+    expect(figures(costs)).toEqual(["20101.17", "86693.17", "0.00", "10021.00", "96714.17"]);
+  });
+
+  it("never adds Company alloy twice: issuedMetalCost already holds it", () => {
+    // 24K 20 g (Rs 1,40,000) + Company alloy 5 g (Rs 500) -> issuedMetalCost 1,40,500.
+    const costs = jobManufacturingCost({ issuedMetalCost: "140500.00", issuedDiamondCost: "0.00", issuedPacketDiamondCost: "0.00", otherMaterialCost: "0.00", ...noExtras }, 0);
+    expect(costs.materialsSubtotal.toFixed(2)).toBe("140500.00");
+  });
+
+  it("includes Karigar-added material and Karigar alloy charges, and charges added later, once each", () => {
+    const costs = jobManufacturingCost(
+      // 1,000.00 charged at receipt + 250.00 added later by a charge correction = 1,250.00.
+      { issuedMetalCost: "10000.00", issuedDiamondCost: "2000.00", issuedPacketDiamondCost: "0.00", otherMaterialCost: "100.00", karigarAddedCost: "700.00", totalLabourCharge: "1250.00" },
+      "300.00"
+    );
+    expect(figures(costs)).toEqual(["2000.00", "12100.00", "1000.00", "1250.00", "14350.00"]);
   });
 });
 
@@ -168,14 +202,34 @@ describe("getJewelleryJobDetail loads packet lines", () => {
       ["ZL-PKT-2026-000002", "Round · 1.50MM · VS · F", 30, "3.000", "24784.85", true],
     ]);
     expect(detail!.issuedDiamondCost.toFixed(2)).toBe("34997.43");
-    expect(amount(detail!.totalIssuedCost).toFixed(2)).toBe("175497.43");
+    expect(amount(detail!.materialsSubtotal).toFixed(2)).toBe("175497.43");
+    expect(amount(detail!.totalManufacturingCost).toFixed(2)).toBe("175497.43"); // no charges yet
   });
 
   it("shows the acceptance run's exact figures after the direct packet issue: ₹10,212.58 diamond, ₹1,50,712.58 total", async () => {
     mocks.jewelleryJobFindUnique.mockResolvedValue(job());
     const detail = await getJewelleryJobDetail("job-1");
     expect(detail!.issuedDiamondCost.toFixed(2)).toBe("10212.58");
-    expect(amount(detail!.totalIssuedCost).toFixed(2)).toBe("150712.58");
+    expect(amount(detail!.totalManufacturingCost).toFixed(2)).toBe("150712.58");
+  });
+
+  it("after a receipt, the total includes its charges and Karigar alloy charge (the reported defect)", async () => {
+    mocks.jewelleryJobFindUnique.mockResolvedValue(
+      job({ totalLabourCharge: "3000.00", karigarAddedCost: "400.00", receipts: [
+          {
+            id: "r1", receiptCode: "ZL-JREC-2026-000001", receiveDate: D, returnedMetalFineWeight: "0", scrapFineWeight: "0", processLossFineWeight: "0", isAbnormalLoss: false,
+            labourCharge: "3000.00", makingCharge: "0", settingCharge: "0", platingCharge: "0", otherExpense: "0", companyAlloyGrossWeight: "0", karigarAlloyGrossWeight: "0.200",
+            karigarAlloyCost: "150.00", includedAlloyGrossWeight: "0", returnedAlloyGrossWeight: "0", alloyLossGrossWeight: "0", unabsorbedCost: "0",
+          },
+        ] })
+    );
+    const detail = (await getJewelleryJobDetail("job-1"))!;
+    expect([amount(detail.materialsSubtotal).toFixed(2), detail.karigarSuppliedCost.toFixed(2), detail.totalLabourCharge.toFixed(2), amount(detail.totalManufacturingCost).toFixed(2)]).toEqual([
+      "150712.58",
+      "550.00",
+      "3000.00",
+      "154262.58",
+    ]);
   });
 });
 
@@ -207,7 +261,15 @@ describe("Jewellery Job detail DTO — Staff sees packet identity and quantities
         damagedCarat: "0.000",
       },
     ]);
-    expect(summary).toEqual({ issuedMetalCost: null, issuedDiamondCost: null, otherMaterialCost: null, totalIssuedCost: null });
+    expect(summary).toEqual({
+      issuedMetalCost: null,
+      issuedDiamondCost: null,
+      otherMaterialCost: null,
+      materialsSubtotal: null,
+      karigarSuppliedCost: null,
+      totalLabourCharge: null,
+      totalManufacturingCost: null,
+    });
     const payload = JSON.stringify({ lines, summary });
     for (const secret of ["10212.58", "140500", "150712.58"]) expect(payload).not.toContain(secret);
   });
@@ -219,7 +281,10 @@ describe("Jewellery Job detail DTO — Staff sees packet identity and quantities
       issuedMetalCost: "140500.00",
       issuedDiamondCost: "10212.58",
       otherMaterialCost: "0.00",
-      totalIssuedCost: "150712.58",
+      materialsSubtotal: "150712.58",
+      karigarSuppliedCost: "0.00",
+      totalLabourCharge: "0.00",
+      totalManufacturingCost: "150712.58",
     });
   });
 });

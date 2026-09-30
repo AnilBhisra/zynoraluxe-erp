@@ -30,7 +30,8 @@ export type SerializedJewelleryJob = {
   issuedMetalFineWeight: string;
   pendingFineWeight: string;
   /** Owner-only — null for Staff (redacted on the server). */
-  totalIssuedCost: string | null;
+  /** Materials + Karigar-supplied + charges; Owner only. */
+  totalManufacturingCost: string | null;
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -151,7 +152,7 @@ export function JobsTab({
                 <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
                   {job.designName} · {jewelleryTypeLabel(job.jewelleryType)} · {job.karigarName}
                   {job.customerName ? ` · ${job.customerName}` : ""} · {job.pendingFineWeight}g pending
-                  {isOwner && job.totalIssuedCost !== null ? ` · ${money(job.totalIssuedCost)}` : ""}
+                  {isOwner && job.totalManufacturingCost !== null ? ` · ${money(job.totalManufacturingCost)}` : ""}
                 </p>
               </div>
               <a

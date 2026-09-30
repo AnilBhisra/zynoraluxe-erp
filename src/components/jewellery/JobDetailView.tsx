@@ -81,7 +81,12 @@ export type SerializedJobDetail = {
   remainingAlloyWipCost: string | null;
   alloyPendingGrossWeight: string;
   pendingFineWeight: string;
-  totalIssuedCost: string | null;
+  /** Metal (incl. Company alloy) + diamonds + packets + other material. */
+  materialsSubtotal: string | null;
+  /** Karigar-added material + Karigar alloy charges. */
+  karigarSuppliedCost: string | null;
+  /** Materials + Karigar-supplied + charges. */
+  totalManufacturingCost: string | null;
   cancellationReason: string | null;
   isCompleted: boolean;
   finalMetalLossFineWeight: string | null;
@@ -346,8 +351,12 @@ export function JobDetailView({
           {isOwner ? <Stat label="Other material cost" value={`₹${job.otherMaterialCost}`} /> : null}
           {isOwner ? <Stat label="Remaining WIP cost" value={money(job.remainingWipCost)} /> : null}
           {isOwner && hasCompanyAlloy ? <Stat label="Remaining alloy cost" value={`₹${job.remainingAlloyWipCost}`} /> : null}
-          {isOwner ? <Stat label="Labour/making/setting so far" value={`₹${job.totalLabourCharge}`} /> : null}
-          {isOwner ? <Stat label="Total manufacturing cost issued" value={money(job.totalIssuedCost)} /> : null}
+          {isOwner ? <Stat label="Materials subtotal" value={money(job.materialsSubtotal)} /> : null}
+          {isOwner && job.karigarSuppliedCost !== null && job.karigarSuppliedCost !== "0.00" ? (
+            <Stat label="Karigar-supplied material" value={`₹${job.karigarSuppliedCost}`} />
+          ) : null}
+          {isOwner ? <Stat label="Charges (labour, making, setting, plating, other)" value={`₹${job.totalLabourCharge}`} /> : null}
+          {isOwner ? <Stat label="Total manufacturing cost" value={money(job.totalManufacturingCost)} /> : null}
         </div>
 
         {job.customerReference ? (

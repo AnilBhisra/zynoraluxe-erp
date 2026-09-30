@@ -238,7 +238,6 @@ async function JobsTabContent({
       issuedMetalFineWeight: detail.issuedMetalFineWeight.toFixed(3),
       ...serializeJobCostSummary(detail, isOwner),
       remainingWipCost: ownerOnly(isOwner, formatCarryingAmount(detail.remainingWipCost)),
-      totalLabourCharge: ownerOnly(isOwner, detail.totalLabourCharge.toFixed(2)),
       receivedFineWeight: detail.receivedFineWeight.toFixed(3),
       returnedMetalFineWeight: detail.returnedMetalFineWeight.toFixed(3),
       scrapFineWeight: detail.scrapFineWeight.toFixed(3),
@@ -380,7 +379,7 @@ async function JobsTabContent({
     status: j.status,
     issuedMetalFineWeight: j.issuedMetalFineWeight.toFixed(3),
     pendingFineWeight: j.pendingFineWeight.toFixed(3),
-    totalIssuedCost: ownerOnly(isOwner, formatCarryingAmount(j.totalIssuedCost)),
+    totalManufacturingCost: ownerOnly(isOwner, formatCarryingAmount(j.totalManufacturingCost)),
   }));
 
   return (
