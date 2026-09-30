@@ -12,6 +12,7 @@ import {
 import {
   ReceiveFinishedForm,
   type CustodySourceOption,
+  type CustomerGoldSourceOption,
   type IssuedMetalOption,
   type MetalPurityOption,
   type PendingPacketOption,
@@ -24,6 +25,7 @@ import { MetalTransferPanel } from "@/components/jewellery/MetalTransferPanel";
 import type { MetalTransferPanel as MetalTransferPanelData } from "@/lib/jewellery/metalTransferPanels";
 import { FixJobStatusButton } from "@/components/jewellery/FixJobStatusButton";
 import { CompleteReconciledJobButton } from "@/components/jewellery/CompleteReconciledJobButton";
+import { JobCustomerGoldPanel, type SerializedJobCustomerGold } from "@/components/jewellery/JobCustomerGoldPanel";
 import { Button } from "@/components/ui/Button";
 import { jewelleryTypeLabel } from "@/lib/jewellery/types";
 import { formatThousandths, toThousandths } from "@/lib/jewellery/metalMath";
@@ -211,6 +213,8 @@ export function JobDetailView({
   chargePanels = null,
   transferPanel = null,
   custodySources = [],
+  customerGoldSources = [],
+  customerGold = null,
 }: {
   job: SerializedJobDetail;
   isOwner: boolean;
@@ -224,6 +228,10 @@ export function JobDetailView({
   transferPanel?: MetalTransferPanelData | null;
   /** The job's Karigar's unallocated metal this job can be received from -- weights only, for Owner and Staff. */
   custodySources?: CustodySourceOption[];
+  /** The job's Customer's own gold it can be received from -- weights only, Owner and Staff. */
+  customerGoldSources?: CustomerGoldSourceOption[];
+  /** Gold source, Customer pieces, bill (money Owner-only) and delivery. */
+  customerGold?: SerializedJobCustomerGold | null;
 }) {
   const router = useRouter();
   const [showIssueForm, setShowIssueForm] = useState(false);
@@ -251,7 +259,7 @@ export function JobDetailView({
     job.status === "IN_PROGRESS" ||
     job.status === "PARTIALLY_RECEIVED" ||
     job.status === "NEEDS_CORRECTION" ||
-    (job.status === "DRAFT" && custodySources.length > 0);
+    (job.status === "DRAFT" && (custodySources.length > 0 || customerGoldSources.length > 0));
   const canCancel = isOwner && (job.status === "DRAFT" || job.status === "MATERIALS_ISSUED" || job.status === "IN_PROGRESS");
   const canToggleNeedsCorrection = job.status === "IN_PROGRESS" || job.status === "PARTIALLY_RECEIVED" || job.status === "NEEDS_CORRECTION";
   const hasCompanyAlloy = toThousandths(job.issuedAlloyGrossWeight) > BigInt(0);
@@ -333,7 +341,13 @@ export function JobDetailView({
           <Stat label="Quantity" value={String(job.quantity)} />
           <Stat label="Size" value={job.jewellerySize ?? "—"} />
           <Stat label="Target metal" value={job.targetMetalType ? `${job.targetMetalType} · ${job.targetPurityDisplayName ?? "—"}` : "Not decided"} />
-          <Stat label="Metal issued (fine)" value={`${job.issuedMetalFineWeight}g`} />
+          <Stat label={customerGold && customerGold.sources.label.includes("Customer") ? "Company metal issued (fine)" : "Metal issued (fine)"} value={`${job.issuedMetalFineWeight}g`} />
+          {customerGold && customerGold.sources.label.includes("Customer") ? (
+            <Stat
+              label="Customer gold (fine) — Customer-owned, excluded from Company material cost"
+              value={`${customerGold.sources.customerGoldOnJob.reduce((sum, p) => sum + Number(p.fine), 0).toFixed(3)}g on job · ${customerGold.sources.customerGoldConsumedFine}g in pieces`}
+            />
+          ) : null}
           <Stat label="Metal received (fine)" value={`${job.receivedFineWeight}g`} />
           <Stat
             label={job.isCompleted ? "Metal loss (final)" : "Pending with Karigar"}
@@ -486,6 +500,8 @@ export function JobDetailView({
                 unresolvedDiamonds={unresolvedDiamonds}
                 pendingPackets={pendingPackets}
                 custodySources={custodySources}
+                customerGoldSources={customerGoldSources}
+                customerName={job.customerName}
                 isOwner={isOwner}
                 onDone={handleSaved}
               />
@@ -543,6 +559,8 @@ export function JobDetailView({
       {isOwner && chargePanels && chargePanels.length > 0 ? (
         <ReceiptChargesPanel panels={chargePanels} onDone={() => router.refresh()} />
       ) : null}
+
+      {customerGold ? <JobCustomerGoldPanel data={customerGold} isOwner={isOwner} onDone={() => router.refresh()} /> : null}
 
       {isOwner && transferPanel ? <MetalTransferPanel jobId={job.id} panel={transferPanel} onDone={() => router.refresh()} /> : null}
 

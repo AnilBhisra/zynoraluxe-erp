@@ -383,4 +383,23 @@ describe("Reports — statement, reconciliation, exceptions; Staff get weights o
     const exceptions = await prisma.$transaction((tx) => customerGoldExceptions(tx), TX);
     expect(exceptions.some((x) => x.kind === "UNBILLED")).toBe(true);
   });
+
+  it("job page panel: the gold source and pieces for everyone; piece cost, bills, credit and delivery cost only for the Owner", async () => {
+    const { getJobCustomerGoldPanel } = await import("@/lib/jewellery/customerGoldJobPanel");
+    const job = await prisma.jewelleryJob.findFirstOrThrow({ where: { designName: "Customer diamond ring" } });
+    const ownerView = (await prisma.$transaction((tx) => getJobCustomerGoldPanel(tx, job.id, { includeValues: true }), TX))!;
+    const staffView = (await prisma.$transaction((tx) => getJobCustomerGoldPanel(tx, job.id, { includeValues: false }), TX))!;
+    expect(ownerView.panel.sources.label).toBe("Customer-owned gold");
+    expect(ownerView.panel.sources.customerGoldConsumedFine).toBe("2.000");
+    expect(ownerView.panel.pieces[0].companyCost).not.toBeNull();
+    expect(ownerView.panel.bills?.length).toBe(1);
+    expect(ownerView.panel.creditAvailable).toBe("14000.00");
+    // A delivered, completed job offers no receipt source and no delivery.
+    expect(ownerView.receiveSources).toEqual([]);
+    expect(staffView.panel.pieces.map((p) => [p.finishedCode, p.customerGoldFineWeight, p.companyCost])).toEqual(ownerView.panel.pieces.map((p) => [p.finishedCode, p.customerGoldFineWeight, null]));
+    expect([staffView.panel.bills, staffView.panel.creditAvailable]).toEqual([null, null]);
+    expect(staffView.panel.deliveries.every((d) => !d.canReverse)).toBe(true);
+    const staffJson = JSON.stringify(staffView);
+    for (const money of ["14000", "10506", "5506", ownerView.panel.pieces[0].companyCost!]) expect(staffJson).not.toContain(money);
+  });
 });

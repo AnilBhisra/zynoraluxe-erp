@@ -28,6 +28,13 @@ import {
   type ReceiveFinishedJewelleryInput,
 } from "@/lib/validation/jewellery";
 import { CustodyError } from "@/lib/jewellery/karigarCustody";
+import { CustomerGoldError } from "@/lib/jewellery/customerGoldLedger";
+import {
+  customerGoldJobReceiptFingerprint,
+  planCustomerGoldJobReceipt,
+  receiveWithCustomerGold,
+  type CustomerGoldJobReceiptPart,
+} from "@/lib/jewellery/customerGoldJobReceipt";
 import {
   planReceiptCustody,
   receiveWithCustodyAllocation,
@@ -488,6 +495,40 @@ export async function receiveFinishedJewelleryAction(
     if (existing) return { success: true, code: existing.receiptCode };
   }
 
+  // Customer-owned gold (CUSTOMER_GOLD_DESIGN.md): the Customer's gold on the
+  // job first, then the same Customer's gold with the job's Karigar, then in
+  // the safe — one locked transaction with the receipt, refused if anything
+  // changed since the preview. Owner or Staff (authorised loss: Owner only).
+  const customerGoldSourcePurityId = String(formData.get("customerGoldSourcePurityId") ?? "").trim();
+  if (customerGoldSourcePurityId) {
+    if (!data.idempotencyKey) return { error: "Missing submission key — reload the page and try again." };
+    const fingerprint = String(formData.get("customerGoldFingerprint") ?? "").trim();
+    if (!fingerprint) return { error: "Preview the Customer's gold first, then save." };
+    try {
+      const result = await prisma.$transaction(
+        (tx) =>
+          receiveWithCustomerGold(tx, {
+            ...toReceiptInput(data, receiveDate, user, fy),
+            idempotencyKey: data.idempotencyKey!,
+            customerGoldSource: readCustomerGoldPart(formData, customerGoldSourcePurityId),
+            expectedFingerprint: fingerprint,
+            actor: { id: user.id, role: user.role },
+          }),
+        { timeout: 30000, maxWait: 15000 }
+      );
+      revalidateJewellery();
+      return { success: true, code: result.receipt.receiptCode };
+    } catch (error) {
+      if (isIdempotencyConflict(error)) {
+        const existing = await prisma.jewelleryReceipt.findUnique({ where: { idempotencyKey: data.idempotencyKey } });
+        if (existing) return { success: true, code: existing.receiptCode };
+      }
+      if (error instanceof CustomerGoldError || error instanceof CustodyError || error instanceof jewelleryPosting.PostingError) return { error: staffSafeMessage(error.message, isOwner) };
+      console.error("receiveFinishedJewelleryAction (customer gold) failed:", error);
+      return { error: "Could not save this receipt. Nothing was saved — please try again." };
+    }
+  }
+
   // Receipt-time allocation from the job's own Karigar's metal balance (Owner
   // or Staff): one locked transaction with the receipt, refused if anything
   // changed since the preview. Staff never receive a cost in any reply.
@@ -550,6 +591,114 @@ export async function receiveFinishedJewelleryAction(
 }
 
 export type { ReceiptCustodyPreview };
+
+function readCustomerGoldPart(formData: FormData, purityId: string): CustomerGoldJobReceiptPart {
+  const opt = (name: string) => {
+    const v = String(formData.get(name) ?? "").trim();
+    return v === "" ? null : v;
+  };
+  return {
+    purityId,
+    finenessPercent: String(formData.get("customerGoldFineness") ?? "").trim(),
+    customerFineForOutputs: opt("customerFineForOutputs"),
+    returnGross: opt("customerReturnGross"),
+    scrapGross: opt("customerScrapGross"),
+    lossFine: opt("customerLossFine"),
+    lossReason: opt("customerLossReason"),
+  };
+}
+
+/** What a receipt of Customer gold would do. Weights only (no value exists for Customer gold); Owner and Staff. */
+export type CustomerGoldReceiptPreview = {
+  jobCode: string;
+  customerName: string;
+  karigarName: string;
+  sourceLabel: string;
+  sourceFineness: string;
+  outputs: { netWeight: string; purityDisplayName: string; finenessPercent: string; fineWeight: string; customerFine: string }[];
+  outputFine: string;
+  customerFineForOutputs: string;
+  companyFineForOutputs: string;
+  returned: { gross: string; fine: string };
+  scrap: { gross: string; fine: string };
+  lossFine: string;
+  neededFine: string;
+  onJobBefore: { gross: string; fine: string };
+  fromKarigar: { gross: string; fine: string };
+  fromSafe: { gross: string; fine: string };
+  karigarAfter: { gross: string; fine: string };
+  safeAfter: { gross: string; fine: string };
+  onJobAfter: { gross: string; fine: string };
+  completesJob: boolean;
+  mixed: boolean;
+  fingerprint: string;
+};
+
+export async function previewCustomerGoldReceiptAction(
+  _prev: { error?: string; preview?: CustomerGoldReceiptPreview } | undefined,
+  formData: FormData
+): Promise<{ error?: string; preview?: CustomerGoldReceiptPreview }> {
+  const user = await requireUser();
+  const isOwner = user.role === "OWNER";
+  const parsed = receiveFinishedJewellerySchema.safeParse({
+    jobId: formData.get("jobId"),
+    receiveDate: formData.get("receiveDate"),
+    outputs: readJsonArray(formData, "outputsJson"),
+    returnedMetalLines: readJsonArray(formData, "returnedMetalLinesJson"),
+    scrapMetalLines: readJsonArray(formData, "scrapMetalLinesJson"),
+    karigarAddedFineWeight: formData.get("karigarAddedFineWeight") || "0",
+    markJobComplete: formData.get("markJobComplete") || "false",
+  });
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
+  const purityId = String(formData.get("customerGoldSourcePurityId") ?? "").trim();
+  if (!purityId) return { error: "Choose the Customer's gold the jewellery was made from." };
+  try {
+    const plan = await planCustomerGoldJobReceipt(prisma, {
+      jobId: parsed.data.jobId,
+      outputs: parsed.data.outputs,
+      karigarAddedFineWeight: parsed.data.karigarAddedFineWeight,
+      markJobComplete: parsed.data.markJobComplete,
+      customerGoldSource: readCustomerGoldPart(formData, purityId),
+    });
+    const w = (p: { gross: { toFixed: (n: number) => string }; fine: { toFixed: (n: number) => string } }) => ({ gross: p.gross.toFixed(3), fine: p.fine.toFixed(3) });
+    return {
+      preview: {
+        jobCode: plan.jobCode,
+        customerName: plan.customerName,
+        karigarName: plan.karigarName,
+        sourceLabel: plan.sourceLabel,
+        sourceFineness: plan.pool.finenessPercentSnapshot.toFixed(3),
+        outputs: plan.outputs.map((o) => ({
+          netWeight: o.netWeight.toFixed(3),
+          purityDisplayName: o.purityDisplayName,
+          finenessPercent: o.finenessPercent.toFixed(3),
+          fineWeight: o.fineWeight.toFixed(3),
+          customerFine: o.customerFine.toFixed(3),
+        })),
+        outputFine: plan.outputFine.toFixed(3),
+        customerFineForOutputs: plan.customerFineForOutputs.toFixed(3),
+        companyFineForOutputs: plan.companyFineForOutputs.toFixed(3),
+        returned: w(plan.returned),
+        scrap: w(plan.scrap),
+        lossFine: plan.lossFine.toFixed(3),
+        neededFine: plan.neededFine.toFixed(3),
+        onJobBefore: w(plan.onJobBefore),
+        fromKarigar: w(plan.fromKarigar),
+        fromSafe: w(plan.fromSafe),
+        karigarAfter: w(plan.karigarAfter),
+        safeAfter: w(plan.safeAfter),
+        onJobAfter: w(plan.onJobAfter),
+        completesJob: plan.completesJob,
+        mixed: plan.mixed,
+        fingerprint: customerGoldJobReceiptFingerprint(plan),
+      },
+    };
+  } catch (error) {
+    if (error instanceof CustomerGoldError || error instanceof jewelleryPosting.PostingError) return { error: staffSafeMessage(error.message, isOwner) };
+    console.error("previewCustomerGoldReceiptAction failed:", error);
+    return { error: "Could not prepare the preview. Please try again." };
+  }
+}
 
 /**
  * What this receipt would take from the job's Karigar's balance. Writes

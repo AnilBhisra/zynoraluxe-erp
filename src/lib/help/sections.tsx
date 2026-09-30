@@ -653,6 +653,107 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
 
     // ------------------------------------------------------------------
     {
+      id: "customer-gold",
+      title: "Customer Gold (ગ્રાહકનું પોતાનું સોનું)",
+      keywords: ["customer gold", "customer-owned", "exchange", "old gold", "delivery", "ગ્રાહકનું સોનું", "જૂનું સોનું", "ડિલિવરી", "custody"],
+      body: (
+        <div className="flex flex-col gap-4">
+          <Note>
+            ગ્રાહક પોતાનું સોનું દાગીના બનાવવા આપે તો એ સોનું <strong>ગ્રાહકનું જ રહે છે</strong> — Company નો stock નથી, Company ની ખરીદી નથી અને Company નો ખર્ચ નથી. Company એ સોનું ખરીદે (exchange) તો જ એ Company stock બને — અને એ માટે Owner ની મંજૂરી જોઈએ.
+          </Note>
+
+          <SubHeading>1. સોનું આવ્યું — બે માંથી એક પસંદગી</SubHeading>
+          <BadgeRow>
+            <OwnerOnlyBadge />
+            <CheckBeforeSaveBadge />
+          </BadgeRow>
+          <Steps>
+            <li>
+              Jewellery Jobs → <Btn>Customer Gold</Btn> tab ખોલો, ઉપર Customer પસંદ કરો.
+            </li>
+            <li>
+              <Btn>Receive gold from …</Btn> દબાવો અને પસંદ કરો: <strong>Customer-owned gold — for manufacturing</strong> (ગ્રાહકનું સોનું, દાગીના માટે) અથવા{" "}
+              <strong>Purchase/exchange gold from Customer</strong> (Company ખરીદે છે).
+            </li>
+            <li>Metal/Purity, Gross કે Fine weight, પથ્થર/ધૂળ નું ઘટાડવાનું (deduction), Reference અને કારણ ભરો. Photo optional છે.</li>
+            <li>
+              <Btn>Preview</Btn> દબાવી gross અને fine બંને weight તપાસો, પછી <Btn>Record Customer gold</Btn>. ગ્રાહકને આપવા માટે acknowledgment print કરો.
+            </li>
+          </Steps>
+          <Note>Declared value ફક્ત નોંધ/insurance માટે છે — Company નો ખર્ચ ક્યારેય નથી, અને Staff ને દેખાતી નથી.</Note>
+
+          <SubHeading>2. Karigar ને આપવું અને Job પર મૂકવું</SubHeading>
+          <BadgeRow>
+            <OwnerOnlyBadge />
+          </BadgeRow>
+          <Steps>
+            <li>
+              <Btn>Move Customer gold</Btn> → <strong>Issue to Karigar</strong> (safe માંથી Karigar ને). જરૂર હોય તો <strong>Allocate to this Customer&apos;s job</strong>.
+            </li>
+            <li>ફક્ત એ જ ગ્રાહકની Job દેખાય છે — એક ગ્રાહકનું સોનું બીજા ગ્રાહકની Job માં ક્યારેય વાપરી શકાતું નથી.</li>
+            <li>
+              <Btn>Preview</Btn> પછી <Btn>Confirm and post</Btn>. કોઈ voucher બનતું નથી, Company stock બદલાતો નથી.
+            </li>
+          </Steps>
+
+          <SubHeading>3. તૈયાર દાગીના પાછા લેવા (Receive)</SubHeading>
+          <BadgeRow>
+            <StaffCanBadge />
+            <CheckBeforeSaveBadge />
+          </BadgeRow>
+          <Steps>
+            <li>
+              Job ખોલો → <Btn>Receive Finished Jewellery</Btn>. <strong>Gold source</strong> માં “Customer-owned: …” પસંદ થયેલું જુઓ.
+            </li>
+            <li>દરેક piece નું net weight અને Final Purity ભરો. Customer નું વધેલું સોનું પાછું આવ્યું હોય તો “returned”, scrap હોય તો “scrap” માં gross weight લખો.</li>
+            <li>
+              <Btn>Preview Customer gold</Btn> દબાવો: કેટલું fine સોનું વપરાયું, Job પર પહેલેથી કેટલું હતું, Karigar/safe માંથી કેટલું લીધું અને ગ્રાહકનું કેટલું બાકી રહ્યું — બધું દેખાશે.
+            </li>
+            <li>પછી જ Save થાય છે. Preview પછી કંઈ બદલો તો ફરીથી Preview કરવું પડે.</li>
+          </Steps>
+          <Note>
+            બાકી રહેલું સોનું “loss” ગણાતું નથી — એ ગ્રાહકનું જ રહે છે. Authorised loss ફક્ત Owner જ, ચોક્કસ weight અને કારણ સાથે લખી શકે. Scrap પણ ગ્રાહકનો જ છે અને એને પાછો આપવાનો હોય છે.
+          </Note>
+
+          <SubHeading>4. Bill અને Delivery</SubHeading>
+          <BadgeRow>
+            <OwnerOnlyBadge />
+          </BadgeRow>
+          <Steps>
+            <li>
+              Job page → <Btn>Bill the Customer</Btn>: making, diamonds, materials, બીજા charges અને GST. ગ્રાહકનું સોનું bill માં વેચાણ તરીકે ક્યારેય નથી આવતું. Company એ ગ્રાહકનું સોનું
+              ખરીદ્યું હોય તો એનું credit અહીં bill માં બાદ કરી શકાય.
+            </li>
+          </Steps>
+          <BadgeRow>
+            <StaffCanBadge />
+          </BadgeRow>
+          <Steps>
+            <li>
+              Job <strong>Completed</strong> હોય ત્યારે જ <Btn>Deliver to the Customer</Btn> દેખાય. Pieces પસંદ કરો, કોણે લીધું (નામ), તારીખ, reference ભરી <Btn>Record delivery</Btn>.
+            </li>
+          </Steps>
+
+          <SubHeading>5. ભૂલ સુધારવી</SubHeading>
+          <BadgeRow>
+            <OwnerOnlyBadge />
+            <CautionBadge />
+          </BadgeRow>
+          <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+            Owner statement માં સૌથી નવી entry જ <Btn>Reverse this entry</Btn> થી ઉલટાવી શકે — કારણ લખવું ફરજિયાત (ઓછામાં ઓછા 10 અક્ષર). પછીની entry એના પર આધારિત હોય તો પહેલાં એ ઉલટાવવી પડે. Delivery અને Bill પણ Owner જ ઉલટાવી શકે. કશું delete થતું નથી — દરેક સુધારો નવી entry તરીકે નોંધાય છે.
+          </p>
+
+          <SubHeading>Reports</SubHeading>
+          <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+            Customer Gold tab માં: દરેક ગ્રાહકની balances (safe, Karigar પાસે, Job પર, તૈયાર-delivery બાકી, delivered, પાછું આપેલું, loss, scrap), Karigar-wise, Job-wise, delivery બાકી અને
+            exceptions. નીચે “Difference” હંમેશા <strong>0.000 g</strong> હોવો જોઈએ. <Btn>Printable statement</Btn> થી ગ્રાહકને statement આપો.
+          </p>
+        </div>
+      ),
+    },
+
+    // ------------------------------------------------------------------
+    {
       id: "finished-stock-sales",
       title: "Finished Stock અને Sales",
       keywords: [

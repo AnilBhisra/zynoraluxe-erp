@@ -77,6 +77,7 @@ describe("getHelpSections — role-based content", () => {
       "accounting",
       "diamond",
       "metal-jewellery",
+      "customer-gold",
       "finished-stock-sales",
       "daily-checklist",
       "troubleshooting",

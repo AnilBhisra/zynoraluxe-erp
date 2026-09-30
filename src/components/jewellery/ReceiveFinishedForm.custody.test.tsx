@@ -6,6 +6,7 @@ const previewMock = vi.fn();
 vi.mock("@/app/actions/jewellery", () => ({
   receiveFinishedJewelleryAction: vi.fn(async () => ({ success: true, code: "ZL-JREC-TEST" })),
   previewReceiptCustodyAction: (...args: unknown[]) => previewMock(...args),
+  previewCustomerGoldReceiptAction: vi.fn(),
   issueMaterialsAction: vi.fn(),
   uploadJewelleryPhotoAction: vi.fn(),
   deleteJewelleryPhotoAction: vi.fn(),

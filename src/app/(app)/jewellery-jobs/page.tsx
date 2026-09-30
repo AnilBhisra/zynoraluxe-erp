@@ -37,6 +37,16 @@ import type { MetalPurityOption } from "@/components/jewellery/ReceiveFinishedFo
 import type { FinishedJewelleryStockStatus, JewelleryJobStatus } from "@/generated/prisma/enums";
 import { getKarigarMetalAccount, listKarigarCustodySummaries, reconcileMetalLedger } from "@/lib/jewellery/karigarCustodyReports";
 import { KarigarMetalAccountView, type CustodyKind, type IssuePurityOption } from "@/components/jewellery/KarigarMetalAccountView";
+import { CustomerGoldTab } from "@/components/jewellery/CustomerGoldTab";
+import { getJobCustomerGoldPanel } from "@/lib/jewellery/customerGoldJobPanel";
+import {
+  customerGoldExceptions,
+  customerGoldReconciliation,
+  customerGoldStatement,
+  customerJewelleryAwaitingDelivery,
+  jobWiseCustomerGold,
+  karigarWiseCustomerGold,
+} from "@/lib/jewellery/customerGoldReports";
 
 export const metadata: Metadata = {
   title: "Jewellery Jobs · ZYNORALUXE",
@@ -60,9 +70,10 @@ type SearchParams = {
   karigarId?: string;
   custodyOp?: string;
   custodyJobId?: string;
+  customerId?: string;
 };
 
-const TABS = ["jobs", "karigar", "metal", "finished"] as const;
+const TABS = ["jobs", "karigar", "customer-gold", "metal", "finished"] as const;
 type Tab = (typeof TABS)[number];
 
 function TabLink({ tab, label, active }: { tab: Tab; label: string; active: boolean }) {
@@ -98,6 +109,7 @@ export default async function JewelleryJobsPage({ searchParams }: { searchParams
       <nav aria-label="Jewellery sections" className="mb-6 flex flex-wrap gap-1 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1.5">
         <TabLink tab="jobs" label="Jewellery Jobs" active={tab === "jobs"} />
         <TabLink tab="karigar" label="Karigar Metal" active={tab === "karigar"} />
+        <TabLink tab="customer-gold" label="Customer Gold" active={tab === "customer-gold"} />
         <TabLink tab="metal" label="Metal Stock" active={tab === "metal"} />
         <TabLink tab="finished" label="Finished Stock" active={tab === "finished"} />
       </nav>
@@ -119,6 +131,7 @@ export default async function JewelleryJobsPage({ searchParams }: { searchParams
           jobId={params.custodyJobId ?? null}
         />
       ) : null}
+      {tab === "customer-gold" ? <CustomerGoldTabContent customerId={params.customerId ?? ""} isOwner={isOwner} /> : null}
       {tab === "metal" ? <MetalTabContent search={params.metalSearch ?? ""} isOwner={isOwner} /> : null}
       {tab === "finished" ? (
         <FinishedTabContent
@@ -167,7 +180,7 @@ async function JobsTabContent({
     if (!detail) {
       return <p className="text-sm text-zinc-500 dark:text-zinc-400">Job not found.</p>;
     }
-    const [availableDiamondsRaw, packetRows, jobPacketLines, chargePanels, transferPanel, custodySources] = await Promise.all([
+    const [availableDiamondsRaw, packetRows, jobPacketLines, chargePanels, transferPanel, custodySources, customerGold] = await Promise.all([
       listPolishedDiamonds({ status: "AVAILABLE" }),
       listPolishedPackets(),
       listJobPacketLines(detail.id),
@@ -177,6 +190,8 @@ async function JobsTabContent({
       // The job's own Karigar's unallocated metal, as weights only (no cost,
       // rate or value): Owner and Staff both receive against it.
       listReceiptCustodySources(prisma, detail.id),
+      // Customer-owned gold: weights for everyone; money only for the Owner.
+      getJobCustomerGoldPanel(prisma, detail.id, { includeValues: isOwner }),
     ]);
     const addedLaterByReceipt = new Map((chargePanels ?? []).map((p) => [p.receiptId, p.addedLaterTotal]));
     // Packet quantities only — no packet cost ever reaches these props.
@@ -345,6 +360,8 @@ async function JobsTabContent({
         chargePanels={chargePanels}
         transferPanel={transferPanel}
         custodySources={custodySources}
+        customerGoldSources={customerGold?.receiveSources ?? []}
+        customerGold={customerGold?.panel ?? null}
       />
     );
   }
@@ -516,6 +533,45 @@ async function KarigarTabContent({ karigarId, isOwner, op, jobId }: { karigarId:
         </div>
       ) : null}
     </div>
+  );
+}
+
+// Customer-owned gold: weights for everyone; declared values, approved
+// purchase values, Company cost and bills only in an Owner's payload
+// (customerGoldStatement / customerJewelleryAwaitingDelivery includeValues).
+async function CustomerGoldTabContent({ customerId, isOwner }: { customerId: string; isOwner: boolean }) {
+  const [customers, purities, karigars, karigarWise, jobWise, awaiting, exceptions, reconciliation] = await Promise.all([
+    prisma.party.findMany({ where: { type: "CUSTOMER", isActive: true }, orderBy: { name: "asc" } }),
+    listMetalPurities(),
+    prisma.party.findMany({ where: { type: "KARIGAR", isActive: true }, orderBy: { name: "asc" } }),
+    karigarWiseCustomerGold(prisma),
+    jobWiseCustomerGold(prisma),
+    customerJewelleryAwaitingDelivery(prisma, { includeValues: isOwner }),
+    customerGoldExceptions(prisma),
+    customerGoldReconciliation(prisma),
+  ]);
+  const selected = customers.find((c) => c.id === customerId) ?? null;
+  const [statement, jobs] = selected
+    ? await Promise.all([
+        customerGoldStatement(prisma, selected.id, { includeValues: isOwner }),
+        prisma.jewelleryJob.findMany({
+          where: { customerId: selected.id, status: { in: ["DRAFT", "MATERIALS_ISSUED", "IN_PROGRESS", "PARTIALLY_RECEIVED", "NEEDS_CORRECTION"] } },
+          include: { karigar: true },
+          orderBy: { jobCode: "asc" },
+        }),
+      ])
+    : [null, []];
+  return (
+    <CustomerGoldTab
+      isOwner={isOwner}
+      customers={customers.map((c) => ({ id: c.id, name: c.name }))}
+      selectedCustomerId={selected?.id ?? ""}
+      statement={statement}
+      purities={purities.filter((p) => p.metalType !== "ALLOY").map((p) => ({ id: p.id, metalType: p.metalType, displayName: p.displayName, finenessPercent: String(p.finenessPercent) }))}
+      karigars={karigars.map((k) => ({ id: k.id, name: k.name }))}
+      customerJobs={jobs.map((j) => ({ id: j.id, jobCode: j.jobCode, designName: j.designName, karigarName: j.karigar.name, status: j.status }))}
+      reports={{ karigarWise, jobWise, awaiting, exceptions, totals: reconciliation.totals }}
+    />
   );
 }
 

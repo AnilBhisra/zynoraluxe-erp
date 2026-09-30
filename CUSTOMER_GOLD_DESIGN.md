@@ -157,3 +157,49 @@ column type or constraint changes; no backfill.
   Customer-gold entries are part of the receipt.
 * A purchase/exchange is corrected by an Owner correction, not reversed.
 * "Add missing charges" and cost override are refused on Customer-owned pieces.
+* The receipt form's Customer-gold mode skips the browser-side reconciliation
+  check and relies on the server preview (which is mandatory before saving).
+* Mixed jobs need the Customer's share of the finished fine gold entered by
+  hand; it is never guessed.
+* An intake photo uses the existing jewellery storage ("jewellery-finished"
+  category); with storage unconfigured the photo is simply unavailable.
+* Voucher types CUSTOMER_JEWELLERY_BILL / CUSTOMER_JEWELLERY_DELIVERY are
+  Owner-only in the voucher list.
+
+## 6. User interface
+
+* Jewellery Jobs → **Customer Gold** tab: Customer picker; intake with the two
+  required choices; movements (issue/return/allocate/release/return to
+  Customer/scrap return) with preview + confirm; purchase from the safe
+  balance; balances per pool; statement with newest-first reversal (Owner);
+  pieces, purchases, bills, deliveries; all-Customer reconciliation,
+  Karigar-wise, job-wise, awaiting delivery and exceptions.
+* Printable pages: `/customer-gold/receipt/[id]` (acknowledgment) and
+  `/customer-gold/statement/[customerId]`.
+* Job page: gold source panel (Customer / Company via Karigar Metal /
+  historical direct / combination), Owner mix approval, Customer pieces, bill
+  (Owner) and delivery (Owner or Staff) with reversals (Owner).
+* Receive Finished Jewellery: "Gold source" selector with a Customer-owned
+  mode — Customer returns/scrap (and Owner-only authorised loss), Customer
+  share on mixed jobs, a mandatory stale-checked preview.
+* Every money figure is read from the database only for the Owner.
+
+## 7. Release plan (data-preserving; not executed)
+
+1. Preflight: branch ancestry on origin/main, clean tree, current production
+   commit and public IP re-checked, read-only production checks.
+2. Maintenance ON (established firewall rule), fresh `pg_dump` backup,
+   restore-test, fingerprint.
+3. `prisma migrate deploy` of the two additive migrations **before** the code
+   (`20261005090000_customer_gold`, `20261005090100_customer_gold_voucher_types`).
+   Verify 27 migrations, account 1340 present, `scripts/metalLedgerReconcile.sql`
+   returns **five** lines (1300, 1310, 1320, 1330, 1340) all ₹0.00, and the
+   pre-existing tables' fingerprint (ignoring only the new columns / 1340 row /
+   new tables) is identical.
+4. Fast-forward push; wait for Vercel Production Ready at the SHA.
+5. Owner/Staff read-only checks (Customer Gold tab opens empty, jobs 000001 /
+   000002 unchanged, Staff sees no money); no test postings on real data.
+6. Fingerprint diff + reconciliation; maintenance OFF; confirm public access.
+7. Rollback: the migrations are additive and unused by the old code, so a code
+   rollback needs no schema rollback; restore the backup only if data was
+   damaged.
