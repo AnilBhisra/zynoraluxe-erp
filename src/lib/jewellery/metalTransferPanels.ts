@@ -40,7 +40,7 @@ async function reverseBlockReason(destinationJobId: string, metalType: string, p
   const destination = await prisma.jewelleryJob.findUnique({ where: { id: destinationJobId } });
   if (!destination) return "Destination job not found.";
   if (destination.status === "CANCELLED") return `${destination.jobCode} has been cancelled.`;
-  const receiptCount = await prisma.jewelleryReceipt.count({ where: { jobId: destination.id } });
+  const receiptCount = await prisma.jewelleryReceipt.count({ where: { jobId: destination.id, reversedAt: null } });
   if (receiptCount > 0) return `${destination.jobCode} has already received a receipt since this transfer.`;
   const onward = await prisma.jewelleryMetalTransfer.findFirst({
     where: { sourceJobId: destination.id, metalType: metalType as never, purityId, correction: { state: "POSTED" } },
@@ -79,7 +79,7 @@ export async function getMetalTransferPanel(jobId: string): Promise<MetalTransfe
         correction: { select: { correctionCode: true, state: true, reason: true, postedAt: true, reversedBy: { select: { correctionCode: true } } } },
       },
     }),
-    prisma.jewelleryReceipt.count({ where: { jobId } }),
+    prisma.jewelleryReceipt.count({ where: { jobId, reversedAt: null } }),
     assessJobReconciliation(prisma, jobId),
   ]);
 

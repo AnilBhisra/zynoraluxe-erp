@@ -320,6 +320,9 @@ export function createFakeJewelleryTx() {
       },
     },
     jewelleryReceipt: {
+      // Receipts are never reversed in these unit fakes (reversal is proven on the real database).
+      findMany: async ({ where }: { where: { jobId?: string; reversedAt?: unknown } }) =>
+        [...jewelleryReceipts.values()].filter((r) => (!where.jobId || r.jobId === where.jobId) && (where.reversedAt === undefined || (r.reversedAt ?? null) !== null)),
       create: async ({ data }: { data: Row }) => {
         const row = { id: nextId("jrec"), ...data };
         jewelleryReceipts.set(row.id as string, row);

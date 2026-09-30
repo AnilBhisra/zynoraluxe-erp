@@ -213,7 +213,25 @@ export type EntryWrite = {
   reversalOfEntryId?: string | null;
   idempotencyKey?: string | null;
   createdByUserId: string;
+  /**
+   * A multi-entry reversal writes all its mirror entries first and proves the
+   * pool non-negative once, on the final state (assertPoolNonNegative), so an
+   * intermediate step can never refuse a reversal whose end state is sound.
+   */
+  deferBalanceCheck?: boolean;
 };
+
+/** Refuses (throws) if any place of the pool is negative. */
+export async function assertPoolNonNegative(tx: Tx, key: PoolKey) {
+  const pool = await loadPoolInTx(tx, key);
+  const negative = pool ? negativePlaces(pool) : [];
+  if (negative.length > 0) {
+    const n = negative[0];
+    throw new CustomerGoldError(
+      `Not enough Customer gold ${LOCATION_LABEL[n.location].toLowerCase()} for this — it would go to ${n.fine.toFixed(3)} g fine. Nothing was saved.`
+    );
+  }
+}
 
 /**
  * Writes one ledger entry and proves the pool stays non-negative at every
@@ -258,14 +276,7 @@ export async function writeCustomerGoldEntry(tx: Tx, w: EntryWrite) {
       createdByUserId: w.createdByUserId,
     },
   });
-  const pool = await loadPoolInTx(tx, w.pool);
-  const negative = pool ? negativePlaces(pool) : [];
-  if (negative.length > 0) {
-    const n = negative[0];
-    throw new CustomerGoldError(
-      `Not enough Customer gold ${LOCATION_LABEL[n.location].toLowerCase()} for this — it would go to ${n.fine.toFixed(3)} g fine. Nothing was saved.`
-    );
-  }
+  if (!w.deferBalanceCheck) await assertPoolNonNegative(tx, w.pool);
   return entry;
 }
 

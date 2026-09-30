@@ -149,15 +149,23 @@ export async function planOpeningStockRevaluation(
     throw new CorrectionError("The corrected value is the same as the saved value.");
   }
 
-  const ledger = await tx.metalStockMovement.findMany({
+  const allLedger = await tx.metalStockMovement.findMany({
     where: { metalType: movement.metalType, purityId: movement.purityId },
     orderBy: { createdAt: "asc" },
   });
 
-  const jobIds = [...new Set(ledger.map((m) => m.jewelleryJobId).filter((id): id is string => id !== null))];
+  const jobIds = [...new Set(allLedger.map((m) => m.jewelleryJobId).filter((id): id is string => id !== null))];
+  // A receipt reversed by the Owner (Customer Gold) never happened for any
+  // replay: its movements and pieces are left out, exactly as its reversal
+  // restored the job to its state before it.
+  const reversedReceipts = jobIds.length
+    ? await tx.jewelleryReceipt.findMany({ where: { jobId: { in: jobIds }, reversedAt: { not: null } }, select: { jobId: true, receiptCode: true } })
+    : [];
+  const reversedKey = new Set(reversedReceipts.map((r) => `${r.jobId}|${r.receiptCode}`));
+  const ledger = allLedger.filter((m) => !(m.jewelleryJobId && reversedKey.has(`${m.jewelleryJobId}|${m.sourceDocument}`)));
   const receipts = jobIds.length
     ? await tx.jewelleryReceipt.findMany({
-        where: { jobId: { in: jobIds } },
+        where: { jobId: { in: jobIds }, reversedAt: null },
         orderBy: { createdAt: "asc" },
         include: { job: { select: { id: true, status: true } }, outputs: true },
       })

@@ -144,7 +144,7 @@ async function assessDestination(
       reason: `${job.jobCode} is ${job.status.replace(/_/g, " ").toLowerCase()} — a destination must still be Draft, Materials Issued or In Progress (nothing received yet).`,
     };
   }
-  const receiptCount = await tx.jewelleryReceipt.count({ where: { jobId: job.id } });
+  const receiptCount = await tx.jewelleryReceipt.count({ where: { jobId: job.id, reversedAt: null } });
   if (receiptCount > 0) {
     return { ok: false, reason: `${job.jobCode} has already received a receipt, so it can no longer take a transfer-in of unresolved metal.` };
   }
@@ -544,7 +544,7 @@ export async function reverseJobMetalTransfer(
   if (destination.status === "CANCELLED") {
     throw new CorrectionError(`${destination.jobCode} has been cancelled — this transfer can no longer be reversed cleanly.`);
   }
-  const receiptCount = await tx.jewelleryReceipt.count({ where: { jobId: destination.id } });
+  const receiptCount = await tx.jewelleryReceipt.count({ where: { jobId: destination.id, reversedAt: null } });
   if (receiptCount > 0) {
     throw new CorrectionError(
       `${destination.jobCode} has already received a receipt since this transfer — the metal has been consumed and this can no longer be reversed.`

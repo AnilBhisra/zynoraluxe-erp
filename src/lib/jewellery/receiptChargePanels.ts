@@ -46,7 +46,7 @@ function amountsOf(source: Record<ChargeKey, Decimal | string | number>): Serial
  */
 export async function getReceiptChargePanels(jobId: string): Promise<ReceiptChargePanel[]> {
   const receipts = await prisma.jewelleryReceipt.findMany({
-    where: { jobId },
+    where: { jobId, reversedAt: null },
     orderBy: { createdAt: "asc" },
     include: {
       chargeCorrections: {

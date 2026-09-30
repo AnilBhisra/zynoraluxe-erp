@@ -631,6 +631,16 @@ export type CustomerGoldReceiptPreview = {
   onJobAfter: { gross: string; fine: string };
   completesJob: boolean;
   mixed: boolean;
+  /** Mixed jobs (Owner only): the Company gold side, reconciled separately. costMoved is null for Staff. */
+  company: {
+    pendingBefore: string;
+    finishedFine: string;
+    returnedFine: string;
+    scrapFine: string;
+    processLossFine: string;
+    pendingAfter: string;
+    costMoved: string | null;
+  };
   fingerprint: string;
 };
 
@@ -647,6 +657,7 @@ export async function previewCustomerGoldReceiptAction(
     returnedMetalLines: readJsonArray(formData, "returnedMetalLinesJson"),
     scrapMetalLines: readJsonArray(formData, "scrapMetalLinesJson"),
     karigarAddedFineWeight: formData.get("karigarAddedFineWeight") || "0",
+    karigarAddedCost: formData.get("karigarAddedCost") || "0",
     markJobComplete: formData.get("markJobComplete") || "false",
   });
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
@@ -657,9 +668,15 @@ export async function previewCustomerGoldReceiptAction(
       jobId: parsed.data.jobId,
       outputs: parsed.data.outputs,
       karigarAddedFineWeight: parsed.data.karigarAddedFineWeight,
+      karigarAddedCost: parsed.data.karigarAddedCost,
+      returnedMetalLines: parsed.data.returnedMetalLines,
+      scrapMetalLines: parsed.data.scrapMetalLines,
       markJobComplete: parsed.data.markJobComplete,
       customerGoldSource: readCustomerGoldPart(formData, purityId),
     });
+    if (plan.mixed && !isOwner) {
+      return { error: "This job holds both Customer and Company gold. Only the Owner can record a mixed receipt and decide the Customer's share." };
+    }
     const w = (p: { gross: { toFixed: (n: number) => string }; fine: { toFixed: (n: number) => string } }) => ({ gross: p.gross.toFixed(3), fine: p.fine.toFixed(3) });
     return {
       preview: {
@@ -690,6 +707,15 @@ export async function previewCustomerGoldReceiptAction(
         onJobAfter: w(plan.onJobAfter),
         completesJob: plan.completesJob,
         mixed: plan.mixed,
+        company: {
+          pendingBefore: plan.company.pendingBefore.toFixed(3),
+          finishedFine: plan.company.finishedFine.toFixed(3),
+          returnedFine: plan.company.returnedFine.toFixed(3),
+          scrapFine: plan.company.scrapFine.toFixed(3),
+          processLossFine: plan.company.processLossFine.toFixed(3),
+          pendingAfter: plan.company.pendingAfter.toFixed(3),
+          costMoved: isOwner ? plan.company.costMoved.toFixed(2) : null,
+        },
         fingerprint: customerGoldJobReceiptFingerprint(plan),
       },
     };

@@ -33,7 +33,9 @@ import {
   type CustomerJewelleryBillInput,
 } from "@/lib/jewellery/customerGoldCommercial";
 import { CustomerGoldError, ENTRY_KIND_LABEL } from "@/lib/jewellery/customerGoldLedger";
+import { planCustomerGoldReceiptReversal, reverseCustomerGoldJobReceipt, type ReceiptReversalPlan } from "@/lib/jewellery/customerGoldReceiptReversal";
 import { PostingError } from "@/lib/jewellery/posting";
+import { deleteJewelleryAsset } from "@/lib/storage/jewelleryMedia";
 import { CorrectionError } from "@/lib/corrections/types";
 
 /**
@@ -482,4 +484,56 @@ export async function reverseCustomerJewelleryDeliveryAction(_prev: CustomerGold
   } catch (error) {
     return { error: failure("delivery reversal", error) };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Customer Gold jewellery receipt reversal (Owner) — CUSTOMER_GOLD_DESIGN.md §2.6
+// ---------------------------------------------------------------------------
+
+export async function previewCustomerGoldReceiptReversalAction(_prev: { error?: string; plan?: ReceiptReversalPlan } | undefined, fd: FormData) {
+  await requireOwner();
+  try {
+    return { plan: await planCustomerGoldReceiptReversal(prisma, str(fd, "receiptId")) };
+  } catch (error) {
+    return { error: failure("receipt reversal preview", error) };
+  }
+}
+
+export async function reverseCustomerGoldReceiptAction(_prev: CustomerGoldFormState, fd: FormData): Promise<CustomerGoldFormState> {
+  const user = await requireOwner();
+  const idempotencyKey = str(fd, "idempotencyKey");
+  const fy = await getCompanyFySettings();
+  try {
+    const r = await prisma.$transaction(
+      (tx) => reverseCustomerGoldJobReceipt(tx, { receiptId: str(fd, "receiptId"), reason: str(fd, "reason"), idempotencyKey, actor: { id: user.id, role: user.role }, ...fy }),
+      TX
+    );
+    revalidateAll();
+    return { success: true, code: r.receipt.receiptCode, replayed: r.replayed };
+  } catch (error) {
+    if (isIdempotencyConflict(error)) {
+      const existing = await prisma.jewelleryReceipt.findUnique({ where: { reversalIdempotencyKey: idempotencyKey } });
+      if (existing) return { success: true, code: existing.receiptCode, replayed: true };
+    }
+    return { error: failure("receipt reversal", error) };
+  }
+}
+
+/**
+ * Discards a photo uploaded for a Customer gold intake that was then abandoned
+ * or failed (Owner only). Refuses any asset a saved record already points at,
+ * so this can never remove a photo that belongs to real data.
+ */
+export async function discardCustomerGoldPhotoAction(assetId: string): Promise<{ discarded: boolean }> {
+  await requireOwner();
+  const id = typeof assetId === "string" ? assetId.trim() : "";
+  if (!id) return { discarded: false };
+  const [cg, pieces, jobs, sheets] = await Promise.all([
+    prisma.customerGoldReceipt.count({ where: { photoAssetId: id } }),
+    prisma.finishedJewellery.count({ where: { photoAssetId: id } }),
+    prisma.jewelleryJob.count({ where: { designImageAssetId: id } }),
+    prisma.costSheet.count({ where: { designImageAssetId: id } }),
+  ]);
+  if (cg + pieces + jobs + sheets > 0) return { discarded: false };
+  return { discarded: await deleteJewelleryAsset(id).catch(() => false) };
 }

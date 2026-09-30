@@ -270,7 +270,7 @@ export async function planCustomerJewelleryBill(tx: Tx, input: CustomerJewellery
   const job = await tx.jewelleryJob.findUnique({ where: { id: input.jobId }, include: { customer: true } });
   if (!job) throw new CustomerGoldError("Job not found.");
   if (!job.customerId || !job.customer) throw new CustomerGoldError(`${job.jobCode} has no Customer to bill.`);
-  const customerPieces = await tx.finishedJewellery.count({ where: { jobId: job.id, ownership: "CUSTOMER" } });
+  const customerPieces = await tx.finishedJewellery.count({ where: { jobId: job.id, ownership: "CUSTOMER", status: { not: "RECEIPT_REVERSED" } } });
   if (customerPieces === 0) throw new CustomerGoldError(`${job.jobCode} has no Customer-owned jewellery to bill yet. (Company-owned pieces are sold through Finished Stock.)`);
   const charges = [input.makingCharge, input.diamondCharge, input.materialCharge, input.otherCharge].map(money);
   if (charges.some((c) => c.isNegative())) throw new CustomerGoldError("Charges cannot be negative.");

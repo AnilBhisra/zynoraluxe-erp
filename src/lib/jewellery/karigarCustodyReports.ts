@@ -141,7 +141,7 @@ export async function getKarigarMetalAccount(karigarId: string, options: { inclu
   const karigar = await tx.party.findUniqueOrThrow({ where: { id: karigarId } });
   const [balances, allJobs, entries] = await Promise.all([
     listCustodyBalancesInTx(tx, karigarId),
-    tx.jewelleryJob.findMany({ where: { karigarId }, orderBy: { createdAt: "desc" }, include: { receipts: true } }),
+    tx.jewelleryJob.findMany({ where: { karigarId }, orderBy: { createdAt: "desc" }, include: { receipts: { where: { reversedAt: null } } } }),
     tx.karigarMetalCustodyEntry.findMany({
       where: { karigarId },
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],

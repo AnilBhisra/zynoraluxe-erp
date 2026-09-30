@@ -81,6 +81,9 @@ type PieceRow = {
 export async function checkPiecesUntouched(tx: Tx, pieces: PieceRow[], verb: "added" | "reversed"): Promise<ReceiptChargeEligibility> {
   const action = verb === "added" ? "Charges can only be added" : "This correction can only be reversed";
   for (const p of pieces) {
+    if (p.status === "RECEIPT_REVERSED") {
+      return { ok: false, reason: `${p.finishedCode} belongs to a receipt the Owner reversed — it no longer exists.` };
+    }
     if (p.status === "CUSTOMER_AWAITING_DELIVERY" || p.status === "DELIVERED_TO_CUSTOMER") {
       return { ok: false, reason: `${p.finishedCode} is Customer-owned jewellery (made from the Customer's own gold). It is delivered and billed to the Customer from its job — never sold, adjusted or re-costed as Company stock.` };
     }
@@ -139,8 +142,9 @@ async function loadPieces(tx: Tx, where: Prisma.FinishedJewelleryWhereInput): Pr
 
 /** Read-only: may charges be added to this receipt right now? (UI + preview.) */
 export async function assessReceiptForCharges(tx: Tx, receiptId: string): Promise<ReceiptChargeEligibility> {
-  const receipt = await tx.jewelleryReceipt.findUnique({ where: { id: receiptId }, select: { id: true, job: { select: { status: true } } } });
+  const receipt = await tx.jewelleryReceipt.findUnique({ where: { id: receiptId }, select: { id: true, reversedAt: true, job: { select: { status: true } } } });
   if (!receipt) return { ok: false, reason: "Receipt not found." };
+  if (receipt.reversedAt) return { ok: false, reason: "This receipt was reversed by the Owner." };
   if (receipt.job.status === "CANCELLED") return { ok: false, reason: "This job was cancelled." };
   const pieces = await loadPieces(tx, { receiptId });
   if (pieces.length === 0) {
@@ -195,6 +199,7 @@ export async function planReceiptCharges(
     include: { job: { select: { id: true, jobCode: true, status: true, karigarId: true, totalLabourCharge: true, karigar: { select: { name: true } } } } },
   });
   if (!receipt) throw new CorrectionError("Receipt not found.");
+  if (receipt.reversedAt) throw new CorrectionError("This receipt was reversed by the Owner, so charges cannot be added to it.");
   if (receipt.job.status === "CANCELLED") throw new CorrectionError("This job was cancelled, so charges cannot be added to it.");
 
   const pieces = await loadPieces(tx, { receiptId: receipt.id });

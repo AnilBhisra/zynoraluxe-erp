@@ -19,6 +19,7 @@ import {
 } from "@/lib/jewellery/customerGoldLedger";
 import { computeOutputMetal, formatThousandths } from "@/lib/jewellery/metalMath";
 import { allocateWeightProportionally, declareCustodyAware, pendingFineWeightOf, receiveFinishedJewellery } from "@/lib/jewellery/posting";
+import { jobStateOf, type ReceiptReversalSnapshot } from "@/lib/jewellery/customerGoldReceiptReversal";
 
 /**
  * Receiving finished jewellery made from a Customer's own gold
@@ -83,6 +84,23 @@ export type CustomerGoldJobReceiptPlan = {
   onJobAfter: WeightPair;
   completesJob: boolean;
   mixed: boolean;
+  /**
+   * The Company side of the same receipt, computed with exactly the rules
+   * receiveFinishedJewellery posts with. On an ordinary Customer-gold job it is
+   * all zero; on a mixed job it proves both sources reconcile separately.
+   */
+  company: {
+    pendingBefore: Decimal;
+    karigarAdded: Decimal;
+    finishedFine: Decimal;
+    returnedFine: Decimal;
+    scrapFine: Decimal;
+    /** Recognised only when the job is completed; otherwise it stays pending. */
+    processLossFine: Decimal;
+    pendingAfter: Decimal;
+    /** WIP cost this receipt moves for the Company gold (Owner only on screen). */
+    costMoved: Decimal;
+  };
 };
 
 const sub = (a: WeightPair, b: WeightPair): WeightPair => ({ gross: round3(a.gross.minus(b.gross)), fine: round3(a.fine.minus(b.fine)) });
@@ -98,7 +116,8 @@ function take(place: WeightPair, fine: Decimal): WeightPair {
 
 export async function planCustomerGoldJobReceipt(
   tx: Tx,
-  input: Pick<ReceiptInput, "jobId" | "outputs" | "karigarAddedFineWeight" | "markJobComplete"> & { customerGoldSource: CustomerGoldJobReceiptPart }
+  input: Pick<ReceiptInput, "jobId" | "outputs" | "karigarAddedFineWeight" | "markJobComplete"> &
+    Partial<Pick<ReceiptInput, "returnedMetalLines" | "scrapMetalLines" | "karigarAddedCost">> & { customerGoldSource: CustomerGoldJobReceiptPart }
 ): Promise<CustomerGoldJobReceiptPlan> {
   const job = await tx.jewelleryJob.findUnique({ where: { id: input.jobId }, include: { customer: true, karigar: true } });
   if (!job) throw new CustomerGoldError("Job not found.");
@@ -180,6 +199,31 @@ export async function planCustomerGoldJobReceipt(
       `Completing ${job.jobCode} would leave ${leftFine.toFixed(3)} g fine of ${job.customer.name}'s gold on the job. Return it, record it as scrap, or record it as authorised loss — it is never written off automatically.`
     );
   }
+  // The Company side, exactly as receiveFinishedJewellery will post it.
+  const issueLines = await tx.jewelleryMetalIssueLine.findMany({ where: { jobId: job.id, metalType: { not: "ALLOY" } } });
+  const companyFineOf = (lines: { purityId: string; grossWeight: DecimalInput }[] | undefined) =>
+    round3(
+      (lines ?? []).reduce((sum, l) => {
+        const line = issueLines.find((x) => x.purityId === l.purityId);
+        return line ? sum.plus(round3(d3(l.grossWeight).times(line.finenessPercentSnapshot).dividedBy(100))) : sum;
+      }, ZERO)
+    );
+  const companyReturned = companyFineOf(input.returnedMetalLines);
+  const companyScrap = companyFineOf(input.scrapMetalLines);
+  const companyPendingBefore = pendingFineWeightOf(job);
+  const companyAvailable = round3(companyPendingBefore.plus(karigarAdded));
+  const companyResolved = round3(companyFine.plus(companyReturned).plus(companyScrap));
+  if (companyResolved.greaterThan(companyAvailable)) {
+    throw new CustomerGoldError(`The Company share (${companyResolved.toFixed(3)} g fine incl. Company returns/scrap) is more than the ${companyAvailable.toFixed(3)} g fine of Company gold on ${job.jobCode}.`);
+  }
+  const companyGap = round3(companyAvailable.minus(companyResolved));
+  const costPool = new Decimal(job.remainingWipCost).plus(new Decimal(String(input.karigarAddedCost ?? 0)));
+  const companyCostMoved = input.markJobComplete
+    ? costPool.toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
+    : companyResolved.greaterThan(0)
+      ? costPool.times(companyResolved).dividedBy(companyAvailable).toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
+      : ZERO;
+
   const onJobAfter: WeightPair = leftFine.isZero() ? NONE : { gross: round3(onJobWithAllocation.gross.times(leftFine).dividedBy(onJobWithAllocation.fine)), fine: leftFine };
 
   return {
@@ -209,6 +253,16 @@ export async function planCustomerGoldJobReceipt(
     onJobAfter,
     completesJob: Boolean(input.markJobComplete),
     mixed,
+    company: {
+      pendingBefore: companyPendingBefore,
+      karigarAdded,
+      finishedFine: companyFine,
+      returnedFine: companyReturned,
+      scrapFine: companyScrap,
+      processLossFine: input.markJobComplete ? companyGap : ZERO,
+      pendingAfter: input.markJobComplete ? ZERO : companyGap,
+      costMoved: companyCostMoved,
+    },
   };
 }
 
@@ -225,6 +279,7 @@ export function customerGoldJobReceiptFingerprint(plan: CustomerGoldJobReceiptPl
     fromKarigar: w(plan.fromKarigar),
     fromSafe: w(plan.fromSafe),
     complete: plan.completesJob,
+    company: [plan.company.pendingBefore.toFixed(3), plan.company.finishedFine.toFixed(3), plan.company.returnedFine.toFixed(3), plan.company.scrapFine.toFixed(3), plan.company.costMoved.toFixed(2)],
   });
 }
 
@@ -239,6 +294,9 @@ export type ReceiveWithCustomerGoldInput = ReceiptInput & {
 export async function receiveWithCustomerGold(tx: Tx, input: ReceiveWithCustomerGoldInput) {
   if (input.actor.role !== "OWNER" && input.actor.role !== "STAFF") throw new CustomerGoldError("You are not allowed to receive finished jewellery.");
   if (input.createdByUserId !== input.actor.id) throw new CustomerGoldError("Internal check failed: the receipt and the Customer gold entries must record the same person.");
+  if (input.actor.role !== "OWNER" && (await tx.jewelleryMetalIssueLine.count({ where: { jobId: input.jobId, metalType: { not: "ALLOY" } } })) > 0) {
+    throw new CustomerGoldError("This job holds both Customer and Company gold. Only the Owner can record a mixed receipt and decide the Customer's share.");
+  }
   if (d3(input.customerGoldSource.lossFine).greaterThan(0) && input.actor.role !== "OWNER") {
     throw new CustomerGoldError("Only the Owner can record authorised process loss of a Customer's gold.");
   }
@@ -262,10 +320,19 @@ export async function receiveWithCustomerGold(tx: Tx, input: ReceiveWithCustomer
   }
   const entryBase = { pool: plan.pool, entryDate: input.receiveDate, createdByUserId: input.actor.id };
 
+  // 0. What an Owner reversal must restore exactly (CUSTOMER_GOLD_DESIGN.md §2.6).
+  const jobBefore = await tx.jewelleryJob.findUniqueOrThrow({ where: { id: plan.jobId } });
+  const priorBefore = await tx.finishedJewellery.findMany({ where: { jobId: plan.jobId }, select: { id: true, otherMaterialCost: true, totalCost: true } });
+  const resolvedDiamondIds = input.diamondResolutions.map((r) => r.polishedDiamondId);
+  const diamondLines = resolvedDiamondIds.length
+    ? await tx.jewelleryDiamondIssueLine.findMany({ where: { jobId: plan.jobId, polishedDiamondId: { in: resolvedDiamondIds } }, include: { polishedDiamond: { select: { status: true } } } })
+    : [];
+  const allocationEntryIds: string[] = [];
+
   // 1. The shortfall onto the job: from the Customer's gold with this Karigar, then from the safe.
   const allocationReason = `Receipt-time allocation for ${plan.jobCode}`;
   if (plan.fromKarigar.fine.greaterThan(0)) {
-    await writeCustomerGoldEntry(tx, {
+    const e = await writeCustomerGoldEntry(tx, {
       ...entryBase,
       kind: "ALLOCATE_TO_JOB",
       from: { location: "KARIGAR", scopeId: plan.karigarId },
@@ -274,9 +341,10 @@ export async function receiveWithCustomerGold(tx: Tx, input: ReceiveWithCustomer
       fine: plan.fromKarigar.fine,
       reason: allocationReason,
     });
+    allocationEntryIds.push(e.id);
   }
   if (plan.fromSafe.fine.greaterThan(0)) {
-    await writeCustomerGoldEntry(tx, {
+    const e = await writeCustomerGoldEntry(tx, {
       ...entryBase,
       kind: "ALLOCATE_TO_JOB",
       from: { location: "SAFE", scopeId: null },
@@ -286,6 +354,7 @@ export async function receiveWithCustomerGold(tx: Tx, input: ReceiveWithCustomer
       reason: `${allocationReason} (given to ${plan.karigarName} at receipt)`,
       karigarId: plan.karigarId,
     });
+    allocationEntryIds.push(e.id);
   }
   const job = await tx.jewelleryJob.findUniqueOrThrow({ where: { id: plan.jobId } });
   if (job.status === "DRAFT") await tx.jewelleryJob.update({ where: { id: job.id }, data: { status: "MATERIALS_ISSUED" } });
@@ -347,5 +416,30 @@ export async function receiveWithCustomerGold(tx: Tx, input: ReceiveWithCustomer
   for (const [i, piece] of result.outputs.entries()) {
     if (!new Decimal(piece.customerGoldFineWeight).equals(plan.outputs[i].customerFine)) throw new CustomerGoldError("Internal check failed: piece Customer gold mismatch. Nothing was saved.");
   }
-  return { replayed: false as const, receipt: result.receipt, outputs: result.outputs, job: result.job, plan };
+
+  // 5. The reversal record, written with the receipt in the same transaction.
+  const priorAfter = new Map(
+    (await tx.finishedJewellery.findMany({ where: { id: { in: priorBefore.map((p) => p.id) } }, select: { id: true, otherMaterialCost: true, totalCost: true } })).map((p) => [p.id, p])
+  );
+  const money2 = (v: DecimalInput) => new Decimal(String(v)).toFixed(2);
+  const snapshot: ReceiptReversalSnapshot = {
+    version: 1,
+    pool: { customerId: plan.pool.customerId, metalType: plan.pool.metalType as MetalType, purityId: plan.pool.purityId, finenessPercent: plan.pool.finenessPercentSnapshot.toFixed(3) },
+    jobBefore: jobStateOf(jobBefore),
+    jobAfter: jobStateOf(result.job),
+    priorOutputs: priorBefore.map((p) => ({
+      id: p.id,
+      before: { otherMaterialCost: money2(p.otherMaterialCost), totalCost: money2(p.totalCost) },
+      after: { otherMaterialCost: money2(priorAfter.get(p.id)!.otherMaterialCost), totalCost: money2(priorAfter.get(p.id)!.totalCost) },
+    })),
+    allocationEntryIds,
+    diamonds: diamondLines.map((l) => ({
+      issueLineId: l.id,
+      polishedDiamondId: l.polishedDiamondId,
+      resolution: input.diamondResolutions.find((r) => r.polishedDiamondId === l.polishedDiamondId)!.resolution,
+      statusBefore: l.polishedDiamond.status,
+    })),
+  };
+  const receipt = await tx.jewelleryReceipt.update({ where: { id: result.receipt.id }, data: { reversalSnapshot: snapshot } });
+  return { replayed: false as const, receipt, outputs: result.outputs, job: result.job, plan };
 }

@@ -85,6 +85,7 @@ model User {
   jewelleryJobsCancelled     JewelleryJob[]               @relation("JewelleryJobCancelledBy")
   otherMaterialLinesCreated  JewelleryOtherMaterialLine[] @relation("OtherMaterialLineCreatedBy")
   jewelleryReceiptsCreated   JewelleryReceipt[]           @relation("JewelleryReceiptCreatedBy")
+  jewelleryReceiptsReversed  JewelleryReceipt[]           @relation("JewelleryReceiptReversedBy")
   finishedJewelleryCreated   FinishedJewellery[]          @relation("FinishedJewelleryCreatedBy")
 
   costingSettingsUpdated CostingSettings[]     @relation("CostingSettingsUpdatedBy")
@@ -442,9 +443,10 @@ model Voucher {
   diamondJobIssue     DiamondJob?
   polishedReceiptPost PolishedReceipt? @relation("PolishedReceiptPosting")
 
-  metalPurchase        MetalPurchase?
-  jewelleryJobIssue    JewelleryJob?
-  jewelleryReceiptPost JewelleryReceipt? @relation("JewelleryReceiptPosting")
+  metalPurchase            MetalPurchase?
+  jewelleryJobIssue        JewelleryJob?
+  jewelleryReceiptPost     JewelleryReceipt? @relation("JewelleryReceiptPosting")
+  jewelleryReceiptReversal JewelleryReceipt? @relation("JewelleryReceiptReversal")
 
   // Phase 8 — an opening metal stock movement's own voucher, and a posted
   // Owner correction's compensating voucher.
@@ -1052,6 +1054,8 @@ enum StockMovementType {
   JEWELLERY_RETURN_IN
   JEWELLERY_SET_OUT
   JEWELLERY_DAMAGED_LOSS_OUT
+  /// A reversed jewellery receipt put this diamond back with its job.
+  JEWELLERY_RECEIPT_REVERSAL_IN
 }
 
 // Immutable audit ledger. Never updated or deleted after insert — a
@@ -1772,6 +1776,19 @@ model JewelleryReceipt {
 
   createdAt DateTime @default(now())
 
+  /// Customer Gold receipts only: the job's state before and after this
+  /// receipt, captured atomically when it was posted, so an Owner reversal can
+  /// prove nothing changed since and restore exactly. Null on every other receipt.
+  reversalSnapshot       Json?
+  /// Owner reversal (the receipt itself is never edited or deleted otherwise).
+  reversedAt             DateTime?
+  reversedByUserId       String?
+  reversedBy             User?     @relation("JewelleryReceiptReversedBy", fields: [reversedByUserId], references: [id])
+  reversalReason         String?
+  reversalVoucherId      String?   @unique
+  reversalVoucher        Voucher?  @relation("JewelleryReceiptReversal", fields: [reversalVoucherId], references: [id])
+  reversalIdempotencyKey String?   @unique
+
   outputs             FinishedJewellery[]
   packetResolutions   JewelleryPacketResolution[]
   customerGoldEntries CustomerGoldEntry[]         @relation("CustomerGoldEntryReceipt")
@@ -1924,6 +1941,8 @@ enum FinishedJewelleryStockStatus {
   // back to AVAILABLE, since a sellable-returned piece is, from the
   // stock ledger's point of view, simply available again.
   RETURNED_DAMAGED
+  /// The receipt that produced this piece was reversed by the Owner; the piece no longer exists.
+  RECEIPT_REVERSED
 }
 
 enum FinishedJewelleryStockMovementType {
@@ -2997,7 +3016,9 @@ model JewelleryPacketResolution {
 
   reason String?
 
-  createdAt DateTime @default(now())
+  createdAt  DateTime  @default(now())
+  /// Set when the receipt that recorded this resolution was reversed by the Owner.
+  reversedAt DateTime?
 
   @@index([issueLineId])
   @@index([receiptId])

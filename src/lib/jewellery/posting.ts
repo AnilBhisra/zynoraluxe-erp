@@ -172,8 +172,10 @@ export async function getScrapMetalBalanceInTx(tx: Tx, metalType: MetalType, pur
  * alone can't catch "returning more 22K than this job ever received"
  * when the job also issued a different purity). */
 async function getJobPurityPendingFineWeightInTx(tx: Tx, jobId: string, purityId: string): Promise<Decimal> {
+  // A receipt the Owner reversed (Customer Gold) never happened for the job.
+  const reversed = await tx.jewelleryReceipt.findMany({ where: { jobId, reversedAt: { not: null } }, select: { receiptCode: true } });
   const movements = await tx.metalStockMovement.findMany({
-    where: { jewelleryJobId: jobId, purityId },
+    where: { jewelleryJobId: jobId, purityId, ...(reversed.length ? { sourceDocument: { notIn: reversed.map((r) => r.receiptCode) } } : {}) },
     select: { type: true, fineWeight: true },
   });
   // Metal reaching the job: its own issue, a transfer in from another job, or
@@ -882,7 +884,7 @@ export async function canStillIssueMaterials(
   if ((job.status !== "MATERIALS_ISSUED" && job.status !== "IN_PROGRESS") || job.wipVoucherId) return false;
   const [ownIssueLines, receipts, diamonds, packets, others] = await Promise.all([
     tx.jewelleryMetalIssueLine.count({ where: { jobId: job.id, sourceTransferId: null, sourceCustodyEntryId: null } }),
-    tx.jewelleryReceipt.count({ where: { jobId: job.id } }),
+    tx.jewelleryReceipt.count({ where: { jobId: job.id, reversedAt: null } }),
     tx.jewelleryDiamondIssueLine.count({ where: { jobId: job.id } }),
     tx.jewelleryPacketIssueLine.count({ where: { jobId: job.id } }),
     tx.jewelleryOtherMaterialLine.count({ where: { jobId: job.id } }),
@@ -1530,7 +1532,7 @@ export async function setJewelleryJobNeedsCorrection(tx: Tx, jobId: string, flag
  * `markJobComplete` semantics this fallback cannot reconstruct.
  */
 async function inferPreCorrectionStatus(tx: Tx, jobId: string): Promise<"PARTIALLY_RECEIVED" | "MATERIALS_ISSUED"> {
-  const receiptCount = await tx.jewelleryReceipt.count({ where: { jobId } });
+  const receiptCount = await tx.jewelleryReceipt.count({ where: { jobId, reversedAt: null } });
   return receiptCount > 0 ? "PARTIALLY_RECEIVED" : "MATERIALS_ISSUED";
 }
 
@@ -1560,7 +1562,7 @@ export async function recomputeInconsistentJobStatus(
       `${job.jobCode} is ${job.status.replace(/_/g, " ").toLowerCase()}, which is not one of the early statuses this repair can correct.`
     );
   }
-  const receiptCount = await tx.jewelleryReceipt.count({ where: { jobId: job.id } });
+  const receiptCount = await tx.jewelleryReceipt.count({ where: { jobId: job.id, reversedAt: null } });
   if (receiptCount === 0) {
     throw new PostingError(`${job.jobCode} has no receipt yet — its ${job.status.replace(/_/g, " ").toLowerCase()} status already matches its data.`);
   }

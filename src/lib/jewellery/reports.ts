@@ -190,7 +190,7 @@ export async function listJewelleryJobs(filters?: {
           ]
         : undefined,
     },
-    include: { karigar: true, customer: true, receipts: { select: { karigarAlloyCost: true } } },
+    include: { karigar: true, customer: true, receipts: { where: { reversedAt: null }, select: { karigarAlloyCost: true } } },
     orderBy: { issueDate: "desc" },
     take: 300,
   });
@@ -335,6 +335,9 @@ export type JewelleryJobDetail = JewelleryJobRow & {
     returnedAlloyGrossWeight: Decimal;
     alloyLossGrossWeight: Decimal;
     unabsorbedCost: Decimal;
+    reversalSnapshot: unknown;
+    reversedAt: Date | null;
+    reversalReason: string | null;
   }[];
   finishedOutputs: {
     id: string;
@@ -357,6 +360,7 @@ export type JewelleryJobDetail = JewelleryJobRow & {
      * purity — what the piece is carried at right now. Display only. */
     totalCostCurrent: CarryingAmount;
     qcStatus: QcStatus;
+    status: FinishedJewelleryStockStatus;
     photoAssetId: string | null;
   }[];
   timeline: {
@@ -444,7 +448,7 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
   ]);
   const carryingIssuedMetalCost = jobCarrying.get(job.id)?.issuedMetalCost ?? new Decimal(job.issuedMetalCost);
   const carryingRemainingWipCost = jobCarrying.get(job.id)?.remainingWipCost ?? new Decimal(job.remainingWipCost);
-  const karigarAlloyCost = sumKarigarAlloyCost(job.receipts);
+  const karigarAlloyCost = sumKarigarAlloyCost(job.receipts.filter((r) => !r.reversedAt));
   const storedCosts = jobManufacturingCost(job, karigarAlloyCost);
   const issuedCosts = isUnavailable(carryingIssuedMetalCost)
     ? {
@@ -598,6 +602,9 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
       returnedAlloyGrossWeight: round3(r.returnedAlloyGrossWeight),
       alloyLossGrossWeight: round3(r.alloyLossGrossWeight),
       unabsorbedCost: round2(r.unabsorbedCost),
+      reversalSnapshot: r.reversalSnapshot,
+      reversedAt: r.reversedAt,
+      reversalReason: r.reversalReason,
     })),
     finishedOutputs: job.finishedJewellery.map((f) => ({
       id: f.id,
@@ -615,6 +622,7 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
       totalCost: round2(f.totalCost),
       totalCostCurrent: finishedCarryingById.get(f.id)?.totalCost ?? round2(f.totalCost),
       qcStatus: f.qcStatus,
+      status: f.status,
       photoAssetId: f.photoAssetId,
     })),
     timeline,
