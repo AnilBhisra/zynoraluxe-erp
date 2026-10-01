@@ -313,8 +313,8 @@ export async function customerGoldStatement(tx: Tx, customerId: string, opts: { 
 }
 
 /** Customer gold each Karigar holds, per Customer (weights only). */
-export async function karigarWiseCustomerGold(tx: Tx) {
-  const pools = await listCustomerGoldPools(tx);
+export async function karigarWiseCustomerGold(tx: Tx, precomputedPools?: CustomerGoldPoolRow[] | Promise<CustomerGoldPoolRow[]>) {
+  const pools = (await precomputedPools) ?? (await listCustomerGoldPools(tx));
   return pools.flatMap((p) =>
     p.byKarigar.map((k) => ({ karigarId: k.karigarId, karigarName: k.karigarName, customerName: p.customerName, purityDisplayName: p.purityDisplayName, finenessPercent: p.finenessPercent, fine: k.fine, gross: k.gross }))
   ).sort((a, b) => a.karigarName.localeCompare(b.karigarName) || a.customerName.localeCompare(b.customerName));
@@ -359,10 +359,13 @@ export async function customerJewelleryAwaitingDelivery(tx: Tx, opts: { includeV
 }
 
 /** Things that need someone's attention (weights only). */
-export async function customerGoldExceptions(tx: Tx) {
+export async function customerGoldExceptions(
+  tx: Tx,
+  precomputed?: { pools: CustomerGoldPoolRow[] | Promise<CustomerGoldPoolRow[]>; jobs: Awaited<ReturnType<typeof jobWiseCustomerGold>> | ReturnType<typeof jobWiseCustomerGold> }
+) {
   const [pools, jobs, deliveredUnbilled] = await Promise.all([
-    listCustomerGoldPools(tx),
-    jobWiseCustomerGold(tx),
+    precomputed?.pools ?? listCustomerGoldPools(tx),
+    precomputed?.jobs ?? jobWiseCustomerGold(tx),
     tx.customerJewelleryDelivery.findMany({ where: { status: "POSTED", job: { customerJewelleryBills: { none: { status: "POSTED" } } } }, include: { job: true } }),
   ]);
   const out: { kind: string; detail: string }[] = [];
@@ -379,8 +382,8 @@ export async function customerGoldExceptions(tx: Tx) {
 }
 
 /** Global: every pool's received = its places; the Company ledger lines are reported alongside by the caller. */
-export async function customerGoldReconciliation(tx: Tx) {
-  const pools = await listCustomerGoldPools(tx);
+export async function customerGoldReconciliation(tx: Tx, precomputedPools?: CustomerGoldPoolRow[] | Promise<CustomerGoldPoolRow[]>) {
+  const pools = (await precomputedPools) ?? (await listCustomerGoldPools(tx));
   const total = (k: keyof CustomerGoldPoolRow) => f3(pools.reduce((s, p) => s.plus(new Decimal(p[k] as string)), ZERO));
   return {
     pools,

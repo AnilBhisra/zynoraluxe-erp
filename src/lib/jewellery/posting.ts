@@ -950,6 +950,38 @@ export async function canStillIssueMaterials(
   return fundedLines > 0;
 }
 
+/**
+ * canStillIssueMaterials for many jobs at once — the same rule, with one
+ * grouped count per table instead of six queries per job (the Karigar Metal
+ * account lists every job of a Karigar).
+ */
+export async function canStillIssueMaterialsForJobs(
+  tx: Tx,
+  jobs: { id: string; status: string; wipVoucherId: string | null }[]
+): Promise<Map<string, boolean>> {
+  const out = new Map<string, boolean>();
+  const candidates = jobs.filter((j) => j.status !== "DRAFT" && (j.status === "MATERIALS_ISSUED" || j.status === "IN_PROGRESS") && !j.wipVoucherId);
+  for (const j of jobs) if (!candidates.includes(j)) out.set(j.id, j.status === "DRAFT");
+  if (candidates.length === 0) return out;
+  const jobIds = candidates.map((j) => j.id);
+  const byJob = (rows: { jobId: string; _count: { _all: number } }[]) => new Map(rows.map((r) => [r.jobId, r._count._all]));
+  const [own, receipts, diamonds, packets, others, funded] = await Promise.all([
+    tx.jewelleryMetalIssueLine.groupBy({ by: ["jobId"], where: { jobId: { in: jobIds }, sourceTransferId: null, sourceCustodyEntryId: null }, _count: { _all: true } }),
+    tx.jewelleryReceipt.groupBy({ by: ["jobId"], where: { jobId: { in: jobIds }, reversedAt: null }, _count: { _all: true } }),
+    tx.jewelleryDiamondIssueLine.groupBy({ by: ["jobId"], where: { jobId: { in: jobIds } }, _count: { _all: true } }),
+    tx.jewelleryPacketIssueLine.groupBy({ by: ["jobId"], where: { jobId: { in: jobIds } }, _count: { _all: true } }),
+    tx.jewelleryOtherMaterialLine.groupBy({ by: ["jobId"], where: { jobId: { in: jobIds } }, _count: { _all: true } }),
+    tx.jewelleryMetalIssueLine.groupBy({ by: ["jobId"], where: { jobId: { in: jobIds } }, _count: { _all: true } }),
+  ]);
+  const maps = [own, receipts, diamonds, packets, others].map(byJob);
+  const fundedMap = byJob(funded);
+  for (const j of candidates) {
+    const blocking = maps.reduce((s, m) => s + (m.get(j.id) ?? 0), 0);
+    out.set(j.id, blocking === 0 && (fundedMap.get(j.id) ?? 0) > 0);
+  }
+  return out;
+}
+
 export async function issueMaterialsToJewelleryJob(
   tx: Tx,
   input: FyInput & {

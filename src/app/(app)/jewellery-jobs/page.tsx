@@ -42,6 +42,7 @@ import { getJobCustomerGoldPanel } from "@/lib/jewellery/customerGoldJobPanel";
 import {
   customerGoldExceptions,
   customerGoldReconciliation,
+  listCustomerGoldPools,
   customerGoldStatement,
   customerJewelleryAwaitingDelivery,
   jobWiseCustomerGold,
@@ -193,26 +194,45 @@ async function JobsTabContent({
   isOwner: boolean;
   initialShowForm?: boolean;
 }) {
-  const purities = await listMetalPurities();
+  // Independent reads start together instead of one after another.
+  const puritiesPromise = listMetalPurities();
 
   if (jobId) {
-    const detail = await getJewelleryJobDetail(jobId);
-    if (!detail) {
-      return <p className="text-sm text-zinc-500 dark:text-zinc-400">Job not found.</p>;
-    }
-    const [availableDiamondsRaw, packetRows, jobPacketLines, chargePanels, transferPanel, custodySources, customerGold] = await Promise.all([
+    // The panels need only the job id, so they load alongside the job itself
+    // (one parallel stage, not two). allSettled: an unknown id still answers
+    // "Job not found" rather than a panel's own error.
+    const settled = await Promise.allSettled([
+      getJewelleryJobDetail(jobId),
+      puritiesPromise,
       listPolishedDiamonds({ status: "AVAILABLE" }),
       listPolishedPackets(),
-      listJobPacketLines(detail.id),
+      listJobPacketLines(jobId),
       // Cost data: never fetched for Staff.
-      isOwner ? getReceiptChargePanels(detail.id) : Promise.resolve(null),
-      isOwner ? getMetalTransferPanel(detail.id) : Promise.resolve(null),
+      isOwner ? getReceiptChargePanels(jobId) : Promise.resolve(null),
+      isOwner ? getMetalTransferPanel(jobId) : Promise.resolve(null),
       // The job's own Karigar's unallocated metal, as weights only (no cost,
       // rate or value): Owner and Staff both receive against it.
-      listReceiptCustodySources(prisma, detail.id),
+      listReceiptCustodySources(prisma, jobId),
       // Customer-owned gold: weights for everyone; money only for the Owner.
-      getJobCustomerGoldPanel(prisma, detail.id, { includeValues: isOwner }),
-    ]);
+      getJobCustomerGoldPanel(prisma, jobId, { includeValues: isOwner }),
+    ] as const);
+    const detail = settled[0].status === "fulfilled" ? settled[0].value : null;
+    if (!detail) {
+      if (settled[0].status === "rejected") throw settled[0].reason;
+      return <p className="text-sm text-zinc-500 dark:text-zinc-400">Job not found.</p>;
+    }
+    const rejected = settled.find((s) => s.status === "rejected");
+    if (rejected && rejected.status === "rejected") throw rejected.reason;
+    const value = <T,>(s: PromiseSettledResult<T>) => (s as PromiseFulfilledResult<T>).value;
+    const purities = value(settled[1]);
+    const availableDiamondsRaw = value(settled[2]);
+    const packetRows = value(settled[3]);
+    const jobPacketLines = value(settled[4]);
+    const chargePanels = value(settled[5]);
+    const transferPanel = value(settled[6]);
+    const custodySources = value(settled[7]);
+    const customerGold = value(settled[8]);
+    const designImageUrl = await resolveJewelleryAssetUrl(detail.designImageAssetId);
     const addedLaterByReceipt = new Map((chargePanels ?? []).map((p) => [p.receiptId, p.addedLaterTotal]));
     // Packet quantities only — no packet cost ever reaches these props.
     const availablePackets: AvailablePacketOption[] = packetRows
@@ -259,7 +279,7 @@ async function JobsTabContent({
       karigarName: detail.karigarName,
       jewelleryType: detail.jewelleryType,
       designName: detail.designName,
-      designImageUrl: await resolveJewelleryAssetUrl(detail.designImageAssetId),
+      designImageUrl,
       issueDate: detail.issueDate.toISOString(),
       expectedDeliveryDate: detail.expectedDeliveryDate ? detail.expectedDeliveryDate.toISOString() : null,
       status: detail.status,
@@ -401,11 +421,12 @@ async function JobsTabContent({
             ? undefined
             : ["DRAFT", "MATERIALS_ISSUED"];
 
-  const [jobs, customers, karigars, karigarBalances] = await Promise.all([
+  const [jobs, customers, karigars, karigarBalances, purities] = await Promise.all([
     listJewelleryJobs({ status: statusList, search: search || undefined }),
     prisma.party.findMany({ where: { type: "CUSTOMER", isActive: true }, orderBy: { name: "asc" } }),
     prisma.party.findMany({ where: { type: "KARIGAR", isActive: true }, orderBy: { name: "asc" } }),
     getKarigarJewelleryMaterialBalances(),
+    puritiesPromise,
   ]);
 
   const serializedJobs: SerializedJewelleryJob[] = jobs.map((j) => ({
@@ -564,27 +585,35 @@ async function KarigarTabContent({ karigarId, isOwner, op, jobId }: { karigarId:
 // purchase values, Company cost and bills only in an Owner's payload
 // (customerGoldStatement / customerJewelleryAwaitingDelivery includeValues).
 async function CustomerGoldTabContent({ customerId, isOwner }: { customerId: string; isOwner: boolean }) {
-  const [customers, purities, karigars, karigarWise, jobWise, awaiting, exceptions, reconciliation] = await Promise.all([
-    prisma.party.findMany({ where: { type: "CUSTOMER", isActive: true }, orderBy: { name: "asc" } }),
-    listMetalPurities(),
-    prisma.party.findMany({ where: { type: "KARIGAR", isActive: true }, orderBy: { name: "asc" } }),
-    karigarWiseCustomerGold(prisma),
-    jobWiseCustomerGold(prisma),
-    customerJewelleryAwaitingDelivery(prisma, { includeValues: isOwner }),
-    customerGoldExceptions(prisma),
-    customerGoldReconciliation(prisma),
-  ]);
-  const selected = customers.find((c) => c.id === customerId) ?? null;
-  const [statement, jobs] = selected
-    ? await Promise.all([
-        customerGoldStatement(prisma, selected.id, { includeValues: isOwner }),
+  // Every report reads the same pools and job-wise totals: each is loaded once,
+  // shared as a promise, and everything runs in one parallel stage.
+  const poolsPromise = listCustomerGoldPools(prisma);
+  const jobWisePromise = jobWiseCustomerGold(prisma);
+  // The Customer in the URL: start their statement and open jobs now too; they
+  // are used only if that Customer is an active Customer (checked below).
+  const selectedPromise = customerId
+    ? Promise.all([
+        customerGoldStatement(prisma, customerId, { includeValues: isOwner }),
         prisma.jewelleryJob.findMany({
-          where: { customerId: selected.id, status: { in: ["DRAFT", "MATERIALS_ISSUED", "IN_PROGRESS", "PARTIALLY_RECEIVED", "NEEDS_CORRECTION"] } },
+          where: { customerId, status: { in: ["DRAFT", "MATERIALS_ISSUED", "IN_PROGRESS", "PARTIALLY_RECEIVED", "NEEDS_CORRECTION"] } },
           include: { karigar: true },
           orderBy: { jobCode: "asc" },
         }),
       ])
-    : [null, []];
+    : null;
+  const [customers, purities, karigars, jobWise, awaiting, karigarWise, exceptions, reconciliation] = await Promise.all([
+    prisma.party.findMany({ where: { type: "CUSTOMER", isActive: true }, orderBy: { name: "asc" } }),
+    listMetalPurities(),
+    prisma.party.findMany({ where: { type: "KARIGAR", isActive: true }, orderBy: { name: "asc" } }),
+    jobWisePromise,
+    customerJewelleryAwaitingDelivery(prisma, { includeValues: isOwner }),
+    karigarWiseCustomerGold(prisma, poolsPromise),
+    customerGoldExceptions(prisma, { pools: poolsPromise, jobs: jobWisePromise }),
+    customerGoldReconciliation(prisma, poolsPromise),
+  ]);
+  const selected = customers.find((c) => c.id === customerId) ?? null;
+  const fetched = selectedPromise ? await selectedPromise : null;
+  const [statement, jobs] = selected && fetched ? fetched : [null, []];
   return (
     // Keyed by Customer: switching Customer resets every open form (an unsaved
     // intake and its photo are discarded, never carried over to another Customer).
@@ -676,6 +705,8 @@ async function FinishedTabContent({
   // Owner-only cost/Costing fields are fetched from the database ONLY when
   // isOwner is true — never fetched-then-hidden. See the SECURITY BOUNDARY
   // comment on listFinishedJewelleryStock in src/lib/jewellery/reports.ts.
+  // The Owner-only sales list does not depend on the stock rows: start both together.
+  const salesPromise = isOwner ? listFinishedJewellerySalesForManagement(saleSearch || undefined) : Promise.resolve([]);
   const rows = await listFinishedJewelleryStock({
     search: search || undefined,
     status: (status || undefined) as FinishedJewelleryStockStatus | undefined,
@@ -710,7 +741,7 @@ async function FinishedTabContent({
 
   // Owner-only sale management (cancel/return) — never fetched for Staff.
   const sales: SerializedFinishedSale[] = isOwner
-    ? (await listFinishedJewellerySalesForManagement(saleSearch || undefined)).map((s) => ({
+    ? (await salesPromise).map((s) => ({
         id: s.id,
         saleCode: s.saleCode,
         saleDate: s.saleDate.toISOString(),

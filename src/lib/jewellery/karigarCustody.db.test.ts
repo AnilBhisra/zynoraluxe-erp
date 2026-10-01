@@ -825,3 +825,27 @@ describe("Karigar custody — revaluation and COGS count cost once", () => {
     await expectReconciled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Performance rewrite parity: the Karigar Metal account now decides reversal
+// blocks in memory (one DB check per balance) and batches "can still issue
+// materials" — every answer must be exactly what the per-row functions give.
+// ---------------------------------------------------------------------------
+describe("Karigar Metal account — batched reads give exactly the per-row answers", () => {
+  it("every statement row's reversal block and every job's can-issue flag match the single-row functions", async () => {
+    const { canStillIssueMaterials, canStillIssueMaterialsForJobs } = await import("@/lib/jewellery/posting");
+    for (const k of [karigarId, otherKarigarId]) {
+      const account = await getKarigarMetalAccount(k, { includeCost: true });
+      expect(account.statement.length).toBeGreaterThan(0);
+      for (const row of account.statement) {
+        if (row.isReversal || row.reversedByCode) continue;
+        const direct = await prisma.$transaction((tx) => custodyReversalBlock(tx, row.id), TX);
+        expect({ code: row.entryCode, block: row.reverseBlockedReason, canReverse: row.canReverse }).toEqual({ code: row.entryCode, block: direct, canReverse: direct === null });
+      }
+      const jobs = await prisma.jewelleryJob.findMany({ where: { karigarId: k } });
+      const batched = await prisma.$transaction((tx) => canStillIssueMaterialsForJobs(tx, jobs), TX);
+      for (const j of jobs) expect({ job: j.jobCode, can: batched.get(j.id) }).toEqual({ job: j.jobCode, can: await prisma.$transaction((tx) => canStillIssueMaterials(tx, j), TX) });
+      for (const row of account.jobs) expect(row.canIssueMaterials).toBe(batched.get(row.id));
+    }
+  }, 120_000);
+});

@@ -9,7 +9,7 @@ import { prisma } from "@/lib/db/prisma";
 import { round3 } from "@/lib/diamond/allocation";
 import { CARRYING_COST_UNAVAILABLE, carryingFinishedPieceCosts, formatCarryingAmount, isUnavailable, type CarryingAmount } from "@/lib/jewellery/carryingCost";
 import { custodyReversalBlock, KIND_LABEL, listCustodyBalancesInTx } from "@/lib/jewellery/karigarCustody";
-import { canStillIssueMaterials, getMetalStockBalanceInTx, getScrapMetalBalanceInTx, pendingFineWeightOf } from "@/lib/jewellery/posting";
+import { canStillIssueMaterialsForJobs, getMetalStockBalanceInTx, getScrapMetalBalanceInTx, pendingFineWeightOf } from "@/lib/jewellery/posting";
 
 /**
  * Read side of Karigar metal custody: the per-Karigar metal account (balances,
@@ -194,7 +194,10 @@ export async function getKarigarMetalAccount(karigarId: string, options: { inclu
   byPurity.sort((a, b) => a.purityDisplayName.localeCompare(b.purityDisplayName));
 
   const jobs: KarigarJobRow[] = [];
-  for (const j of allJobs.filter((x) => (OPEN_JOB_STATUSES as readonly string[]).includes(x.status) || !new Decimal(x.custodyAllocatedFineWeight).isZero() || !new Decimal(x.custodyReleasedFineWeight).isZero())) {
+  const listedJobs = allJobs.filter((x) => (OPEN_JOB_STATUSES as readonly string[]).includes(x.status) || !new Decimal(x.custodyAllocatedFineWeight).isZero() || !new Decimal(x.custodyReleasedFineWeight).isZero());
+  // One grouped query per table for every listed job (was six queries per job, one after another).
+  const canIssue = await canStillIssueMaterialsForJobs(tx, listedJobs);
+  for (const j of listedJobs) {
     const p = jobPurity.get(j.id);
     const pending = pendingFineWeightOf(j);
     const single = p && p !== "MIXED" ? p : null;
@@ -211,7 +214,7 @@ export async function getKarigarMetalAccount(karigarId: string, options: { inclu
       releasedToCustodyFine: g3(new Decimal(j.custodyReleasedFineWeight)),
       canAllocate: ["DRAFT", "MATERIALS_ISSUED", "IN_PROGRESS", "PARTIALLY_RECEIVED"].includes(j.status) && p !== "MIXED",
       canRelease: ["MATERIALS_ISSUED", "IN_PROGRESS", "PARTIALLY_RECEIVED", "NEEDS_CORRECTION"].includes(j.status) && !!single && pending.greaterThan(0),
-      canIssueMaterials: await canStillIssueMaterials(tx, j),
+      canIssueMaterials: canIssue.get(j.id) ?? false,
     });
   }
 
@@ -237,6 +240,29 @@ export async function getKarigarMetalAccount(karigarId: string, options: { inclu
     payableBalance = money(new Decimal(agg._sum.credit ?? 0).minus(agg._sum.debit ?? 0));
   }
 
+  // Reversal blocks (Owner only). custodyReversalBlock's first rule — a later
+  // live entry in the same Karigar + metal + purity balance blocks it, newest
+  // first — is decided here from the entries already loaded, with the same
+  // message; only the newest live entry of each balance (at most one per
+  // purity) still needs the full database check, and those run in parallel.
+  const blocks = new Map<string, string | null>();
+  if (options.includeCost) {
+    const live = entries.filter((e) => !e.reversalOfEntryId && !e.reversedBy);
+    const candidates: string[] = [];
+    for (const e of live) {
+      const later = live.filter(
+        (l) => l.id !== e.id && l.metalType === e.metalType && l.purityId === e.purityId && l.createdAt.getTime() >= e.createdAt.getTime()
+      );
+      if (later.length > 0) {
+        blocks.set(e.id, `Later entries in this Karigar balance depend on it (${later.map((l) => l.entryCode).join(", ")}). Reverse those first, newest first.`);
+      } else {
+        candidates.push(e.id);
+      }
+    }
+    const checked = await Promise.all(candidates.map(async (id) => [id, await custodyReversalBlock(tx, id)] as const));
+    for (const [id, b] of checked) blocks.set(id, b);
+  }
+
   // Statement with the running unallocated balance per purity.
   const running = new Map<string, { gross: Decimal; fine: Decimal }>();
   const statement: KarigarStatementRow[] = [];
@@ -246,7 +272,7 @@ export async function getKarigarMetalAccount(karigarId: string, options: { inclu
     r.gross = r.gross.plus(new Decimal(e.grossWeight).times(direction));
     r.fine = r.fine.plus(new Decimal(e.fineWeight).times(direction));
     running.set(e.purityId, r);
-    const block = options.includeCost && !e.reversalOfEntryId && !e.reversedBy ? await custodyReversalBlock(tx, e.id) : "n/a";
+    const block = options.includeCost && !e.reversalOfEntryId && !e.reversedBy ? (blocks.get(e.id) ?? null) : "n/a";
     statement.push({
       id: e.id,
       entryCode: e.entryCode,
