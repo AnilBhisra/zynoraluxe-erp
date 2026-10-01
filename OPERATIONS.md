@@ -14,7 +14,7 @@ Living document for whoever releases, checks or supports the system. Older
 | Job manufacturing total, Customer Gold (incl. receipt reversal), receipt-charge persistence | `adba980`, `027a8a2`, `9a2eff7` | live (production = `9a2eff7`, 28 migrations) |
 | Phase 8B metal-rate clarity + Metal Stock history | `d013945` | **not deployed** |
 | Phase 8C Old Gold Exchange (+ migration 29) | `5761149` | **not deployed** |
-| Finished-piece stickers | `5593109` | **not deployed** |
+| Finished-piece stickers (+ fixes `8b06011`, `7719c9e` found in browser acceptance) | `5593109` | **not deployed** |
 | Performance (N+1 / serial reads) | `0989f49` | **not deployed** |
 | In-app Help (Gujarati) / documentation | `9e964e6`, this commit | **not deployed** |
 
