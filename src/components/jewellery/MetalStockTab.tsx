@@ -3,12 +3,10 @@
 import { useRouter } from "next/navigation";
 import { useActionState, useEffect, useState } from "react";
 
-import {
-  createOpeningMetalStock,
-  adjustMetalStockAction,
-  reverseMetalStockAdjustmentAction,
-} from "@/app/actions/metal";
+import { createOpeningMetalStock, adjustMetalStockAction } from "@/app/actions/metal";
+import { EffectiveRates } from "@/components/jewellery/EffectiveRates";
 import { MetalPurchaseForm } from "@/components/jewellery/MetalPurchaseForm";
+import { MetalStockHistory, type MetalHistoryFilters } from "@/components/jewellery/MetalStockHistory";
 import type { MetalPurityOption } from "@/components/jewellery/ReceiveFinishedForm";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
@@ -17,7 +15,8 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import type { PartyOption } from "@/components/accounting/PartySelect";
 import { CsvDownloadButton } from "@/components/accounting/CsvDownloadButton";
 import { metalTypeLabel } from "@/lib/jewellery/types";
-import type { MetalAdjustmentRow } from "@/lib/jewellery/adjustmentHistory";
+import type { MetalHistoryPage } from "@/lib/jewellery/adjustmentHistory";
+import { RATE_BASIS_LABEL, RATE_INPUT_LABEL, fineWeightOf, summariseRate, totalFromRate, type MetalRateBasisValue } from "@/lib/jewellery/metalRates";
 
 /** Usable stock (issuable, valued in Metal Inventory) and recoverable scrap
  * (never issuable, valued in Scrap Metal Inventory) per metal + purity.
@@ -50,15 +49,38 @@ function OpeningMetalStockForm({ purities, onDone }: { purities: MetalPurityOpti
   const [state, formAction, pending] = useActionState(createOpeningMetalStock, undefined);
   const [metalType, setMetalType] = useState(purities[0]?.metalType ?? "GOLD");
   const [purityId, setPurityId] = useState(purities[0]?.id ?? "");
+  const [grossWeight, setGrossWeight] = useState("");
+  const [rateBasis, setRateBasis] = useState<MetalRateBasisValue>("PER_GROSS_GRAM");
+  const [rate, setRate] = useState("");
+  const [costValueOverride, setCostValueOverride] = useState("");
+  const [totalTouched, setTotalTouched] = useState(false);
+  // The signature of what was actually confirmed, not a bare boolean — so
+  // editing any confirmed number un-confirms it automatically, without an
+  // effect (derived during render).
+  const [confirmedSignature, setConfirmedSignature] = useState<string | null>(null);
   const [idempotencyKey] = useState(() => crypto.randomUUID());
   const purityOptions = purities.filter((p) => p.metalType === metalType);
+  const purity = purities.find((p) => p.id === purityId);
+  const fineWeight = purity ? (fineWeightOf(grossWeight || "0", purity.finenessPercent) ?? "0.000") : "0.000";
+  const suggestedTotal = totalFromRate({ basis: rateBasis, rate: rate || "0", grossWeight: grossWeight || "0", fineWeight }) ?? "0.00";
+  const costValue = totalTouched ? costValueOverride : Number(suggestedTotal) > 0 ? suggestedTotal : "";
+  const rateEntered = Number(rate) > 0;
+  const summary = summariseRate({ basis: rateBasis, grossWeight: grossWeight || "0", finenessPercent: purity?.finenessPercent ?? "0", total: costValue || "0" });
+  const confirmationSignature = `${grossWeight}|${purityId}|${rateBasis}|${rate}|${costValue}|${totalTouched}`;
+  const confirmed = confirmedSignature === confirmationSignature;
 
   useEffect(() => {
     if (state?.success) onDone?.();
   }, [state?.success, onDone]);
 
   return (
-    <form action={formAction} className="flex flex-col gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-4">
+    <form
+      action={formAction}
+      onSubmit={(e) => {
+        if (!confirmed) e.preventDefault();
+      }}
+      className="flex flex-col gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-4"
+    >
       {state?.error ? <Alert tone="error">{state.error}</Alert> : null}
       {state?.success ? <Alert tone="success">Opening stock recorded.</Alert> : null}
       <p className="text-xs text-zinc-500 dark:text-zinc-400">
@@ -88,7 +110,7 @@ function OpeningMetalStockForm({ purities, onDone }: { purities: MetalPurityOpti
         >
           {purityOptions.map((p) => (
             <option key={p.id} value={p.id}>
-              {p.displayName}
+              {p.displayName} ({p.finenessPercent}%)
             </option>
           ))}
         </select>
@@ -96,12 +118,78 @@ function OpeningMetalStockForm({ purities, onDone }: { purities: MetalPurityOpti
       <input type="hidden" name="idempotencyKey" value={idempotencyKey} />
       <input type="hidden" name="metalType" value={metalType} />
       <input type="hidden" name="purityId" value={purityId} />
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <Field label="Gross weight (g)" name="grossWeight" type="number" step="0.001" min={0} required />
-        <Field label="Cost value (₹)" name="costValue" type="number" step="0.01" min={0} required />
+      <input type="hidden" name="rateBasis" value={rateEntered ? rateBasis : ""} />
+      <input type="hidden" name="rate" value={rateEntered ? rate : ""} />
+      <input type="hidden" name="costManuallyEdited" value={totalTouched ? "true" : "false"} />
+      <Field
+        label="Gross weight (g)"
+        name="grossWeight"
+        type="number"
+        step="0.001"
+        min={0}
+        required
+        value={grossWeight}
+        onChange={(e) => setGrossWeight(e.target.value)}
+      />
+      <p className="text-xs text-zinc-500 dark:text-zinc-400" data-testid="opening-fine-weight">
+        Fine weight (automatic): <span className="font-semibold text-zinc-700 dark:text-zinc-300">{fineWeight}g</span>
+      </p>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <select
+          aria-label="Rate basis"
+          value={rateBasis}
+          onChange={(e) => setRateBasis(e.target.value as MetalRateBasisValue)}
+          className="h-10 rounded-lg border border-zinc-300 bg-white px-2 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
+        >
+          <option value="PER_GROSS_GRAM">Per gross gram</option>
+          <option value="PER_FINE_GRAM">Per fine gram</option>
+          <option value="FIXED_TOTAL">Fixed total</option>
+        </select>
+        <Field
+          label={RATE_INPUT_LABEL[rateBasis]}
+          name="openingRateEntry"
+          type="number"
+          step="0.01"
+          min={0}
+          value={rate}
+          onChange={(e) => setRate(e.target.value)}
+        />
+        <Field
+          label="Cost value (₹)"
+          name="costValue"
+          type="number"
+          step="0.01"
+          min={0}
+          required
+          value={costValue}
+          onChange={(e) => {
+            setCostValueOverride(e.target.value);
+            setTotalTouched(true);
+          }}
+          hint={totalTouched ? "Manually edited — not from the rate" : "Calculated automatically from the rate"}
+        />
       </div>
+      <EffectiveRates basis={rateBasis} grossWeight={grossWeight} finenessPercent={purity?.finenessPercent ?? "0"} total={costValue} />
       <Field label="Note (optional)" name="note" />
-      <Button type="submit" size="md" disabled={pending} className="self-start">
+      {summary ? (
+        <label className="flex items-start gap-2 text-sm text-zinc-800 dark:text-zinc-200">
+          <input
+            type="checkbox"
+            data-testid="confirm-opening-stock"
+            checked={confirmed}
+            onChange={(e) => setConfirmedSignature(e.target.checked ? confirmationSignature : null)}
+            className="mt-1"
+          />
+          <span data-testid="opening-confirm-text">
+            I confirm {summary.grossWeight}g gross × {summary.finenessPercent}% = {summary.fineWeight}g fine, total ₹{summary.total}.{" "}
+            {rateEntered && !totalTouched
+              ? `Rate basis saved: ${RATE_BASIS_LABEL[rateBasis]}${rateBasis === "FIXED_TOTAL" ? "" : ` at ₹${rate}`}.`
+              : "Total entered directly (no rate basis)."}{" "}
+            = ₹{summary.perGrossGram ?? "—"} per gross gram / ₹{summary.perFineGram ?? "—"} per fine gram. / મેં ખાતરી કરી.
+          </span>
+        </label>
+      ) : null}
+      <Button type="submit" size="md" disabled={pending || !confirmed} className="self-start">
         {pending ? "Saving…" : "Save opening stock"}
       </Button>
     </form>
@@ -250,81 +338,6 @@ function MetalAdjustmentForm({ purities, onDone }: { purities: MetalPurityOption
   );
 }
 
-/**
- * Owner-authorized adjustments, with the only way back: a posted adjustment
- * is never edited or deleted, so each row offers a reversal that reuses its
- * exact weight and value.
- */
-function MetalAdjustmentHistory({ adjustments }: { adjustments: MetalAdjustmentRow[] }) {
-  const [state, formAction, pending] = useActionState(reverseMetalStockAdjustmentAction, undefined);
-  const [reasonById, setReasonById] = useState<Record<string, string>>({});
-
-  if (adjustments.length === 0) {
-    return (
-      <p data-testid="adjustment-history-empty" className="text-sm text-zinc-600 dark:text-zinc-400">
-        No authorized adjustments yet.
-      </p>
-    );
-  }
-
-  const TYPE_LABELS: Record<string, string> = {
-    ADJUSTMENT_IN: "Added to stock",
-    ADJUSTMENT_OUT: "Removed from stock",
-    SCRAP_ADJUSTMENT_IN: "Into scrap",
-    SCRAP_ADJUSTMENT_OUT: "Out of scrap",
-  };
-
-  return (
-    <div data-testid="adjustment-history" className="flex flex-col gap-3">
-      {state?.error ? <Alert tone="error">{state.error}</Alert> : null}
-      {state?.success ? <Alert tone="success">Adjustment reversed.</Alert> : null}
-      {adjustments.map((row) => (
-        <div
-          key={row.id}
-          data-testid={`adjustment-${row.id}`}
-          className="rounded-xl border border-[var(--border)] p-3 text-sm"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="font-medium text-zinc-900 dark:text-zinc-100">
-              {TYPE_LABELS[row.type] ?? row.type} · {row.purityDisplayName} · {row.grossWeight}g
-            </span>
-            <span className="tabular-nums text-zinc-700 dark:text-zinc-300">
-              {row.costValue === null ? "" : `₹${row.costValue}`}
-              {row.voucherNumber ? ` · ${row.voucherNumber}` : ""}
-            </span>
-          </div>
-          <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">{row.sourceDocument}</p>
-          {row.reversedByMovementId ? (
-            <p data-testid={`adjustment-reversed-${row.id}`} className="mt-2 text-xs font-medium text-amber-700 dark:text-amber-300">
-              Reversed — the original entry is kept for the audit trail.
-            </p>
-          ) : row.isReversal ? null : (
-            <form action={formAction} className="mt-2 flex flex-wrap items-end gap-2">
-              <input type="hidden" name="movementId" value={row.id} />
-              <input type="hidden" name="reason" value={reasonById[row.id] ?? ""} />
-              <Field
-                label="Reverse because"
-                name={`reverseReason-${row.id}`}
-                value={reasonById[row.id] ?? ""}
-                onChange={(e) => setReasonById((prev) => ({ ...prev, [row.id]: e.target.value }))}
-              />
-              <Button
-                type="submit"
-                variant="ghost"
-                size="md"
-                disabled={pending}
-                data-testid={`reverse-adjustment-${row.id}`}
-              >
-                Reverse
-              </Button>
-            </form>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
-
 export function MetalStockTab({
   buckets,
   purchases,
@@ -334,7 +347,8 @@ export function MetalStockTab({
   gstRates,
   isOwner,
   search,
-  adjustments,
+  history,
+  historyFilters,
 }: {
   buckets: SerializedMetalStockBucket[];
   purchases: SerializedMetalPurchase[];
@@ -344,7 +358,9 @@ export function MetalStockTab({
   gstRates: { id: string; label: string; ratePercent: string }[];
   isOwner: boolean;
   search: string;
-  adjustments: MetalAdjustmentRow[];
+  /** Loaded only when the history panel is open (`history=1`). */
+  history: MetalHistoryPage | null;
+  historyFilters: MetalHistoryFilters;
 }) {
   const router = useRouter();
   const [showPurchaseForm, setShowPurchaseForm] = useState(false);
@@ -466,6 +482,13 @@ export function MetalStockTab({
             </Button>
           </>
         ) : null}
+        <a
+          href={history ? "/jewellery-jobs?tab=metal" : "/jewellery-jobs?tab=metal&history=1#metal-history"}
+          data-testid="toggle-history"
+          className="inline-flex h-11 items-center rounded-lg px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+        >
+          {history ? "Close history" : "Metal Stock history"}
+        </a>
       </div>
 
       {showPurchaseForm ? (
@@ -473,11 +496,13 @@ export function MetalStockTab({
       ) : null}
       {isOwner && showOpeningForm ? <OpeningMetalStockForm purities={purities} onDone={handleSaved} /> : null}
       {isOwner && showAdjustForm ? <MetalAdjustmentForm purities={purities} onDone={handleSaved} /> : null}
-      {isOwner && showAdjustForm ? (
-        <div className="mt-4">
-          <h3 className="mb-2 text-sm font-semibold text-zinc-900 dark:text-zinc-50">Adjustment history</h3>
-          <MetalAdjustmentHistory adjustments={adjustments} />
-        </div>
+      {history ? (
+        <MetalStockHistory
+          history={history}
+          filters={historyFilters}
+          purities={purities.map((p) => ({ id: p.id, displayName: p.displayName }))}
+          isOwner={isOwner}
+        />
       ) : null}
 
       <form method="GET" action="/jewellery-jobs" className="flex flex-wrap gap-2">

@@ -290,3 +290,34 @@ describe("Owner-only stock operations", () => {
     expect(mocks.adjustMetalStock).not.toHaveBeenCalled();
   });
 });
+
+describe("Phase 8B — rate basis reaches the posting engine exactly as confirmed", () => {
+  it("createMetalPurchase passes totalManuallyEdited (false unless the form says true)", async () => {
+    mocks.createMetalPurchase.mockResolvedValue({ purchaseCode: "ZL-MP-2026-000009" });
+    const base = { purchaseDate: "2026-06-15", supplierId: "s", metalType: "GOLD", purityId: "p", grossWeight: "10", rateBasis: "PER_FINE_GRAM", rate: "6500", totalPurchaseCost: "59605" };
+    await createMetalPurchase(undefined, formData(base));
+    expect(mocks.createMetalPurchase).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ rateBasis: "PER_FINE_GRAM", totalManuallyEdited: false }));
+    await createMetalPurchase(undefined, formData({ ...base, totalManuallyEdited: "true" }));
+    expect(mocks.createMetalPurchase).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ totalManuallyEdited: true }));
+  });
+
+  it("createOpeningMetalStock passes the rate basis, rate and manual flag; an unknown basis is refused", async () => {
+    await createOpeningMetalStock(
+      undefined,
+      formData({ metalType: "GOLD", purityId: "p", grossWeight: "100", costValue: "600012.36", rateBasis: "PER_FINE_GRAM", rate: "6543.21", costManuallyEdited: "false" })
+    );
+    expect(mocks.postOpeningMetalStock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ rateBasis: "PER_FINE_GRAM", rate: 6543.21, costManuallyEdited: false, costValue: 600012.36 })
+    );
+    mocks.postOpeningMetalStock.mockClear();
+    const bad = await createOpeningMetalStock(undefined, formData({ metalType: "GOLD", purityId: "p", grossWeight: "1", costValue: "1", rateBasis: "PER_KILO", rate: "1" }));
+    expect(bad?.error).toBeTruthy();
+    expect(mocks.postOpeningMetalStock).not.toHaveBeenCalled();
+  });
+
+  it("an opening entry with only a total (no rate) sends no basis", async () => {
+    await createOpeningMetalStock(undefined, formData({ metalType: "GOLD", purityId: "p", grossWeight: "10", costValue: "50000", rateBasis: "", rate: "", costManuallyEdited: "true" }));
+    expect(mocks.postOpeningMetalStock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ rateBasis: null, rate: null, costManuallyEdited: true }));
+  });
+});

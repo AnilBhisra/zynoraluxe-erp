@@ -225,6 +225,31 @@ export function allocateWeightProportionally(total: Decimal, targets: { key: str
 // Metal Purchase
 // ---------------------------------------------------------------------------
 
+/**
+ * Re-derives a rate-based total on its own basis (round half-up to the paisa)
+ * and refuses a mismatch, so the amount posted is exactly the one the rate
+ * implies on the basis the user chose.
+ */
+function assertTotalMatchesRate(input: {
+  basis: MetalRateBasis;
+  rate: DecimalInput;
+  grossWeight: Decimal;
+  fineWeight: Decimal;
+  total: Decimal;
+}) {
+  const rate = new Decimal(input.rate);
+  const expected =
+    input.basis === "FIXED_TOTAL"
+      ? round2(rate)
+      : round2(rate.toDecimalPlaces(4, Decimal.ROUND_HALF_UP).times(input.basis === "PER_FINE_GRAM" ? input.fineWeight : input.grossWeight));
+  if (!expected.equals(input.total)) {
+    const basisText = input.basis === "PER_FINE_GRAM" ? "per fine gram" : input.basis === "PER_GROSS_GRAM" ? "per gross gram" : "fixed total";
+    throw new PostingError(
+      `The total ₹${input.total.toFixed(2)} does not match the rate (₹${rate.toFixed(4)} ${basisText} gives ₹${expected.toFixed(2)}). Check the rate basis, or mark the total as entered manually. Nothing was saved.`
+    );
+  }
+}
+
 export async function createMetalPurchase(
   tx: Tx,
   input: FyInput & {
@@ -246,6 +271,13 @@ export async function createMetalPurchase(
     notes?: string | null;
     idempotencyKey?: string | null;
     createdByUserId: string;
+    /**
+     * Phase 8B: `false` when the form's total was derived from the rate (not
+     * typed over), so the server re-derives it on the SAME basis and refuses a
+     * mismatch — a gross rate can never be saved as if it were a fine rate.
+     * `true` (an explicit manual total) or omitted skips the check.
+     */
+    totalManuallyEdited?: boolean;
   }
 ) {
   const grossWeight = round3(input.grossWeight);
@@ -263,6 +295,9 @@ export async function createMetalPurchase(
   }
   const finenessPercentSnapshot = new Decimal(purity.finenessPercent);
   const fineWeight = round3(grossWeight.times(finenessPercentSnapshot).dividedBy(100));
+  if (input.totalManuallyEdited === false) {
+    assertTotalMatchesRate({ basis: input.rateBasis, rate: input.rate, grossWeight, fineWeight, total: totalPurchaseCost });
+  }
 
   const purchaseCode = await nextJewelleryCode(tx, "METAL_PURCHASE");
 
@@ -403,6 +438,15 @@ export async function postOpeningMetalStock(
     grossWeight: DecimalInput;
     costValue: DecimalInput;
     note?: string | null;
+    /**
+     * Phase 8B: the rate the Owner entered and its basis. Never stored as a
+     * column (no migration): the basis and rate are written into the entry's
+     * own description so the history shows exactly what was confirmed, and,
+     * unless the total was typed over, the total is re-derived and must match.
+     */
+    rateBasis?: MetalRateBasis | null;
+    rate?: DecimalInput | null;
+    costManuallyEdited?: boolean;
     /** Posting date for the voucher; the stock movement itself is untimed. */
     date?: Date;
     fyStartMonth: number;
@@ -420,7 +464,19 @@ export async function postOpeningMetalStock(
   if (!purity || !purity.isActive) throw new PostingError("Selected metal purity was not found or is inactive.");
   const fineWeight = round3(grossWeight.times(purity.finenessPercent).dividedBy(100));
 
-  const noteText = input.note?.trim() ? `Opening stock: ${input.note.trim()}` : "Opening stock";
+  // The basis (no ₹) goes on the movement, which Staff may see in the
+  // history; the ₹ rate goes only on the Owner-only voucher note.
+  let basisText = "";
+  let rateNote = "";
+  if (input.rateBasis && input.rate !== null && input.rate !== undefined && new Decimal(input.rate).greaterThan(0)) {
+    if (!input.costManuallyEdited) {
+      assertTotalMatchesRate({ basis: input.rateBasis, rate: input.rate, grossWeight, fineWeight, total: costValue });
+    }
+    const basisLabel = input.rateBasis === "FIXED_TOTAL" ? "fixed total" : input.rateBasis === "PER_FINE_GRAM" ? "per fine gram" : "per gross gram";
+    basisText = ` (rate basis: ${basisLabel}${input.costManuallyEdited ? ", total entered manually" : ""})`;
+    rateNote = input.rateBasis === "FIXED_TOTAL" ? " (fixed total)" : ` (₹${new Decimal(input.rate).toFixed(4)} ${basisLabel})`;
+  }
+  const noteText = input.note?.trim() ? `Opening stock${basisText}: ${input.note.trim()}` : `Opening stock${basisText}`;
   const date = input.date ?? new Date();
 
   // A zero-valued opening entry (weight recorded, value unknown) posts no
@@ -435,7 +491,7 @@ export async function postOpeningMetalStock(
         fyStartDay: input.fyStartDay,
         currencyCode: "INR",
         exchangeRate: 1,
-        note: `${noteText} — ${purity.displayName} ${grossWeight.toFixed(3)}g`,
+        note: `${noteText}${rateNote} — ${purity.displayName} ${grossWeight.toFixed(3)}g`,
         idempotencyKey: input.idempotencyKey ?? null,
         createdByUserId: input.createdByUserId,
       },

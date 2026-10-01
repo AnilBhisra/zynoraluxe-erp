@@ -73,6 +73,8 @@ export const metalPurchaseSchema = z.object({
   referenceNumber: optionalString(200),
   notes: optionalString(1000),
   idempotencyKey: z.string().trim().max(100).optional(),
+  /** Phase 8B: "true" only when the user typed over the rate-derived total. */
+  totalManuallyEdited: booleanFlag,
 });
 export type MetalPurchaseInput = z.infer<typeof metalPurchaseSchema>;
 
@@ -83,6 +85,10 @@ export const openingMetalStockSchema = z.object({
   costValue: z.coerce.number().min(0, "Cost cannot be negative."),
   note: optionalString(300),
   idempotencyKey: z.string().trim().max(100).optional(),
+  /** Phase 8B: the basis the entered rate was on (optional — a bare total is still allowed). */
+  rateBasis: z.enum(["PER_GROSS_GRAM", "PER_FINE_GRAM", "FIXED_TOTAL"]).optional(),
+  rate: z.coerce.number().nonnegative("Rate cannot be negative.").optional(),
+  costManuallyEdited: booleanFlag,
 });
 export type OpeningMetalStockInput = z.infer<typeof openingMetalStockSchema>;
 

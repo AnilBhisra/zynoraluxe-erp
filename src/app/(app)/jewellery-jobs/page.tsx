@@ -30,7 +30,7 @@ import type { PurityOption } from "@/components/jewellery/CreateJobForm";
 import type { AvailablePacketOption, AvailablePolishedDiamondOption } from "@/components/jewellery/IssueMaterialsForm";
 import type { PendingPacketOption } from "@/components/jewellery/ReceiveFinishedForm";
 import { listJobPacketLines, listPolishedPackets } from "@/lib/diamond/packetReports";
-import { listMetalAdjustments } from "@/lib/jewellery/adjustmentHistory";
+import { HISTORY_CATEGORIES, listMetalStockHistory, type HistoryCategory } from "@/lib/jewellery/adjustmentHistory";
 import { formatCarryingAmount } from "@/lib/jewellery/carryingCost";
 import { shapeLabel } from "@/lib/diamond/shapes";
 import type { MetalPurityOption } from "@/components/jewellery/ReceiveFinishedForm";
@@ -63,6 +63,11 @@ type SearchParams = {
   jobSearch?: string;
   jobId?: string;
   metalSearch?: string;
+  history?: string;
+  histCategory?: string;
+  histSearch?: string;
+  histPurity?: string;
+  histPage?: string;
   issue?: string;
   finishedSearch?: string;
   finishedStatus?: string;
@@ -132,7 +137,22 @@ export default async function JewelleryJobsPage({ searchParams }: { searchParams
         />
       ) : null}
       {tab === "customer-gold" ? <CustomerGoldTabContent customerId={params.customerId ?? ""} isOwner={isOwner} /> : null}
-      {tab === "metal" ? <MetalTabContent search={params.metalSearch ?? ""} isOwner={isOwner} /> : null}
+      {tab === "metal" ? (
+        <MetalTabContent
+          search={params.metalSearch ?? ""}
+          isOwner={isOwner}
+          history={
+            params.history === "1"
+              ? {
+                  category: HISTORY_CATEGORIES.includes(params.histCategory as HistoryCategory) ? (params.histCategory as HistoryCategory) : "ALL",
+                  search: (params.histSearch ?? "").slice(0, 100),
+                  purityId: params.histPurity ?? "",
+                  page: Number(params.histPage) || 1,
+                }
+              : null
+          }
+        />
+      ) : null}
       {tab === "finished" ? (
         <FinishedTabContent
           search={params.finishedSearch ?? ""}
@@ -582,14 +602,24 @@ async function CustomerGoldTabContent({ customerId, isOwner }: { customerId: str
   );
 }
 
-async function MetalTabContent({ search, isOwner }: { search: string; isOwner: boolean }) {
-  const [buckets, purchases, suppliers, purities, paymentAccounts, gstRates] = await Promise.all([
+async function MetalTabContent({
+  search,
+  isOwner,
+  history,
+}: {
+  search: string;
+  isOwner: boolean;
+  history: { category: HistoryCategory; search: string; purityId: string; page: number } | null;
+}) {
+  const [buckets, purchases, suppliers, purities, paymentAccounts, gstRates, historyPage] = await Promise.all([
     getMetalStockSummary(),
     listMetalPurchases({ search: search || undefined }),
     prisma.party.findMany({ where: { type: "SUPPLIER", isActive: true }, orderBy: { name: "asc" } }),
     listMetalPurities(),
     prisma.paymentAccount.findMany({ where: { isActive: true }, orderBy: { name: "asc" } }),
     prisma.gstRate.findMany({ where: { isActive: true }, orderBy: { ratePercent: "asc" } }),
+    // Staff rows come back with every ₹ figure, voucher and correction code already removed.
+    history ? listMetalStockHistory({ isOwner, ...history }) : Promise.resolve(null),
   ]);
 
   const serializedBuckets: SerializedMetalStockBucket[] = buckets.map((b) => ({
@@ -626,7 +656,8 @@ async function MetalTabContent({ search, isOwner }: { search: string; isOwner: b
       gstRates={gstRates.map((g) => ({ id: g.id, label: g.label, ratePercent: g.ratePercent.toString() }))}
       isOwner={isOwner}
       search={search}
-      adjustments={await listMetalAdjustments(isOwner)}
+      history={historyPage}
+      historyFilters={{ category: history?.category ?? "ALL", search: history?.search ?? "", purityId: history?.purityId ?? "" }}
     />
   );
 }

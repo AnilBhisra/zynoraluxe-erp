@@ -156,6 +156,7 @@ export async function createMetalPurchase(
     referenceNumber: formData.get("referenceNumber") || "",
     notes: formData.get("notes") || "",
     idempotencyKey: formData.get("idempotencyKey") || undefined,
+    totalManuallyEdited: formData.get("totalManuallyEdited") || "false",
   });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
@@ -203,6 +204,7 @@ export async function createMetalPurchase(
         notes: data.notes || null,
         idempotencyKey: data.idempotencyKey || null,
         createdByUserId: user.id,
+        totalManuallyEdited: data.totalManuallyEdited,
       })
     );
     revalidateJewellery();
@@ -235,6 +237,9 @@ export async function createOpeningMetalStock(
     costValue: formData.get("costValue"),
     note: formData.get("note") || "",
     idempotencyKey: formData.get("idempotencyKey") || undefined,
+    rateBasis: formData.get("rateBasis") || undefined,
+    rate: formData.get("rate") || undefined,
+    costManuallyEdited: formData.get("costManuallyEdited") || "false",
   });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
@@ -258,6 +263,9 @@ export async function createOpeningMetalStock(
         grossWeight: parsed.data.grossWeight,
         costValue: parsed.data.costValue,
         note: parsed.data.note || null,
+        rateBasis: parsed.data.rateBasis ?? null,
+        rate: parsed.data.rate ?? null,
+        costManuallyEdited: parsed.data.costManuallyEdited,
         fyStartMonth: fy.fyStartMonth,
         fyStartDay: fy.fyStartDay,
         idempotencyKey: idempotencyKey || null,

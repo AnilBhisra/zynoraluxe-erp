@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 import { PartySelect, type PartyOption } from "@/components/accounting/PartySelect";
 import type { MetalPurityOption } from "@/components/jewellery/ReceiveFinishedForm";
+import { EffectiveRates } from "@/components/jewellery/EffectiveRates";
+import { RATE_BASIS_LABEL, RATE_INPUT_LABEL, fineWeightOf, summariseRate, totalFromRate } from "@/lib/jewellery/metalRates";
 import { useFieldId } from "@/lib/utils/useFieldId";
 
 type PaymentAccountOption = { id: string; name: string; method: string };
@@ -55,16 +57,13 @@ export function MetalPurchaseForm({
 
   const purityOptions = purities.filter((p) => p.metalType === metalType);
   const purity = purities.find((p) => p.id === purityId);
-  const fineWeight = purity ? ((Number(grossWeight) || 0) * Number(purity.finenessPercent)) / 100 : 0;
+  // Exact fixed-point, the server's own rounding — never floating point.
+  const fineWeightText = purity ? (fineWeightOf(grossWeight || "0", purity.finenessPercent) ?? "0.000") : "0.000";
+  const fineWeight = Number(fineWeightText);
+  const suggestedTotal = totalFromRate({ basis: rateBasis, rate: rate || "0", grossWeight: grossWeight || "0", fineWeight: fineWeightText }) ?? "0.00";
 
-  const suggestedTotal =
-    rateBasis === "FIXED_TOTAL"
-      ? Number(rate) || 0
-      : rateBasis === "PER_GROSS_GRAM"
-        ? (Number(rate) || 0) * (Number(grossWeight) || 0)
-        : (Number(rate) || 0) * fineWeight;
-
-  const totalPurchaseCost = totalTouched ? totalPurchaseCostOverride : suggestedTotal > 0 ? suggestedTotal.toFixed(2) : "";
+  const totalPurchaseCost = totalTouched ? totalPurchaseCostOverride : Number(suggestedTotal) > 0 ? suggestedTotal : "";
+  const summary = summariseRate({ basis: rateBasis, grossWeight: grossWeight || "0", finenessPercent: purity?.finenessPercent ?? "0", total: totalPurchaseCost || "0" });
 
   const rateByGstRateId = useMemo(() => new Map(gstRates.map((r) => [r.id, Number(r.ratePercent)])), [gstRates]);
   const gstRatePercent = gstTreatment === "NONE" ? 0 : rateByGstRateId.get(gstRateId) ?? 0;
@@ -73,7 +72,14 @@ export function MetalPurchaseForm({
   const payable = cost + taxAmount;
 
   function confirmBeforeSubmit(event: React.FormEvent<HTMLFormElement>) {
-    if (!window.confirm(`Save this metal purchase (${(Number(grossWeight) || 0).toFixed(3)}g gross / ${fineWeight.toFixed(3)}g fine, ${formatMoney(payable)})?`)) {
+    const rateLine = summary
+      ? `Rate basis saved: ${RATE_BASIS_LABEL[rateBasis]}${rateBasis === "FIXED_TOTAL" ? "" : ` at ₹${rate}`}\n= ₹${summary.perGrossGram ?? "—"} per gross gram / ₹${summary.perFineGram ?? "—"} per fine gram\n`
+      : "";
+    if (
+      !window.confirm(
+        `Save this metal purchase?\n${(Number(grossWeight) || 0).toFixed(3)}g gross × ${purity?.finenessPercent ?? "?"}% = ${fineWeight.toFixed(3)}g fine\n${rateLine}Total ${formatMoney(cost)}${taxAmount > 0 ? ` + GST ${formatMoney(taxAmount)}` : ""} = payable ${formatMoney(payable)}${totalTouched ? "\n(Total was typed manually.)" : ""}`
+      )
+    ) {
       event.preventDefault();
     }
   }
@@ -93,6 +99,7 @@ export function MetalPurchaseForm({
       <input type="hidden" name="gstRatePercent" value={String(gstRatePercent)} />
       <input type="hidden" name="currencyCode" value="INR" />
       <input type="hidden" name="exchangeRate" value="1" />
+      <input type="hidden" name="totalManuallyEdited" value={totalTouched ? "true" : "false"} />
 
       {state?.error ? <Alert tone="error">{state.error}</Alert> : null}
       {state?.success ? <Alert tone="success">Metal purchase saved as {state.code}.</Alert> : null}
@@ -154,7 +161,7 @@ export function MetalPurchaseForm({
       </div>
 
       <p className="text-xs text-zinc-500 dark:text-zinc-400">
-        Fine weight (automatic): <span className="font-semibold text-zinc-700 dark:text-zinc-300">{fineWeight.toFixed(3)}g</span>
+        Fine weight (automatic): <span className="font-semibold text-zinc-700 dark:text-zinc-300">{fineWeightText}g</span>
       </p>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -172,10 +179,17 @@ export function MetalPurchaseForm({
             <option value="PER_FINE_GRAM">Per fine gram</option>
             <option value="FIXED_TOTAL">Fixed total</option>
           </select>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400" data-testid="rate-basis-hint">
+            {rateBasis === "PER_GROSS_GRAM"
+              ? "Rate × full (gross) weight. / આખા વજન પર ભાવ."
+              : rateBasis === "PER_FINE_GRAM"
+                ? "Rate × pure (fine) weight only. / ફક્ત શુદ્ધ (fine) વજન પર ભાવ."
+                : "One total amount for the whole lot. / આખા માલનો એક જ ભાવ."}
+          </p>
         </div>
         <input type="hidden" name="rateBasis" value={rateBasis} />
         <Field
-          label={rateBasis === "FIXED_TOTAL" ? "Total (₹)" : "Rate (₹)"}
+          label={RATE_INPUT_LABEL[rateBasis]}
           name="rate"
           type="number"
           step="0.01"
@@ -195,9 +209,10 @@ export function MetalPurchaseForm({
             setTotalPurchaseCostOverride(e.target.value);
             setTotalTouched(true);
           }}
-          hint={totalTouched ? "Manually edited" : "Calculated automatically"}
+          hint={totalTouched ? "Manually edited — not from the rate" : "Calculated automatically from the rate"}
         />
       </div>
+      <EffectiveRates basis={rateBasis} grossWeight={grossWeight} finenessPercent={purity?.finenessPercent ?? "0"} total={totalPurchaseCost} />
 
       <div>
         <button
@@ -210,7 +225,8 @@ export function MetalPurchaseForm({
         </button>
       </div>
 
-      {showMore ? (
+      {/* Kept mounted while hidden: a collapsed section must never drop what was typed into it. */}
+      <div hidden={!showMore} data-testid="purchase-more-details">
         <div className="grid grid-cols-1 gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-4 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">
             <label htmlFor={gstTreatmentId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
@@ -267,7 +283,7 @@ export function MetalPurchaseForm({
           <Field label="Supplier bill / reference (optional)" name="referenceNumber" />
           <Field label="Notes (optional)" name="notes" className="sm:col-span-2" />
         </div>
-      ) : null}
+      </div>
 
       <div className="flex items-center justify-between rounded-xl bg-zinc-900 px-4 py-3 text-white dark:bg-amber-200 dark:text-zinc-900">
         <span className="text-sm">Payable ({(Number(grossWeight) || 0).toFixed(3)}g gross)</span>

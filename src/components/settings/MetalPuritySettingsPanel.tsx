@@ -67,6 +67,11 @@ function EditPurityForm({ purity, onDone }: { purity: MetalPurityRow; onDone: ()
     <form action={formAction} className="flex flex-wrap items-end gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface-muted)] p-3">
       <input type="hidden" name="purityId" value={purity.id} />
       {state?.error ? <Alert tone="error">{state.error}</Alert> : null}
+      <p data-testid="purity-future-only-warning" className="basis-full rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+        A changed fineness applies to FUTURE entries only. Purchases, opening stock, issues, receipts and stock already
+        recorded keep the fineness and fine weight they were saved with — nothing in history is recalculated. To fix an
+        old entry, use Corrections. / ફેરફાર ફક્ત નવી entries ને લાગુ પડશે; જૂની entries બદલાશે નહીં.
+      </p>
       <div className="flex flex-col gap-1.5">
         <label htmlFor={`edit-metalType-${purity.id}`} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
           Metal
