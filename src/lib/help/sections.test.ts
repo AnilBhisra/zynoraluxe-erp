@@ -139,3 +139,35 @@ describe("Contextual module-page મદદ links resolve to real sections", () =
     }
   });
 });
+
+describe("help covers the live workflows (Phase 8B / 8C / stickers / Karigar Metal / Customer Gold)", () => {
+  const html = (role: "OWNER" | "STAFF") => renderAll(role).map((r) => r.html).join("\n");
+  it("both roles get the shared topics, with the exact screen labels", () => {
+    for (const role of ["OWNER", "STAFF"] as const) {
+      const all = html(role);
+      for (const id of ["gross-vs-fine", "metal-stock-history", "karigar-metal", "stickers", "old-gold-exchange", "purchase-reversal", "correction-limits"]) {
+        expect(all).toContain(`id="${id}"`);
+      }
+      for (const label of [
+        "Rate per FINE gram (₹)",
+        "Metal Stock history",
+        "Issue metal to Karigar",
+        "Preview gold allocation",
+        "Labour charge (₹)",
+        "Making charge (₹)",
+        "Setting charge (₹)",
+        "Plating charge (₹)",
+        "Print all stickers from this receipt",
+        "Preview exchange",
+        "1340 Customer Jewellery Work Awaiting Delivery",
+      ]) {
+        expect(all).toContain(label);
+      }
+      expect(all).toContain("save થાય જ છે"); // collapsed charges still save
+    }
+  });
+  it("the purity-master topic (an Owner-only screen) is the Owner's alone", () => {
+    expect(html("OWNER")).toContain('id="purity-edit"');
+    expect(html("STAFF")).not.toContain('id="purity-edit"');
+  });
+});

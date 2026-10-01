@@ -529,7 +529,8 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
       keywords: [
         "metal", "purity", "jewellery job", "set", "returned", "needs correction",
         "24k", "18k", "14k", "9k", "alloy", "copper", "scrap", "process loss",
-        "મેટલ", "જ્વેલરી જોબ", "શુદ્ધતા",
+        "rate basis", "fine gram", "gross gram", "effective rate", "history", "karigar metal", "sticker", "qr", "print",
+        "મેટલ", "જ્વેલરી જોબ", "શુદ્ધતા", "ભાવ", "સ્ટીકર",
       ],
       body: (
         <div className="flex flex-col gap-4">
@@ -538,17 +539,72 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
             <strong>Metal</strong> = Gold, Silver કે Platinum. <strong>Purity</strong> = એ metal કેટલું શુદ્ધ છે (દા.ત. Gold 22K, 18K — number જેટલો વધારે, metal એટલું વધારે શુદ્ધ). દરેક purity નો પોતાનો અલગ stock balance હોય છે.
           </p>
 
+          <SubHeading id="gross-vs-fine">Gross gram અને Fine gram — ફરક</SubHeading>
+          <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+            <strong>Gross gram</strong> = કાંટા પર આવતું આખું વજન. <strong>Fine gram</strong> = એમાં રહેલું શુદ્ધ સોનું = gross × purity %. ઉદાહરણ: 10.000 g gross 22K (91.6%) = 9.160 g fine.
+            હિસાબ (Karigar, Job, Customer gold) હંમેશાં <strong>fine</strong> પર મળે છે; gross ફક્ત તોલ માટે છે.
+          </p>
+
           <SubHeading id="task-metal-stock">Purchase અથવા Opening Metal Stock</SubHeading>
           <Steps>
-            <li>Jewellery Job → Metal Stock પર જાવ.</li>
-            <li>નવો ખરીદેલો માલ હોય તો <Btn>New Metal Purchase</Btn> દબાવો — Supplier, Metal, Purity, વજન (gross weight) અને Rate ભરો.</li>
-            <li>જૂનો હાલનો stock પહેલી વાર નોંધવો હોય (ખરીદી નહીં, ફક્ત record) તો <Btn>Opening Metal Stock</Btn> વાપરો.</li>
-            <li>Save દબાવો.</li>
+            <li>Jewellery Jobs → <Btn>Metal Stock</Btn> tab પર જાવ.</li>
+            <li>નવો ખરીદેલો માલ હોય તો <Btn>New Metal Purchase</Btn> દબાવો — Supplier, Metal, Purity અને Gross weight ભરો.</li>
+            <li>
+              <Btn>Rate basis</Btn> ધ્યાનથી પસંદ કરો: <strong>Per gross gram</strong> (આખા વજન પર ભાવ), <strong>Per fine gram</strong> (ફક્ત શુદ્ધ સોના પર ભાવ) કે <strong>Fixed total</strong> (આખા માલનો એક ભાવ).
+              Rate નું ખાનું પણ એ જ લખે છે — દા.ત. <Btn>Rate per FINE gram (₹)</Btn>.
+            </li>
+            <li>Total આપોઆપ ગણાય છે. નીચેના બોક્સમાં જુઓ: કયો <strong>Rate basis</strong> save થશે, gross, purity %, fine, total, અને <strong>₹ per gross gram</strong> તથા <strong>₹ per fine gram</strong> બંને.</li>
+            <li>Total હાથે બદલો તો “Manually edited — not from the rate” લખાય છે. નહીં તો server rate × વજન ફરી ગણે છે અને ફરક હોય તો save કરવા દેતું નથી — એટલે gross નો ભાવ ભૂલથી fine તરીકે save થઈ શકતો નથી.</li>
+            <li><Btn>Save metal purchase</Btn> દબાવો; confirm box માં ફરી basis, બંને rates અને payable વાંચીને OK કરો.</li>
+            <li>
+              જૂનો stock પહેલી વાર નોંધવો હોય (ખરીદી નહીં) તો <Btn>Opening Metal Stock</Btn>: એ જ રીતે Rate basis અને rate ભરો, પછી “I confirm …” ટીક કરો — ટીક વગર <Btn>Save opening stock</Btn> ચાલતું નથી. કોઈ પણ આંકડો બદલો તો ટીક આપોઆપ નીકળી જાય છે.
+            </li>
           </Steps>
           <BadgeRow>
             <OwnerOnlyBadge />
           </BadgeRow>
-          <p className="text-sm text-zinc-600 dark:text-zinc-400">Opening Metal Stock અને Authorized Adjustment ફક્ત Owner કરી શકે. New Metal Purchase Staff પણ કરી શકે.</p>
+          <p className="text-sm text-zinc-600 dark:text-zinc-400">
+            Opening Metal Stock અને Authorized Adjustment ફક્ત Owner કરી શકે. New Metal Purchase Staff પણ કરી શકે. “More details” (GST, payment, reference) બંધ કરો તો પણ એમાં ભરેલું save થાય છે.
+          </p>
+          <Note>જૂની entries ક્યારેય ફરી ગણાતી નથી — પહેલાં save થયેલા rate અને total એ જ રહે છે.</Note>
+
+          <SubHeading id="metal-stock-history">Metal Stock history (શોધ અને audit)</SubHeading>
+          <Steps>
+            <li>Metal Stock tab માં <Btn>Metal Stock history</Btn> દબાવો.</li>
+            <li>
+              પ્રકાર પસંદ કરો: Opening stock, Purchases, Issue to / return from Karigar, Job allocations / releases, Job issue/return/scrap, Stock adjustments, Revaluations (Owner corrections), Cancellations and reversals — કે Everything.
+            </li>
+            <li>Purity અને શોધ (code, Karigar નામ, job code; Owner માટે voucher કે correction code પણ) ભરી <Btn>Filter</Btn> દબાવો. વધુ entries માટે <Btn>Older →</Btn>.</li>
+            <li>દરેક entry સાથે link દેખાય: “Reverses …” (કઈ entry ને ઉલટાવે છે), “Reversed later by …”, અને revalue થયું હોય તો correction code અને batch.</li>
+          </Steps>
+          <p className="text-sm text-zinc-600 dark:text-zinc-400">
+            Staff ને weights અને codes દેખાય છે, ₹ કે voucher નહીં. Owner ઉલટાવ્યા વગરના adjustment ને અહીંથી જ <Btn>Reverse</Btn> કરી શકે (કારણ સાથે). કશું delete કે edit થતું નથી.
+          </p>
+
+          {isOwner ? (
+            <>
+          <SubHeading id="purity-edit">Purity master બદલવો — ફક્ત આગળની entries</SubHeading>
+          <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+            Settings → Metal/Purity master માં fineness % બદલો તો એ <strong>ફક્ત નવી entries</strong> ને લાગે છે. પહેલાંની purchase, opening stock, issue, receipt અને stock પોતાના save થયેલા fineness અને fine weight સાથે જ રહે છે.
+            જૂની entry સુધારવી હોય તો Corrections વાપરો.
+          </p>
+            </>
+          ) : null}
+
+          <SubHeading id="karigar-metal">Karigar Metal — Company નું સોનું Karigar પાસે</SubHeading>
+          <BadgeRow>
+            <OwnerOnlyBadge />
+          </BadgeRow>
+          <Steps>
+            <li>Jewellery Jobs → <Btn>Karigar Metal</Btn> → Karigar ખોલો.</li>
+            <li><Btn>Issue metal to Karigar</Btn>: stock માંથી Karigar ને (job વગર). Gross કે fine — જે આપો એ પ્રમાણે “Weight entered as” પસંદ કરો; બીજું આપોઆપ ગણાય.</li>
+            <li><Btn>Allocate to job</Btn>: Karigar ના balance માંથી એના જ job પર. Voucher બનતું નથી (બંને Jewellery WIP માં જ છે).</li>
+            <li><Btn>Release from job</Btn>: job નું ન વપરાયેલું સોનું પાછું Karigar ના balance માં. <Btn>Return to stock</Btn>: Karigar સાચે પાછું આપે ત્યારે.</li>
+            <li>દરેક વખતે Preview, પછી save. Statement માં સૌથી નવી entry જ ઉલટાવી શકાય.</li>
+          </Steps>
+          <Note>
+            “Unallocated” = Karigar પાસે, કોઈ job પર નહીં. “Allocated, pending on jobs” = jobs પર મૂકેલું, હજી પાછું નથી આવ્યું. બંનેનો સરવાળો = Karigar પાસે કુલ (fine પર).
+          </Note>
 
           <SubHeading id="task-new-jewellery-job">Jewellery Job કેવી રીતે બનાવવો</SubHeading>
           <Steps>
@@ -599,11 +655,33 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
             <li>Receive date ભરો.</li>
             <li>દરેક તૈયાર piece (output) નું Net metal weight ભરો.</li>
             <li>જે polished diamonds એ piece માં set (જડેલા) છે એ ✓ ટીક કરો — outcome “SET” ગણાશે.</li>
-            <li>વધુ piece બન્યા હોય તો <Btn>+ Add another output</Btn> દબાવીને ઉમેરો.</li>
-            <li>Labour/Making/Setting/Plating charge ભરો.</li>
+            <li>વધુ piece બન્યા હોય તો <Btn>+ Add another output</Btn> દબાવીને ઉમેરો. Gross weight ખબર હોય તો ભરો — ન ભરો તો sticker પર “Gross: Not recorded” છપાશે.</li>
+            <li>
+              <Btn>Labour, making, setting, plating charges &amp; notes</Btn> ખોલી પાંચ charges ભરો: <Btn>Labour charge (₹)</Btn>, <Btn>Making charge (₹)</Btn>, <Btn>Setting charge (₹)</Btn>,{" "}
+              <Btn>Plating charge (₹)</Btn> અને Other expense.
+            </li>
+            <li>Section બંધ કરી દો તો પણ ભરેલા charges <strong>save થાય જ છે</strong> — બંધ section નીચે એક લીટીમાં ભરેલા charges અને Total charges દેખાય છે.</li>
+            <li>
+              <Btn>Preview</Btn> દબાવો: charges (દરેક અને total) દેખાય. Owner ને save થનારો voucher (Dr/Cr lines અને કુલ ખર્ચ) પણ દેખાય — Staff ને કોઈ ₹ ખર્ચ દેખાતો નથી.
+            </li>
             <li>જો બધું કામ પૂરું થઈ ગયું હોય તો <Btn>This completes the job — no more metal will come back from this Karigar</Btn> ટીક કરો.</li>
-            <li><Btn>Receive Finished Jewellery</Btn> દબાવીને save કરો.</li>
+            <li><Btn>Receive Finished Jewellery</Btn> દબાવો; confirm box માં charges અને total ફરી વાંચો.</li>
+            <li>Save થયા પછી job page પર “Receipt saved as …” દેખાય, સાથે <Btn>Print sticker</Btn> / <Btn>Print all stickers from this receipt</Btn>.</li>
           </Steps>
+          <Note>Staff પણ receive કરી શકે: Karigar ના balance (Karigar Metal) કે ગ્રાહકના સોના સામે — ફક્ત વજન દેખાય છે, ખર્ચ નહીં.</Note>
+
+          <SubHeading id="stickers">તૈયાર દાગીનાનું Sticker (લેબલ) છાપવું</SubHeading>
+          <BadgeRow>
+            <StaffCanBadge />
+          </BadgeRow>
+          <Steps>
+            <li>Receipt save થયા પછી <Btn>Print sticker</Btn> કે <Btn>Print all stickers from this receipt</Btn> — દરેક piece નું અલગ sticker. Print box આપોઆપ ખૂલતું નથી.</li>
+            <li>પછીથી ફરી છાપવું (REPRINT): Job page પર receipt પાસે <Btn>Stickers</Btn>, piece પાસે <Btn>Sticker</Btn>; Finished Stock અને Customer Gold ની યાદીઓમાં પણ <Btn>Sticker</Btn>.</li>
+            <li>Size પસંદ કરો: <Btn>50 × 25 mm</Btn> (સામાન્ય), <Btn>50 × 30 mm</Btn> કે <Btn>A4 sheet</Btn> (label printer ન હોય ત્યારે). પછી <Btn>Print</Btn>; print box માં scale 100% / Actual size, Margins: None.</li>
+          </Steps>
+          <Note>
+            Sticker પર ₹ ખર્ચ કે ભાવ ક્યારેય નથી. Status લખાય છે: COMPANY STOCK, CUSTOMER GOLD — AWAITING DELIVERY, DELIVERED, RECEIPT REVERSED — NOT ACTIVE, SOLD… QR code scan કરો તો login પછી એ piece નું page ખૂલે છે. છાપવાથી stock કે હિસાબમાં કંઈ બદલાતું નથી.
+          </Note>
 
           <SubHeading>Return / Scrap (સાચી Purity સાથે)</SubHeading>
           <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
@@ -682,6 +760,38 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
           </Steps>
           <Note>Declared value ફક્ત નોંધ/insurance માટે છે — Company નો ખર્ચ ક્યારેય નથી, અને Staff ને દેખાતી નથી.</Note>
 
+          <SubHeading id="old-gold-exchange">જૂનું સોનું ખરીદવું / Exchange (Old Gold Exchange)</SubHeading>
+          <BadgeRow>
+            <OwnerOnlyBadge />
+            <CheckBeforeSaveBadge />
+          </BadgeRow>
+          <Steps>
+            <li><Btn>Receive gold from …</Btn> → <strong>Purchase/exchange gold from Customer</strong> પસંદ કરો.</li>
+            <li>
+              <Btn>Stated purity (what the Customer says)</Btn> (ગ્રાહક શું કહે છે) અને <Btn>Tested purity</Btn> (ચકાસ્યા પછી સાચી) અલગ ભરો. Gross weight, <Btn>Allowed deduction — stone / dust (g)</Btn> ભરો — કે સીધું “Accepted fine grams”.
+            </li>
+            <li>Valuation rate basis (₹ per fine gram / per gross gram / fixed total) અને rate, Settlement (bill માં credit કે ગ્રાહકને ચૂકવણી), <strong>Reference (ફરજિયાત)</strong> અને કારણ ભરો. Photo optional.</li>
+            <li><Btn>Preview exchange</Btn>: net, fine, value, ₹ per gross/fine gram અને ગ્રાહકનું credit પહેલાં → પછી દેખાય.</li>
+            <li>“I approve…” ટીક કરી <Btn>Approve and post exchange</Btn>. એક જ પગલામાં સોનું ગ્રાહક પાસેથી આવ્યું નોંધાય છે અને Company stock બને છે (Dr Metal Inventory / Cr ગ્રાહકનું Payable). પછી <Btn>Print the exchange acknowledgment</Btn>.</li>
+          </Steps>
+          <Note>
+            બે અલગ વાત: <strong>ગ્રાહકનું સોનું દાગીના માટે</strong> = Company માટે ₹0, ગ્રાહકનું જ. <strong>Exchange/ખરીદી</strong> = Owner ની મંજૂરીથી Company નો stock અને ગ્રાહકનું credit — એક જ વાર.
+            Bill બનાવતી વખતે credit નો થોડો કે આખો ભાગ વાપરી શકાય; બાકી credit Customer Gold tab ના “Gold-purchase credit (Owner)” box માં દેખાય છે.
+          </Note>
+
+          <SubHeading id="purchase-reversal">ખરીદી / Exchange ઉલટાવવું (Owner)</SubHeading>
+          <BadgeRow>
+            <OwnerOnlyBadge />
+            <CautionBadge />
+          </BadgeRow>
+          <Steps>
+            <li>Customer Gold tab → “Approved purchases / exchanges” માં <Btn>Reverse ZL-CGP-…</Btn> દબાવો.</li>
+            <li>
+              ઉલટાવી ન શકાય તો કારણ દેખાય: એ purity નો Company stock પછી વપરાયો/હલ્યો હોય, પછી revaluation થયું હોય, credit bill માં વપરાયું હોય કે ગ્રાહકને ચૂકવણી થઈ ગઈ હોય — પહેલાં એ ઉલટાવો.
+            </li>
+            <li>કારણ (ઓછામાં ઓછા 10 અક્ષર) → <Btn>Confirm reversal of …</Btn>. Mirror voucher બને, એટલું જ સોનું એ જ value એ stock માંથી નીકળે, અને સોનું ફરી ગ્રાહકનું (safe માં) થાય.</li>
+          </Steps>
+
           <SubHeading>2. Karigar ને આપવું અને Job પર મૂકવું</SubHeading>
           <BadgeRow>
             <OwnerOnlyBadge />
@@ -733,6 +843,10 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
               Job <strong>Completed</strong> હોય ત્યારે જ <Btn>Deliver to the Customer</Btn> દેખાય. Pieces પસંદ કરો, કોણે લીધું (નામ), તારીખ, reference ભરી <Btn>Record delivery</Btn>.
             </li>
           </Steps>
+          <Note>
+            ગ્રાહકના તૈયાર દાગીના <strong>Company ના Finished Stock માં નથી</strong>. એમાં Company નો ખર્ચ (હીરા, making વગેરે; ગ્રાહકનું સોનું ₹0) account <strong>1340 Customer Jewellery Work Awaiting Delivery</strong> માં રહે છે. {isOwner ? " Delivery થાય ત્યારે એ ખર્ચ 1340 માંથી COGS માં જાય છે." : " Delivery થાય ત્યારે એ 1340 માંથી નીકળી જાય છે."}
+            Delivery પહેલાં bill જરૂરી નથી, પણ bill વગરની delivery “exceptions” માં દેખાય છે.
+          </Note>
 
           <SubHeading>5. ભૂલ સુધારવી</SubHeading>
           <BadgeRow>
@@ -763,6 +877,13 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
           <Note>
             ગ્રાહક + Company બંનેનું સોનું એક Job પર (mixed): Owner ની મંજૂરી, Company સોનું Karigar Metal થી પહેલાં Job પર, અને receipt વખતે ગ્રાહકનો હિસ્સો Owner જ લખે. Staff mixed receipt કરી શકતા નથી.
           </Note>
+          <SubHeading id="correction-limits">શું ઉલટાવી શકાય, શું નહીં</SubHeading>
+          <ul className="list-disc space-y-1.5 pl-5 text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+            <li>ફક્ત Owner ઉલટાવી શકે, અને હંમેશાં <strong>નવીથી જૂની</strong> તરફ — પછીની entry આધારિત હોય તો પહેલાં એ.</li>
+            <li>આ version માં બનેલી Customer Gold receipts ઉલટાવી શકાય; Company-gold receipts અને જૂની receipts નહીં (એ Corrections થી સુધરે છે).</li>
+            <li>ગ્રાહકના piece પર “Add missing charges” અને cost override થતું નથી.</li>
+            <li>કશું delete થતું નથી — દરેક સુધારો નવી, કારણ સાથેની entry તરીકે history માં રહે છે.</li>
+          </ul>
 
           <SubHeading>Reports</SubHeading>
           <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
