@@ -1,3 +1,4 @@
+import * as React from "react";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -261,5 +262,50 @@ describe("receipt charges persist whether the section is open or collapsed", () 
     await save();
     expect(saved[0].get("settingCharge")).toBe("1250.50");
     expect(confirms[0]).toContain("Charges: Setting ₹1250.50 · Total charges ₹1250.50");
+  });
+});
+
+describe("a successful save reports the receipt code even when the form is gone at once", () => {
+  it("onDone gets the saved code from inside the action — before the parent unmounts the form in the same render", async () => {
+    const calls: (string | undefined)[] = [];
+    let closeFromServer: ((open: boolean) => void) | null = null;
+    const { receiveFinishedJewelleryAction } = await import("@/app/actions/jewellery");
+    // The server refresh that carries the result also completes the job and
+    // hides the form — simulated by closing it before the action resolves.
+    vi.mocked(receiveFinishedJewelleryAction).mockImplementationOnce(async (_prev: unknown, fd: FormData) => {
+      saved.push(fd);
+      closeFromServer?.(false);
+      return { success: true, code: "ZL-JREC-TEST" };
+    });
+    function Parent() {
+      // A completed job hides its receive form in the very render that carries
+      // the action's result, so only a report from inside the action can arrive.
+      const [open, setOpen] = React.useState(true);
+      closeFromServer = setOpen;
+      return open ? (
+        <ReceiveFinishedForm
+          jobId="job-3"
+          jobCode="ZL-JJOB-2026-000003"
+          jewelleryType="BRACELET"
+          pendingFineWeight="50.000"
+          purities={PURITIES}
+          issuedMetal={[COMPANY_24K]}
+          alloyPendingGrossWeight="0.000"
+          unresolvedDiamonds={[]}
+          custodySources={[]}
+          customerGoldSources={[]}
+          customerName={null}
+          isOwner
+          onDone={(code) => calls.push(code)}
+        />
+      ) : (
+        <p>closed</p>
+      );
+    }
+    render(<Parent />);
+    enterPiece("50.000", "p24");
+    await save();
+    expect(calls).toEqual(["ZL-JREC-TEST"]);
+    expect(screen.getByText("closed")).toBeTruthy();
   });
 });

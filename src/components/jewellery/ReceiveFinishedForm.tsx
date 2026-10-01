@@ -247,7 +247,18 @@ export function ReceiveFinishedForm({
   /** Called with the saved receipt's code, so the page can offer "Print sticker". */
   onDone?: (receiptCode?: string) => void;
 }) {
-  const [state, formAction, pending] = useActionState(receiveFinishedJewelleryAction, undefined);
+  // Success is reported from inside the action, before React commits its
+  // result: the same server refresh can complete the job and unmount this form
+  // in that commit, so an effect watching `state` would never run.
+  const onDoneRef = useRef(onDone);
+  useEffect(() => {
+    onDoneRef.current = onDone;
+  }, [onDone]);
+  const [state, formAction, pending] = useActionState(async (prev: Awaited<ReturnType<typeof receiveFinishedJewelleryAction>>, formData: FormData) => {
+    const result = await receiveFinishedJewelleryAction(prev, formData);
+    if (result?.success) onDoneRef.current?.(result.code);
+    return result;
+  }, undefined);
   const [previewState, previewAction, previewPending] = useActionState<CustodyPreviewState, FormData>(previewReceiptCustodyAction, undefined);
   const [previewedSignature, setPreviewedSignature] = useState<string | null>(null);
   const issuedFineBearing = useMemo(() => issuedMetal.filter((m) => !m.isAlloy), [issuedMetal]);
@@ -323,10 +334,6 @@ export function ReceiveFinishedForm({
   const [notes, setNotes] = useState("");
   const [idempotencyKey] = useState(() => crypto.randomUUID());
   const formRef = useRef<HTMLFormElement>(null);
-
-  useEffect(() => {
-    if (state?.success) onDone?.(state.code);
-  }, [state?.success, state?.code, onDone]);
 
   /** Final Purity choices for an output of `metalType` — mirrors the server rule in receiveFinishedJewellery. */
   function finalPurityOptions(metalType: string): FinalPurityOption[] {
