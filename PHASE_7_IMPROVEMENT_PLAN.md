@@ -1,5 +1,7 @@
 # ZYNORALUXE ERP — Phase 7 Improvement Plan
 
+> **Historical record** — accurate as the Phase 7 plan; not updated since. For the current system see `README.md` (Current state) and `OPERATIONS.md`.
+
 Companion to `PHASE_7_CURRENT_STATE_AUDIT.md`. Every design choice below
 is traced to an audit finding (`A4.x` = audit table row). Additive upgrade
 on top of `main` @ `b472901`; nothing in Phases 1–6 is rebuilt.

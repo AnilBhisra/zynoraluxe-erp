@@ -1,5 +1,7 @@
 # Phase 2 (Accounting) — Verification Report
 
+> **Historical record** — accurate for Phase 2; not updated since. For the current system see `README.md` (Current state) and `OPERATIONS.md`.
+
 Branch: `phase-2-accounting`, based on the approved Phase 1 commit
 `19493fdac5a444bbbfc43a78becd5a9c9282b487`. Not committed, pushed, or
 deployed — awaiting Owner review.

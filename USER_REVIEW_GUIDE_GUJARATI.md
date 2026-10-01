@@ -1,5 +1,7 @@
 # ZYNORALUXE ERP — સરળ Review Guide
 
+> **Historical record** — accurate for the Phase 7 owner review (the in-app Help is current); not updated since. For the current system see `README.md` (Current state) and `OPERATIONS.md`.
+
 આ guide Owner માટે છે, જેથી software જાતે ચેક કરી શકાય. કોઈ password
 અથવા secret આ file માં નથી.
 

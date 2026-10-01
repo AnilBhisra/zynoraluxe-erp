@@ -1,5 +1,7 @@
 # ZYNORALUXE ERP — Version 1 Final Acceptance Report
 
+> **Historical record** — accurate at V1 acceptance; not updated since. For the current system see `README.md` (Current state) and `OPERATIONS.md`.
+
 Branch: `v1-final-acceptance`, based on the approved Phase 5 commit
 `e1a292e5db4d069b753e28210f6ed2550ab2a388` (itself directly on Phase 4
 `548a44b`, Phase 3 `5b1a17b`, Phase 2 `0d998a8`, Phase 1 `19493fd`).

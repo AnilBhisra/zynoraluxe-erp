@@ -403,7 +403,7 @@ numbers, so the undo path is known-good before the session closes.
 | Item | Status |
 |---|---|
 | Adjustment accounting | Implemented and tested to the approved rules; accounts 4200/5500 must be seeded on production before an adjustment is posted there |
-| Tiers 8B–8E | Not started; 8A is the foundation they call |
+| Tiers 8B–8E | Not started when this report was written (8A only). Current status: see the status note at the top of `PHASE_8_PLAN.md` |
 | Correction coverage | Only `METAL_OPENING_STOCK` has a planner. Other entity types are defined and refused with a clear message until their tier lands |
 | Staff-facing correction UI | Staff can prepare drafts through the action layer; the history page is Owner-only, so 8E adds the per-module Staff surface |
 | Browser E2E for corrections | Deferred to 8E, when there is a form to drive; 8A is covered by real-database tests instead |

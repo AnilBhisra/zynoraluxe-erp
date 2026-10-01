@@ -1,5 +1,7 @@
 # Phase 4 (Jewellery Jobs & Manufacturing) — Verification Report
 
+> **Historical record** — accurate for Phase 4 (gold was then issued to jobs directly; see Karigar Metal today); not updated since. For the current system see `README.md` (Current state) and `OPERATIONS.md`.
+
 Branch: `phase-4-jewellery-jobs`, based on the approved Phase 3 commit
 `5b1a17bda060c6f5035a088018d9fa7743a3d16f`. Not committed, pushed, or
 deployed — awaiting Owner review, per explicit instruction.

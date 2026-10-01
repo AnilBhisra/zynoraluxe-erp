@@ -1,5 +1,7 @@
 # Phase 7 Verification Report
 
+> **Historical record** — accurate for Phase 7; not updated since. For the current system see `README.md` (Current state) and `OPERATIONS.md`.
+
 Branch `phase-7-polished-metal-process`, based on `b472901`.
 Specification: `../ZYNORALUXE_PHASE_7_CLAUDE_MASTER_INSTRUCTIONS.md`.
 Audit: `PHASE_7_CURRENT_STATE_AUDIT.md`. Design: `PHASE_7_IMPROVEMENT_PLAN.md`.

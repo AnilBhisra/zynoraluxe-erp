@@ -1,5 +1,7 @@
 # Phase 3 (Diamond Manufacturing) — Verification Report
 
+> **Historical record** — accurate for Phase 3; not updated since. For the current system see `README.md` (Current state) and `OPERATIONS.md`.
+
 Branch: `phase-3-diamond`, based on the approved Phase 2 commit
 `0d998a849a1c1d4e907758deb69754ee1a7046b5`. Not committed, pushed, or
 deployed — awaiting Owner review, per explicit instruction.

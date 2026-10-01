@@ -198,13 +198,19 @@ outputs, charges, stones, returns).
 | Customer gold intake, issue/return to Karigar, allocate/release, consumption, return to Customer, scrap, loss | **none** — custody only, no value |
 | Receipt of a Customer-gold piece | as today for Company parts, but the finished debit for Customer pieces goes to **1340** (not 1330); Customer gold itself carries ₹0 |
 | Purchase/exchange (Owner-approved) | Dr 1300 approved value / Cr 2000 AP (Customer), via `createMetalPurchase`; PURCHASE_IN at the approved value |
+| One-step Old Gold Exchange (Phase 8C) | the intake (no voucher) and the purchase above of exactly that intake, in one transaction |
+| Purchase/exchange reversal (Owner) | mirror of the purchase voucher (Dr 2000 / Cr 1300); ADJUSTMENT_OUT linked to the PURCHASE_IN by `reversalOfMovementId` at the same weight and value; CONVERT_TO_COMPANY mirrored back to the safe |
 | Bill | Dr 1100 AR / Cr 4000 / Cr 700x GST; credit applied: Dr 2000 / Cr 1100 |
 | Delivery | Dr 5200 COGS / Cr 1340 (Company cost in the delivered pieces) |
 | Reversals (entries, bill, delivery) | mirror vouchers |
 | Reversal of a Customer Gold receipt | the standard mirror of the receipt voucher (Cr 1340 / Cr 1330 as posted, Dr WIP, Dr 2000 Karigar payable for charges and Karigar-supplied material, stones back); no Company metal pool movement is ever reversed |
 
 1300/1310/1320/1330 reconciliation is unchanged by Customer gold. A new line
-reconciles 1340 to the Company cost of pieces awaiting delivery.
+reconciles 1340 to the Company cost of pieces awaiting delivery, and (Phase 8C)
+a sixth line `CGCR` reconciles the Customer credit path: Accounts Payable on
+every purchase/exchange voucher and its reversal, and on every bill's
+"Gold-purchase credit applied" lines and their reversals, against the records
+(approved value of live purchases − credit applied by live bills).
 
 ## 4. Migrations (additive only; apply in this order, before the code)
 
@@ -220,8 +226,13 @@ reconciles 1340 to the Company cost of pieces awaiting delivery.
    `JEWELLERY_RECEIPT_REVERSAL_IN`, nullable reversal columns on
    `jewellery_receipts` and `jewellery_packet_resolutions`, two unique indexes,
    two foreign keys.
+4. `20261007090000_old_gold_exchange` (Phase 8C) — nullable
+   `customer_gold_receipts.statedPurity`; on `customer_gold_purchases`: nullable
+   unique `customerGoldReceiptId`, `status` (default `POSTED`) and nullable
+   reversal columns, three unique indexes, three foreign keys.
 
-No existing row, column type or constraint changes; no backfill.
+No existing row, column type or constraint changes; no backfill. With all four
+the database has 29 migrations.
 
 ## 5. Limitations (this version)
 
@@ -232,7 +243,14 @@ No existing row, column type or constraint changes; no backfill.
   the reversal record); Company receipts and older receipts are not (as before).
   A Customer Gold receipt that returned Company metal to stock/scrap is not
   reversible either — its Company side is corrected through Corrections.
-* A purchase/exchange is corrected by an Owner correction, not reversed.
+* A purchase/exchange can be reversed by the Owner (Phase 8C) only while
+  nothing depends on it: no later Company movement or posted revaluation of
+  that metal and purity, its credit not applied to a bill, the Customer not
+  paid against it. Otherwise the dependent entry is reversed first; a
+  corrected value is a reversal followed by a new exchange.
+* Old Gold intake stays Owner-only; Staff record no intake and see weights only.
+* The one-step exchange buys the whole intake; buying part of the Customer's
+  safe balance remains the separate "Buy from safe balance" purchase.
 * "Add missing charges" and cost override are refused on Customer-owned pieces.
 * The receipt form's Customer-gold mode skips the browser-side reconciliation
   check and relies on the server preview (which is mandatory before saving).
@@ -251,8 +269,14 @@ No existing row, column type or constraint changes; no backfill.
   balance; balances per pool; statement with newest-first reversal (Owner);
   pieces, purchases, bills, deliveries; all-Customer reconciliation,
   Karigar-wise, job-wise, awaiting delivery and exceptions.
-* Printable pages: `/customer-gold/receipt/[id]` (acknowledgment) and
-  `/customer-gold/statement/[customerId]`.
+* Printable pages: `/customer-gold/receipt/[id]` (acknowledgment; shows the
+  stated purity and, for an exchange, the purchase), `/customer-gold/statement/[customerId]`
+  and (Owner only) `/customer-gold/purchase/[id]` (purchase/exchange
+  acknowledgment with rate, value, settlement, approval and any reversal).
+* Phase 8C: "Purchase/exchange gold from Customer" opens the one-step Old Gold
+  Exchange form; the purchase list shows status, reference and the intake, with
+  the Owner's acknowledgment link and reversal check/confirm; an Owner-only
+  credit card shows credit given, applied and still available.
 * Job page: gold source panel (Customer / Company via Karigar Metal /
   historical direct / combination), Owner mix approval, Customer pieces, bill
   (Owner) and delivery (Owner or Staff) with reversals (Owner).
@@ -261,7 +285,7 @@ No existing row, column type or constraint changes; no backfill.
   share on mixed jobs, a mandatory stale-checked preview.
 * Every money figure is read from the database only for the Owner.
 
-## 7. Release plan (data-preserving; not executed)
+## 7. Release plan (historical — executed for 027a8a2; see `OPERATIONS.md` for the current release)
 
 1. Preflight: branch ancestry on origin/main, clean tree, current production
    commit and public IP re-checked, read-only production checks.

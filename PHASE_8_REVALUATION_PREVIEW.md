@@ -1,5 +1,7 @@
 # Phase 8 — Opening Gold Revaluation Preview (PRODUCTION, NOT APPLIED)
 
+> **Historical record** — accurate for the Phase 8 revaluation preview; not updated since. For the current system see `README.md` (Current state) and `OPERATIONS.md`.
+
 **Status: awaiting Owner approval. Nothing in this document has been applied.**
 All figures were read from production in a `default_transaction_read_only = on`
 session on 2026-09-21 and recomputed with the posting engine's own decimal rules

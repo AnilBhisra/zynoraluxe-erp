@@ -1,5 +1,7 @@
 # ZYNORALUXE ERP — Phase 7 Current-State Audit
 
+> **Historical record** — accurate as of the Phase 7 audit; not updated since. For the current system see `README.md` (Current state) and `OPERATIONS.md`.
+
 Audit date: 2026-09-15. Scope: everything Phase 7 touches — purchases,
 parties, Rough/Polished Diamond, Jewellery material issue/return, metal
 purity and stock semantics, cost allocation and postings, Karigar

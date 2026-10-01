@@ -43,11 +43,21 @@ fine-weight reconciliation; direct Polished Diamond Purchase with
 Party / Supplier and Dalal / Broker and immutable packet stock; configurable
 Manufacturer processes (4P / Laser, HPHT / Grow, Polishing, Rough Polish) on
 the Manufacturer section and bulk packet jobs on the Job Manufacturer section.
+Phase 8 and after: audited corrections and revaluation; Karigar Metal custody
+(gold goes to a Karigar, then to jobs, and is taken at receipt time); Customer
+Gold (a Customer's own gold, Company cost of their pieces in 1340 until
+delivery, bills, deliveries, receipt reversal); receipt charges that always
+save; Metal Purchase / Opening Stock rate basis with effective rates and a
+complete Metal Stock history (8B); the Old Gold Exchange built on Customer Gold
+(8C); printable finished-piece stickers with a QR lookup.
+
+**Current state, release order, reconciliation and rollback limits:
+`OPERATIONS.md`.** The Gujarati in-app Help (`/help`) is the user guide.
 
 Full scope is defined in `../ZYNORALUXE_JEWELLERY_ERP_MASTER_PLAN.md`
 (the locked V1 source of truth, plus a Section 13 "Scope History"
 recording this Owner-approved Phase 6 addition). This build implements
-**Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5 + Phase 6 + Phase 7**. See
+**Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5 + Phase 6 + Phase 7 + Phase 8 (8A–8D) and the later features above**. See
 `PHASE_2_VERIFICATION.md`, `PHASE_3_VERIFICATION.md`,
 `PHASE_4_VERIFICATION.md`, `PHASE_5_VERIFICATION.md`,
 `PHASE_6_VERIFICATION.md` and `PHASE_7_VERIFICATION.md` for the detailed
@@ -1530,9 +1540,12 @@ test-data cleanup proof.
 
 ## What's deliberately not built yet
 
-Accounting, Diamond, Jewellery Jobs, Costing, and Finished Jewellery
-Sale/Stock/COGS/P&L (Phase 6) are real, working business logic.
-Deployment and marketplace/e-commerce integration are not started.
+Accounting, Diamond, Jewellery Jobs, Costing, Finished Jewellery
+Sale/Stock/COGS/P&L, corrections, Karigar Metal, Customer Gold, Old Gold
+Exchange and stickers are real, working business logic; the system is deployed
+on Vercel + Supabase (see `OPERATIONS.md`). Marketplace/e-commerce integration
+and Phase 8E's shared "Correct / Reverse" component on every module are not
+built.
 
 **Phase 6, approved by the Owner, was Finished Jewellery Sale → Stock →
 COGS/P&L integration** — closing the intentionally-excluded Version 1

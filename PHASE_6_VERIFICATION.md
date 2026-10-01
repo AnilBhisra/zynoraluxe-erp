@@ -1,5 +1,7 @@
 # Phase 6 (Finished Jewellery Sales, Stock, COGS & Actual P&L) — Verification Report
 
+> **Historical record** — accurate for Phase 6; not updated since. For the current system see `README.md` (Current state) and `OPERATIONS.md`.
+
 Branch: `phase-6-finished-sales`, based on the approved V1 Final
 Acceptance commit `5912ddb4011a3a2f610fd956a41351ad0a7259b9`. **Not
 committed, staged, pushed, merged, tagged, or deployed** — this file

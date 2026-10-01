@@ -1,5 +1,7 @@
 # Phase 5 (Jewellery Costing & Selling-Price Calculation) — Verification Report
 
+> **Historical record** — accurate for Phase 5; not updated since. For the current system see `README.md` (Current state) and `OPERATIONS.md`.
+
 Branch: `phase-5-costing`, based on the approved Phase 4 commit
 `548a44badafe3e76f21f508090752f3663898243`. Not committed, pushed,
 merged, or deployed — awaiting Owner review, per explicit instruction.

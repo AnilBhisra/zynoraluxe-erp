@@ -66,6 +66,15 @@ Also in 8A: **D-2 fix** — opening metal stock posts `Dr 1300 / Cr 3000` inside
 same transaction, with a migration-safe path for databases that already have
 unposted opening movements.
 
+> **Status (2026-10):** 8A live. 8B built (commit `d013945`, not yet deployed): rate
+> basis + effective rates on both forms, server re-check, complete searchable
+> Metal Stock history, purity future-only warning. 8D was delivered as Customer
+> Gold (live since `027a8a2`). 8C was delivered as the Old Gold Exchange built on
+> Customer Gold (commit `5761149`, not yet deployed) — no separate
+> `OldGoldExchange` table. 8E: the Corrections page and per-module reversals
+> exist; the single shared "Correct / Reverse" component on every module was
+> not built. See `OPERATIONS.md`.
+
 ### 8B — Metal entry forms and history
 
 Opening Metal Stock and Metal Purchase forms show gross weight, purity and

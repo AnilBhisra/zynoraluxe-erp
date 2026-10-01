@@ -72,18 +72,18 @@ Receipt થયા પછી job cancel કરવાનો પ્રયત્ન 
 
 ## 8. Metal/Purity અને Metal Stock
 
-Jewellery Jobs → `Metal Stock` → purchase/add workflow માં Supplier, metal/purity, gross weight, amount અને invoice details भरो. `Gold 22K` અને `Gold 18K` જેવી purity અલગ stock છે; label જોઈ પસંદ કરો. Save પછી stock quantity તપાસો.
+Jewellery Jobs → `Metal Stock` → `New Metal Purchase` માં Supplier, metal/purity, gross weight અને `Rate basis` (`Per gross gram`, `Per fine gram` કે `Fixed total`) પસંદ કરી rate ભરો — rate નું ખાનું basis પ્રમાણે નામ બદલે છે (દા.ત. `Rate per FINE gram (₹)`). નીચેના box માં save થનારો basis, ₹ per gross gram અને ₹ per fine gram બંને તપાસો. `Gold 22K` અને `Gold 18K` જેવી purity અલગ stock છે; label જોઈ પસંદ કરો. Save પછી stock quantity તપાસો. જૂની entries શોધવા `Metal Stock history` વાપરો (Staff ને ફક્ત વજન દેખાય છે).
 
-**ફક્ત Owner:** Settings માં Metal/Purity master બદલી શકે. જૂની purity ની fineness બદલતાં પહેલાં historical stock પર અસર સમજવી જરૂરી છે.
+**ફક્ત Owner:** Settings માં Metal/Purity master બદલી શકે. Fineness બદલવાથી ફક્ત નવી entries ને અસર થાય છે — જૂની purchase/stock/receipt પોતાના save થયેલા fineness સાથે જ રહે છે; જૂની entry સુધારવી હોય તો Corrections.
 
 ## 9. Jewellery Job — create, issue, receive અને correction
 
 **Staff કરી શકે**
 
 1. Jewellery Jobs → `New Jewellery Job` માં Karigar, description અને job details भरो; `Create Jewellery Job` દબાવો.
-2. Job ખોલી `Issue Materials` થી available metal અને diamonds જ આપો.
+2. Gold job ને સીધું આપાતું નથી: Owner `Karigar Metal` tab માંથી Karigar ને આપે, અને receipt વખતે job ના Karigar ના balance માંથી જરૂર જેટલું આપોઆપ લેવાય (`Preview gold allocation`). `Issue Materials` થી diamonds, packets, silver/platinum અને Copper/Alloy જ આપો.
 3. Actual quantity/weight આપ્યા પછી Save કરો અને balances તપાસો.
-4. તૈયાર માલ થોડો આવે તો `Receive Finished Jewellery` માં partial receipt કરો.
+4. તૈયાર માલ થોડો આવે તો `Receive Finished Jewellery` માં partial receipt કરો. પાંચ charges (`Labour charge (₹)`, `Making charge (₹)`, `Setting charge (₹)`, `Plating charge (₹)`, Other expense) ભરો — section બંધ કરો તો પણ save થાય છે. `Preview` માં charges અને total તપાસો. Save પછી `Print sticker` / `Print all stickers from this receipt` થી દરેક piece નું sticker છાપો.
 5. છેલ્લી receipt વખતે remaining metal/diamonds અને returned/scrap values પૂરા મેળવો; પછી final receipt કરો.
 
 Material issue પછી સીધું original record બદલશો નહીં. ઉપલબ્ધ correction/override action Owner ની મંજૂરીથી જ વાપરો. Received output હોય તો job cancel ન થઈ શકે; Owner ને જણાવો.
@@ -197,15 +197,23 @@ Brokerage એક જ વાર નોંધાય છે. Dalal ને payment �
 
 ## 20. 24K Issued → 18K / 14K / 9K અને Alloy Added
 
-1. Jewellery Job ખોલી `Issue Materials` માં 24K gold આપો. Company નું Copper/Alloy આપવું હોય તો `Copper/Alloy` purity ની line ઉમેરો.
+1. 24K gold Owner `Karigar Metal` → `Issue metal to Karigar` થી Karigar ને આપે (job ને સીધું નહીં). Company નું Copper/Alloy આપવું હોય તો job ના `Issue Materials` માં `Copper/Alloy` purity ની line ઉમેરો.
 2. Polished packets વાપરવા હોય તો "Polished Diamond packets" માં દરેક packet ના Pieces અને Carat ભરો.
-3. માલ આવે ત્યારે `Receive Finished Jewellery` ખોલો — ઉપર "24K Issued" દેખાશે.
+3. માલ આવે ત્યારે `Receive Finished Jewellery` ખોલો — gold source માં Karigar નું 24K દેખાશે; `Preview gold allocation` થી કેટલું લેવાશે તે જુઓ.
 4. દરેક output માં net weight અને `Final Purity: 18K / 14K / 9K` પસંદ કરો. `Fine Gold Weight` અને `Alloy Added` આપોઆપ ગણાશે.
 5. `Alloy Added` ને વહેંચો: `From Company Copper/Alloy (g)`, `Karigar-added alloy (g)` (charge હોય તો `Karigar alloy charge (₹)`), અથવા `Included, no separate cost (g)`. સરવાળો બરાબર Alloy Added જેટલો જ હોવો જોઈએ.
 6. `Returned Gold` અને `Scrap` ભરો; packet stones માટે Set / Returned / Damaged (Owner) ભરો.
 7. નીચે Reconciliation તપાસો — હિસાબ મળે નહીં ત્યાં સુધી Save નહીં થાય.
 
 ઉદાહરણ: 10.000 g 24K (100%) આપ્યું → 12.000 g 18K આવ્યું = 9.000 g fine gold + 3.000 g alloy, અને 1.000 g fine `Process Loss`. Scrap અલગ stock માં જાય છે અને ફરી issue થતો નથી. 9K = 37.5%, 14K = 58.5%, 18K = 75%.
+
+## 21. Customer Gold અને જૂનું સોનું (Exchange)
+
+ગ્રાહકનું સોનું દાગીના માટે આવે તો એ ગ્રાહકનું જ રહે છે (Company stock નહીં, ખર્ચ નહીં). Company જૂનું સોનું ખરીદે/exchange કરે તો એ `Purchase/exchange gold from Customer` થી, Owner ની મંજૂરી અને ફરજિયાત reference સાથે જ થાય છે. ગ્રાહકના તૈયાર દાગીના delivery સુધી Company ના Finished Stock માં નહીં, અલગ "awaiting delivery" માં રહે છે. Staff ને આ બધામાં ફક્ત વજન દેખાય છે. વિગત માટે in-app Help → Customer Gold.
+
+## 22. Sticker છાપવું
+
+Job page, Finished Stock અને Customer Gold યાદીઓમાં `Sticker` / `Stickers` થી ફરી છાપી શકાય (REPRINT). Size `50 × 25 mm`, `50 × 30 mm` કે `A4 sheet`. Sticker પર ₹ ક્યારેય નથી; છાપવાથી stock કે હિસાબ બદલાતો નથી.
 
 ---
 
