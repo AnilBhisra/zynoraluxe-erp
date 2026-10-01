@@ -13,6 +13,8 @@ const PROTECTED_PREFIXES = [
   "/diamond",
   "/jewellery-jobs",
   "/customer-gold",
+  "/stickers",
+  "/p",
   "/costing",
   "/settings",
   "/help",

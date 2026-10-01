@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { JewelleryPhotoUploadField } from "@/components/jewellery/PhotoUploadField";
 import type { CustomerGoldPoolRow, CustomerGoldStatement } from "@/lib/jewellery/customerGoldReports";
+import { stickerHref } from "@/lib/jewellery/stickerLinks";
 
 /**
  * Customer Gold (CUSTOMER_GOLD_DESIGN.md). A Customer's own gold, held for
@@ -1057,7 +1058,8 @@ function StatementView({ statement, isOwner, onDone }: { statement: CustomerGold
             {statement.pieces.map((p) => (
               <li key={p.id}>
                 {p.finishedCode} ({p.jobCode}) · {p.status === "DELIVERED_TO_CUSTOMER" ? "Delivered" : p.status === "RECEIPT_REVERSED" ? "Receipt reversed" : "Awaiting delivery"} · net {p.netMetalWeight} g · Customer gold {p.customerGoldFineWeight} g fine
-                {p.companyCost !== null ? ` · Company cost ₹${p.companyCost} (Customer gold ₹0 — excluded from Company material cost)` : ""}
+                {p.companyCost !== null ? ` · Company cost ₹${p.companyCost} (Customer gold ₹0 — excluded from Company material cost)` : ""} ·{" "}
+                <a className="font-medium underline underline-offset-2" href={stickerHref({ pieces: [p.finishedCode], reprint: true, back: `/jewellery-jobs?tab=customer-gold&customerId=${statement.customer.id}` })} target="_blank" rel="noreferrer">Sticker</a>
               </li>
             ))}
           </ul>
@@ -1233,7 +1235,8 @@ function Reports({ reports, isOwner }: { reports: CustomerGoldTabData["reports"]
                   {r.jobCode}
                 </a>{" "}
                 · {r.customerName} · net {r.netMetalWeight} g · Customer gold {r.customerGoldFineWeight} g fine
-                {isOwner && r.companyCost !== null ? ` · Company cost ₹${r.companyCost}` : ""}
+                {isOwner && r.companyCost !== null ? ` · Company cost ₹${r.companyCost}` : ""} ·{" "}
+                <a className="font-medium underline underline-offset-2" href={stickerHref({ pieces: [r.finishedCode], reprint: true, back: "/jewellery-jobs?tab=customer-gold" })} target="_blank" rel="noreferrer" data-testid={`cg-awaiting-sticker-${r.finishedCode}`}>Sticker</a>
               </li>
             ))}
           </ul>

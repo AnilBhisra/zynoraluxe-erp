@@ -1,5 +1,6 @@
 "use client";
 
+import { stickerHref } from "@/lib/jewellery/stickerLinks";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -243,6 +244,9 @@ export function JobDetailView({
   const [showIssueForm, setShowIssueForm] = useState(false);
   const [showReceiveForm, setShowReceiveForm] = useState(false);
   const [showOverrideForReceipt, setShowOverrideForReceipt] = useState<string | null>(null);
+  // The receipt just saved on this page — shown with its print actions. Printing
+  // is always the user's choice; nothing opens the print dialog by itself.
+  const [savedReceiptCode, setSavedReceiptCode] = useState<string | null>(null);
 
   function handleSaved() {
     setShowIssueForm(false);
@@ -250,6 +254,13 @@ export function JobDetailView({
     setShowOverrideForReceipt(null);
     router.refresh();
   }
+  function handleReceiptSaved(receiptCode?: string) {
+    setSavedReceiptCode(receiptCode ?? null);
+    handleSaved();
+  }
+  const jobBack = `/jewellery-jobs?jobId=${job.id}`;
+  const savedReceipt = savedReceiptCode ? job.receipts.find((r) => r.receiptCode === savedReceiptCode) : undefined;
+  const savedPieces = savedReceipt ? job.finishedOutputs.filter((o) => o.receiptId === savedReceipt.id) : [];
 
   const canIssueMaterials = job.canIssueMaterials;
   const canReleaseToKarigar =
@@ -509,10 +520,29 @@ export function JobDetailView({
                 customerGoldSources={customerGoldSources}
                 customerName={job.customerName}
                 isOwner={isOwner}
-                onDone={handleSaved}
+                onDone={handleReceiptSaved}
               />
             </div>
           ) : null}
+        </div>
+      ) : null}
+
+      {savedReceiptCode ? (
+        <div className="rounded-2xl border border-emerald-300 bg-emerald-50 p-4 text-sm dark:border-emerald-800 dark:bg-emerald-950/30" data-testid="receipt-saved-banner">
+          <p className="font-medium text-emerald-900 dark:text-emerald-200">Receipt saved as {savedReceiptCode}.</p>
+          <div className="mt-2 flex flex-wrap gap-4">
+            {savedPieces.length === 1 ? (
+              <a className="font-medium underline underline-offset-4" href={stickerHref({ pieces: [savedPieces[0].finishedCode], back: jobBack })} target="_blank" rel="noreferrer" data-testid="print-sticker">
+                Print sticker
+              </a>
+            ) : null}
+            <a className="font-medium underline underline-offset-4" href={stickerHref({ receipt: savedReceiptCode, back: jobBack })} target="_blank" rel="noreferrer" data-testid="print-all-stickers">
+              Print all stickers from this receipt{savedPieces.length > 0 ? ` (${savedPieces.length})` : ""}
+            </a>
+            <button type="button" className="text-zinc-600 underline underline-offset-4 dark:text-zinc-400" onClick={() => setSavedReceiptCode(null)}>
+              Dismiss
+            </button>
+          </div>
         </div>
       ) : null}
 
@@ -536,7 +566,16 @@ export function JobDetailView({
                 {job.receipts.map((r) => (
                   <tr key={r.id}>
                     <td className="px-3 py-2 font-medium text-zinc-800 dark:text-zinc-200">
-                      {r.receiptCode}
+                      {r.receiptCode}{" "}
+                      <a
+                        className="text-xs font-normal underline underline-offset-2"
+                        href={stickerHref({ receipt: r.receiptCode, reprint: true, back: jobBack })}
+                        target="_blank"
+                        rel="noreferrer"
+                        data-testid={`receipt-stickers-${r.receiptCode}`}
+                      >
+                        Stickers
+                      </a>
                       {r.reversedAt ? (
                         <span className="block text-xs font-normal text-red-700 dark:text-red-400" data-testid={`receipt-reversed-${r.receiptCode}`}>
                           Reversed {new Date(r.reversedAt).toLocaleDateString("en-IN")} — {r.reversalReason}
@@ -604,6 +643,15 @@ export function JobDetailView({
                     {isOwner && o.totalCostCurrent !== null && o.status !== "RECEIPT_REVERSED" ? ` · ${money(o.totalCostCurrent)}` : ""}
                   </p>
                 </div>
+                <a
+                  className="text-xs font-medium text-zinc-700 underline underline-offset-4 dark:text-zinc-300"
+                  href={stickerHref({ pieces: [o.finishedCode], reprint: true, back: jobBack })}
+                  target="_blank"
+                  rel="noreferrer"
+                  data-testid={`piece-sticker-${o.finishedCode}`}
+                >
+                  Sticker
+                </a>
                 {isOwner && o.status !== "RECEIPT_REVERSED" && o.status !== "CUSTOMER_AWAITING_DELIVERY" && o.status !== "DELIVERED_TO_CUSTOMER" ? (
                   <button
                     type="button"

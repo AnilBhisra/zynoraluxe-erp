@@ -1,5 +1,6 @@
 "use client";
 
+import { stickerHref } from "@/lib/jewellery/stickerLinks";
 import { useRouter } from "next/navigation";
 import { Fragment, useActionState, useEffect, useState } from "react";
 
@@ -221,6 +222,15 @@ export function FinishedStockTab({
                           <img src={i.photoUrl} alt="" className="h-8 w-8 rounded object-cover" />
                         ) : null}
                         {i.finishedCode}
+                        <a
+                          className="text-xs font-normal underline underline-offset-2"
+                          href={stickerHref({ pieces: [i.finishedCode], reprint: true, back: "/jewellery-jobs?tab=finished" })}
+                          target="_blank"
+                          rel="noreferrer"
+                          data-testid={`finished-sticker-${i.finishedCode}`}
+                        >
+                          Sticker
+                        </a>
                       </div>
                     </td>
                     <td className="px-3 py-2">
@@ -293,7 +303,12 @@ export function FinishedStockTab({
                       <img src={i.photoUrl} alt="" className="h-10 w-10 rounded object-cover" />
                     ) : null}
                     <div>
-                      <p className="font-medium text-zinc-900 dark:text-zinc-50">{i.finishedCode}</p>
+                      <p className="font-medium text-zinc-900 dark:text-zinc-50">
+                        {i.finishedCode}{" "}
+                        <a className="text-xs font-normal underline underline-offset-2" href={stickerHref({ pieces: [i.finishedCode], reprint: true, back: "/jewellery-jobs?tab=finished" })} target="_blank" rel="noreferrer">
+                          Sticker
+                        </a>
+                      </p>
                       <p className="text-xs text-zinc-500 dark:text-zinc-400">
                         {jewelleryTypeLabel(i.jewelleryType)} — {i.designName}
                       </p>

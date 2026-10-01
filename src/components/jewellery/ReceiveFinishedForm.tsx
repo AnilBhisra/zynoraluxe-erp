@@ -244,7 +244,8 @@ export function ReceiveFinishedForm({
   customerGoldSources?: CustomerGoldSourceOption[];
   customerName?: string | null;
   isOwner: boolean;
-  onDone?: () => void;
+  /** Called with the saved receipt's code, so the page can offer "Print sticker". */
+  onDone?: (receiptCode?: string) => void;
 }) {
   const [state, formAction, pending] = useActionState(receiveFinishedJewelleryAction, undefined);
   const [previewState, previewAction, previewPending] = useActionState<CustodyPreviewState, FormData>(previewReceiptCustodyAction, undefined);
@@ -324,8 +325,8 @@ export function ReceiveFinishedForm({
   const formRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
-    if (state?.success) onDone?.();
-  }, [state?.success, onDone]);
+    if (state?.success) onDone?.(state.code);
+  }, [state?.success, state?.code, onDone]);
 
   /** Final Purity choices for an output of `metalType` — mirrors the server rule in receiveFinishedJewellery. */
   function finalPurityOptions(metalType: string): FinalPurityOption[] {
