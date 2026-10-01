@@ -1,5 +1,7 @@
 "use server";
 
+import { randomUUID } from "node:crypto";
+
 import { revalidatePath } from "next/cache";
 
 import { prisma } from "@/lib/db/prisma";
@@ -29,6 +31,7 @@ import {
 } from "@/lib/validation/jewellery";
 import { CustodyError } from "@/lib/jewellery/karigarCustody";
 import { CustomerGoldError } from "@/lib/jewellery/customerGoldLedger";
+import { chargesEcho, dryRunReceiptPosting, type ReceiptChargesEcho, type ReceiptPostingPreview } from "@/lib/jewellery/receiptPostingPreview";
 import {
   customerGoldJobReceiptFingerprint,
   planCustomerGoldJobReceipt,
@@ -434,14 +437,9 @@ function toReceiptInput(
   };
 }
 
-export async function receiveFinishedJewelleryAction(
-  _prevState: JewelleryFormState,
-  formData: FormData
-): Promise<JewelleryFormState> {
-  const user = await requireUser();
-  const isOwner = user.role === "OWNER";
-
-  const parsed = receiveFinishedJewellerySchema.safeParse({
+/** The whole receipt form — Save and both Previews read exactly the same fields. */
+function parseReceiptForm(formData: FormData) {
+  return receiveFinishedJewellerySchema.safeParse({
     jobId: formData.get("jobId"),
     receiveDate: formData.get("receiveDate"),
     outputs: readJsonArray(formData, "outputsJson"),
@@ -466,6 +464,16 @@ export async function receiveFinishedJewelleryAction(
     notes: formData.get("notes") || "",
     idempotencyKey: formData.get("idempotencyKey") || undefined,
   });
+}
+
+export async function receiveFinishedJewelleryAction(
+  _prevState: JewelleryFormState,
+  formData: FormData
+): Promise<JewelleryFormState> {
+  const user = await requireUser();
+  const isOwner = user.role === "OWNER";
+
+  const parsed = parseReceiptForm(formData);
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
   }
@@ -641,6 +649,10 @@ export type CustomerGoldReceiptPreview = {
     pendingAfter: string;
     costMoved: string | null;
   };
+  /** The charges exactly as the server received them (the user's own entry; no cost). */
+  charges: ReceiptChargesEcho;
+  /** Owner only: the exact posting Save would make (dry run, rolled back). Null for Staff. */
+  posting: ReceiptPostingPreview | null;
   fingerprint: string;
 };
 
@@ -650,19 +662,12 @@ export async function previewCustomerGoldReceiptAction(
 ): Promise<{ error?: string; preview?: CustomerGoldReceiptPreview }> {
   const user = await requireUser();
   const isOwner = user.role === "OWNER";
-  const parsed = receiveFinishedJewellerySchema.safeParse({
-    jobId: formData.get("jobId"),
-    receiveDate: formData.get("receiveDate"),
-    outputs: readJsonArray(formData, "outputsJson"),
-    returnedMetalLines: readJsonArray(formData, "returnedMetalLinesJson"),
-    scrapMetalLines: readJsonArray(formData, "scrapMetalLinesJson"),
-    karigarAddedFineWeight: formData.get("karigarAddedFineWeight") || "0",
-    karigarAddedCost: formData.get("karigarAddedCost") || "0",
-    markJobComplete: formData.get("markJobComplete") || "false",
-  });
+  const parsed = parseReceiptForm(formData);
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
   const purityId = String(formData.get("customerGoldSourcePurityId") ?? "").trim();
   if (!purityId) return { error: "Choose the Customer's gold the jewellery was made from." };
+  const receiveDate = safeParseDateOnly(parsed.data.receiveDate);
+  if (!receiveDate) return { error: "Enter a valid receive date." };
   try {
     const plan = await planCustomerGoldJobReceipt(prisma, {
       jobId: parsed.data.jobId,
@@ -677,6 +682,18 @@ export async function previewCustomerGoldReceiptAction(
     if (plan.mixed && !isOwner) {
       return { error: "This job holds both Customer and Company gold. Only the Owner can record a mixed receipt and decide the Customer's share." };
     }
+    const fy = await getCompanyFySettings();
+    const posting = isOwner
+      ? await dryRunReceiptPosting(prisma, (tx) =>
+          receiveWithCustomerGold(tx, {
+            ...toReceiptInput(parsed.data, receiveDate, user, fy),
+            idempotencyKey: `preview-${randomUUID()}`,
+            customerGoldSource: readCustomerGoldPart(formData, purityId),
+            expectedFingerprint: null,
+            actor: { id: user.id, role: user.role },
+          })
+        )
+      : null;
     const w = (p: { gross: { toFixed: (n: number) => string }; fine: { toFixed: (n: number) => string } }) => ({ gross: p.gross.toFixed(3), fine: p.fine.toFixed(3) });
     return {
       preview: {
@@ -716,6 +733,8 @@ export async function previewCustomerGoldReceiptAction(
           pendingAfter: plan.company.pendingAfter.toFixed(3),
           costMoved: isOwner ? plan.company.costMoved.toFixed(2) : null,
         },
+        charges: chargesEcho(parsed.data),
+        posting,
         fingerprint: customerGoldJobReceiptFingerprint(plan),
       },
     };
@@ -731,21 +750,15 @@ export async function previewCustomerGoldReceiptAction(
  * nothing. Owner and Staff; the Staff reply carries weights only (no cost,
  * rate or value), and its fingerprint is an opaque token.
  */
+export type ReceiptCustodyPreviewWithPosting = ReceiptCustodyPreview & { charges: ReceiptChargesEcho; posting: ReceiptPostingPreview | null };
+
 export async function previewReceiptCustodyAction(
-  _prev: { error?: string; preview?: ReceiptCustodyPreview } | undefined,
+  _prev: { error?: string; preview?: ReceiptCustodyPreviewWithPosting } | undefined,
   formData: FormData
-): Promise<{ error?: string; preview?: ReceiptCustodyPreview }> {
+): Promise<{ error?: string; preview?: ReceiptCustodyPreviewWithPosting }> {
   const user = await requireUser();
   const isOwner = user.role === "OWNER";
-  const parsed = receiveFinishedJewellerySchema.safeParse({
-    jobId: formData.get("jobId"),
-    receiveDate: formData.get("receiveDate"),
-    outputs: readJsonArray(formData, "outputsJson"),
-    returnedMetalLines: readJsonArray(formData, "returnedMetalLinesJson"),
-    scrapMetalLines: readJsonArray(formData, "scrapMetalLinesJson"),
-    karigarAddedFineWeight: formData.get("karigarAddedFineWeight") || "0",
-    markJobComplete: formData.get("markJobComplete") || "false",
-  });
+  const parsed = parseReceiptForm(formData);
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
   const receiveDate = safeParseDateOnly(parsed.data.receiveDate);
   if (!receiveDate) return { error: "Enter a valid receive date." };
@@ -763,7 +776,20 @@ export async function previewReceiptCustodyAction(
       explicitLossFineWeight: String(formData.get("explicitLossFineWeight") ?? "").trim() || null,
       markJobComplete: parsed.data.markJobComplete,
     });
-    return { preview: toReceiptCustodyPreview(plan, isOwner) };
+    const fy = await getCompanyFySettings();
+    const posting = isOwner
+      ? await dryRunReceiptPosting(prisma, (tx) =>
+          receiveWithCustodyAllocation(tx, {
+            ...toReceiptInput(parsed.data, receiveDate, user, fy),
+            idempotencyKey: `preview-${randomUUID()}`,
+            sourcePurityId,
+            explicitLossFineWeight: String(formData.get("explicitLossFineWeight") ?? "").trim() || null,
+            expectedFingerprint: null,
+            actor: { id: user.id, role: user.role },
+          })
+        )
+      : null;
+    return { preview: { ...toReceiptCustodyPreview(plan, isOwner), charges: chargesEcho(parsed.data), posting } };
   } catch (error) {
     if (error instanceof CustodyError || error instanceof jewelleryPosting.PostingError) return { error: staffSafeMessage(error.message, isOwner) };
     console.error("previewReceiptCustodyAction failed:", error);

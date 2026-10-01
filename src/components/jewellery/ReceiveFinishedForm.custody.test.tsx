@@ -44,6 +44,8 @@ const PREVIEW = {
   custodyAfter: { gross: "7.007", fine: "7.000", cost: "49914.06" },
   jobPendingAfterReceipt: "0.000",
   completesJob: false,
+  charges: { labour: "0.00", making: "0.00", setting: "0.00", plating: "0.00", other: "0.00", total: "0.00" },
+  posting: null,
   fingerprint: "fp-1",
 };
 

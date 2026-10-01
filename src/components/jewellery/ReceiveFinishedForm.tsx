@@ -1,6 +1,6 @@
 "use client";
 
-import { startTransition, useActionState, useEffect, useMemo, useState } from "react";
+import { startTransition, useActionState, useEffect, useMemo, useRef, useState } from "react";
 
 import { previewCustomerGoldReceiptAction, previewReceiptCustodyAction, receiveFinishedJewelleryAction } from "@/app/actions/jewellery";
 import { Field } from "@/components/ui/Field";
@@ -143,6 +143,64 @@ function rupees(value: string): string {
   return Number(value).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+type ChargesEchoView = { labour: string; making: string; setting: string; plating: string; other: string; total: string };
+type PostingView = {
+  materials: string;
+  charges: string;
+  customerGoldCost: string;
+  customerGoldFine: string;
+  totalCompanyCost: string;
+  lines: { accountCode: string; accountName: string; debit: string; credit: string; party: string | null }[];
+  balanced: boolean;
+};
+
+const money2 = (v: string) => (Number(v) || 0).toFixed(2);
+
+/** "Making ₹41886.00 · …" for every non-zero charge, and the total. */
+function chargeSummary(c: ChargesEchoView): string {
+  const parts = (
+    [
+      ["Labour", c.labour],
+      ["Making", c.making],
+      ["Setting", c.setting],
+      ["Plating", c.plating],
+      ["Other expense", c.other],
+    ] as const
+  ).filter(([, v]) => Number(v) !== 0);
+  return `${parts.length ? parts.map(([k, v]) => `${k} ₹${money2(v)}`).join(" · ") : "no charges"} · Total charges ₹${money2(c.total)}`;
+}
+
+/** What the server received as charges, and (Owner only) the exact posting Save would make. */
+function ChargesAndPosting({ charges, posting }: { charges: ChargesEchoView; posting: PostingView | null }) {
+  return (
+    <div className="mt-2 flex flex-col gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3 text-xs" data-testid="receipt-charges-posting">
+      <p>
+        <span className="font-semibold">Charges:</span> {Number(charges.total) === 0 && !posting ? "none entered" : chargeSummary(charges)}
+      </p>
+      {posting ? (
+        <>
+          <p>
+            Materials ₹{posting.materials} · Customer-owned Gold ₹{posting.customerGoldCost}
+            {Number(posting.customerGoldFine) > 0 ? ` (${posting.customerGoldFine} g fine)` : ""} · Charges in the pieces ₹{posting.charges} ·{" "}
+            <strong>Expected total Company cost ₹{posting.totalCompanyCost}</strong>
+          </p>
+          <p>
+            <span className="font-semibold">Expected entry:</span>{" "}
+            {posting.lines.length === 0
+              ? "no voucher (nothing for the Company to post)"
+              : posting.lines
+                  .map((l) =>
+                    Number(l.debit) > 0 ? `Dr ${l.accountCode} ${l.accountName} ₹${l.debit}` : `Cr ${l.accountCode} ${l.accountName}${l.party ? ` (${l.party})` : ""} ₹${l.credit}`
+                  )
+                  .join(" / ")}
+            {posting.lines.length ? (posting.balanced ? " — balanced" : " — NOT BALANCED") : ""}
+          </p>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 /** One label/value pair of the Karigar Metal preview list. */
 function FragmentRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -263,6 +321,7 @@ export function ReceiveFinishedForm({
   const [showMore, setShowMore] = useState(false);
   const [notes, setNotes] = useState("");
   const [idempotencyKey] = useState(() => crypto.randomUUID());
+  const formRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
     if (state?.success) onDone?.();
@@ -546,6 +605,9 @@ export function ReceiveFinishedForm({
     event.preventDefault();
     if (!confirmReceipt()) return;
     const formData = new FormData(event.currentTarget);
+    // Every posting field comes from the form STATE, whatever the UI shows:
+    // a collapsed charges section can never drop or reset a charge.
+    for (const [name, value] of postingFields) formData.set(name, value);
     startTransition(() => formAction(formData));
   }
 
@@ -563,14 +625,19 @@ export function ReceiveFinishedForm({
       window.alert(problem);
       return false;
     }
+    const chargesLine = `\nCharges: ${chargeSummary(enteredCharges)}`;
     if (customerMode && freshCustomerPreview) {
       const p = freshCustomerPreview;
+      const totalLine = p.posting ? `\nExpected total Company cost ₹${p.posting.totalCompanyCost}` : "";
       return window.confirm(
         `${p.customerName}'s own gold (${p.sourceLabel}, ${p.sourceFineness}%) — Customer-owned, excluded from Company material cost.` +
           `\nFinished pieces: ${p.customerFineForOutputs}g fine of the Customer's gold${p.mixed ? ` + ${p.companyFineForOutputs}g fine Company gold` : ""}.` +
           `\nReturned ${p.returned.fine}g · Scrap ${p.scrap.fine}g · Authorised loss ${p.lossFine}g fine.` +
           `\nTaken now: ${p.fromKarigar.fine}g fine from ${p.karigarName}, ${p.fromSafe.fine}g fine from the safe.` +
-          `\nLeft on this job: ${p.onJobAfter.fine}g fine.${p.completesJob ? " This completes the job's gold." : ""}\n\nSave this receipt?`
+          `\nLeft on this job: ${p.onJobAfter.fine}g fine.${p.completesJob ? " This completes the job's gold." : ""}` +
+          chargesLine +
+          totalLine +
+          "\n\nSave this receipt?"
       );
     }
     const summary = willCompleteJob
@@ -586,7 +653,8 @@ export function ReceiveFinishedForm({
         : `\nNothing is taken from ${freshPreview.karigarName}'s balance; this job's own metal covers it.`
       : "";
     const alloyLine = expectedAlloy > ZERO ? `\nAlloy Added: ${g(expectedAlloy)}g.` : "";
-    return window.confirm(`${summary}${custodyLine}${alloyLine}\n\nSave this receipt?`);
+    const custodyTotalLine = freshPreview?.posting ? `\nExpected total Company cost ₹${freshPreview.posting.totalCompanyCost}` : "";
+    return window.confirm(`${summary}${custodyLine}${alloyLine}${chargesLine}${custodyTotalLine}\n\nSave this receipt?`);
   }
 
   const outputsForSubmit = outputs
@@ -626,6 +694,35 @@ export function ReceiveFinishedForm({
   }));
   const diamondResolutionsForSubmit = [...setResolutions, ...remainingResolutionsForSubmit];
 
+  // ---- Everything the posting depends on beyond the metal plan, from STATE:
+  // sent to every Preview, part of every stale-check, and set on the saved form. ----
+  const enteredCharges: ChargesEchoView = {
+    labour: labourCharge,
+    making: makingCharge,
+    setting: settingCharge,
+    plating: platingCharge,
+    other: otherExpense,
+    total: String([labourCharge, makingCharge, settingCharge, platingCharge, otherExpense].reduce((sum, v) => sum + (Number(v) || 0), 0)),
+  };
+  const postingFields: [string, string][] = [
+    ["diamondResolutionsJson", JSON.stringify(diamondResolutionsForSubmit)],
+    ["packetResolutionsJson", JSON.stringify(packetResolutionsForSubmit)],
+    ["companyAlloyGrossWeight", companySplit !== null ? g(companySplit) : ""],
+    ["karigarAlloyGrossWeight", karigarSplit !== null ? g(karigarSplit) : ""],
+    ["includedAlloyGrossWeight", includedSplit !== null ? g(includedSplit) : ""],
+    ["karigarAlloyCost", karigarAlloyCost || "0"],
+    ["isAbnormalLoss", isAbnormalLoss ? "true" : "false"],
+    ["abnormalLossReason", isAbnormalLoss ? abnormalLossReason : ""],
+    ["labourCharge", labourCharge || "0"],
+    ["makingCharge", makingCharge || "0"],
+    ["settingCharge", settingCharge || "0"],
+    ["platingCharge", platingCharge || "0"],
+    ["otherExpense", otherExpense || "0"],
+    ["karigarAddedFineWeight", karigarAddedFineWeight || "0"],
+    ["karigarAddedCost", karigarAddedCost || "0"],
+    ["notes", notes],
+  ];
+
   // ---- Karigar Metal preview: everything the server plans from, so any edit
   // after previewing makes the preview stale and blocks the save. ----
   const explicitLossForSubmit = custodyMode && markJobComplete && explicitLossWeight !== null ? g(explicitLossWeight) : "";
@@ -642,7 +739,7 @@ export function ReceiveFinishedForm({
         ["explicitLossFineWeight", explicitLossForSubmit],
       ]
     : [];
-  const custodySignature = custodyMode ? JSON.stringify(custodyFields) : null;
+  const custodySignature = custodyMode ? JSON.stringify([custodyFields, postingFields]) : null;
   const freshPreview =
     custodyMode && !previewPending && previewState?.preview && previewedSignature === custodySignature ? previewState.preview : null;
   const previewError = custodyMode && !previewPending && previewedSignature === custodySignature ? (previewState?.error ?? null) : null;
@@ -670,7 +767,7 @@ export function ReceiveFinishedForm({
         ["customerLossReason", isOwner ? customerLossReason : ""],
       ]
     : [];
-  const customerSignature = customerMode ? JSON.stringify(customerFields) : null;
+  const customerSignature = customerMode ? JSON.stringify([customerFields, postingFields]) : null;
   const freshCustomerPreview =
     customerMode && !cgPreviewPending && cgPreviewState?.preview && cgPreviewedSignature === customerSignature ? cgPreviewState.preview : null;
   const customerPreviewError = customerMode && !cgPreviewPending && cgPreviewedSignature === customerSignature ? (cgPreviewState?.error ?? null) : null;
@@ -685,7 +782,7 @@ export function ReceiveFinishedForm({
       return;
     }
     const formData = new FormData();
-    for (const [name, value] of customerFields) formData.set(name, value);
+    for (const [name, value] of [...customerFields, ...postingFields]) formData.set(name, value);
     setCgPreviewedSignature(customerSignature);
     startTransition(() => cgPreviewAction(formData));
   }
@@ -697,13 +794,14 @@ export function ReceiveFinishedForm({
       return;
     }
     const formData = new FormData();
-    for (const [name, value] of custodyFields) formData.set(name, value);
+    for (const [name, value] of [...custodyFields, ...postingFields]) formData.set(name, value);
     setPreviewedSignature(custodySignature);
     startTransition(() => previewAction(formData));
   }
 
   return (
     <form
+      ref={formRef}
       onSubmit={submitReceipt}
       className="flex flex-col gap-5 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6"
       noValidate
@@ -721,6 +819,15 @@ export function ReceiveFinishedForm({
       <input type="hidden" name="karigarAlloyGrossWeight" value={karigarSplit !== null ? g(karigarSplit) : ""} />
       <input type="hidden" name="includedAlloyGrossWeight" value={includedSplit !== null ? g(includedSplit) : ""} />
       <input type="hidden" name="karigarAlloyCost" value={karigarAlloyCost || "0"} />
+      {/* Always present, from state: collapsing the charges section never omits them. */}
+      <input type="hidden" name="labourCharge" value={labourCharge || "0"} />
+      <input type="hidden" name="makingCharge" value={makingCharge || "0"} />
+      <input type="hidden" name="settingCharge" value={settingCharge || "0"} />
+      <input type="hidden" name="platingCharge" value={platingCharge || "0"} />
+      <input type="hidden" name="otherExpense" value={otherExpense || "0"} />
+      <input type="hidden" name="karigarAddedFineWeight" value={karigarAddedFineWeight || "0"} />
+      <input type="hidden" name="karigarAddedCost" value={karigarAddedCost || "0"} />
+      <input type="hidden" name="notes" value={notes} />
       {customerSource ? (
         <>
           {customerFields.slice(7).map(([name, value]) => (
@@ -1445,6 +1552,9 @@ export function ReceiveFinishedForm({
               ) : null}
               <FragmentRow label="Job">{freshCustomerPreview.completesJob ? "Customer gold completed (job completes when every stone is resolved)" : "Stays open"}</FragmentRow>
             </dl>
+          ) : null}
+          {freshCustomerPreview ? (
+            <ChargesAndPosting charges={freshCustomerPreview.charges} posting={freshCustomerPreview.posting} />
           ) : cgPreviewState?.preview && !cgPreviewPending ? (
             <p className="text-xs font-medium text-amber-700 dark:text-amber-400">The receipt changed after the preview. Preview again before saving.</p>
           ) : !customerPreviewError ? (
@@ -1553,6 +1663,9 @@ export function ReceiveFinishedForm({
               <FragmentRow label="Left on this job">{freshPreview.jobPendingAfterReceipt}g fine</FragmentRow>
               <FragmentRow label="Job">{freshPreview.completesJob ? "Completes (if every stone is resolved)" : "Stays Partially Received"}</FragmentRow>
             </dl>
+          ) : null}
+          {freshPreview ? (
+            <ChargesAndPosting charges={freshPreview.charges} posting={freshPreview.posting} />
           ) : previewState?.preview && !previewPending ? (
             <p className="text-xs font-medium text-amber-700 dark:text-amber-400">The receipt changed after the preview. Preview again before saving.</p>
           ) : !previewError ? (
@@ -1599,17 +1712,25 @@ export function ReceiveFinishedForm({
         </button>
       </div>
 
-      {showMore ? (
-        <div className="grid grid-cols-1 gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-4 sm:grid-cols-3">
-          <Field label="Labour charge (₹)" name="labourCharge" type="number" step="0.01" min={0} value={labourCharge} onChange={(e) => setLabourCharge(e.target.value)} />
-          <Field label="Making charge (₹)" name="makingCharge" type="number" step="0.01" min={0} value={makingCharge} onChange={(e) => setMakingCharge(e.target.value)} />
-          <Field label="Setting charge (₹)" name="settingCharge" type="number" step="0.01" min={0} value={settingCharge} onChange={(e) => setSettingCharge(e.target.value)} />
-          <Field label="Plating charge (₹)" name="platingCharge" type="number" step="0.01" min={0} value={platingCharge} onChange={(e) => setPlatingCharge(e.target.value)} />
-          <Field label="Other job expense (₹)" name="otherExpense" type="number" step="0.01" min={0} value={otherExpense} onChange={(e) => setOtherExpense(e.target.value)} />
-          <Field label="Karigar-added fine metal (g)" name="karigarAddedFineWeight" type="number" step="0.001" min={0} value={karigarAddedFineWeight} onChange={(e) => setKarigarAddedFineWeight(e.target.value)} />
-          <Field label="Karigar-added material cost (₹)" name="karigarAddedCost" type="number" step="0.01" min={0} value={karigarAddedCost} onChange={(e) => setKarigarAddedCost(e.target.value)} />
-          <Field label="Notes (optional)" name="notes" value={notes} onChange={(e) => setNotes(e.target.value)} className="sm:col-span-2" />
-        </div>
+      {/* Kept mounted when collapsed (only hidden): nothing typed here is ever unmounted, reset or omitted. */}
+      <div
+        hidden={!showMore}
+        data-testid="receipt-charges-section"
+        className={`${showMore ? "grid" : "hidden"} grid-cols-1 gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-4 sm:grid-cols-3`}
+      >
+        <Field label="Labour charge (₹)" name="labourChargeInput" type="number" step="0.01" min={0} value={labourCharge} onChange={(e) => setLabourCharge(e.target.value)} />
+        <Field label="Making charge (₹)" name="makingChargeInput" type="number" step="0.01" min={0} value={makingCharge} onChange={(e) => setMakingCharge(e.target.value)} />
+        <Field label="Setting charge (₹)" name="settingChargeInput" type="number" step="0.01" min={0} value={settingCharge} onChange={(e) => setSettingCharge(e.target.value)} />
+        <Field label="Plating charge (₹)" name="platingChargeInput" type="number" step="0.01" min={0} value={platingCharge} onChange={(e) => setPlatingCharge(e.target.value)} />
+        <Field label="Other job expense (₹)" name="otherExpenseInput" type="number" step="0.01" min={0} value={otherExpense} onChange={(e) => setOtherExpense(e.target.value)} />
+        <Field label="Karigar-added fine metal (g)" name="karigarAddedFineWeightInput" type="number" step="0.001" min={0} value={karigarAddedFineWeight} onChange={(e) => setKarigarAddedFineWeight(e.target.value)} />
+        <Field label="Karigar-added material cost (₹)" name="karigarAddedCostInput" type="number" step="0.01" min={0} value={karigarAddedCost} onChange={(e) => setKarigarAddedCost(e.target.value)} />
+        <Field label="Notes (optional)" name="notesInput" value={notes} onChange={(e) => setNotes(e.target.value)} className="sm:col-span-2" />
+      </div>
+      {!showMore && Number(enteredCharges.total) !== 0 ? (
+        <p className="text-xs text-zinc-600 dark:text-zinc-400" data-testid="collapsed-charges-summary">
+          Charges entered: {chargeSummary(enteredCharges)}
+        </p>
       ) : null}
 
       <Button type="submit" size="lg" disabled={pending || Boolean(blockReason) || Boolean(custodyBlock) || Boolean(customerBlock)} className="self-start">

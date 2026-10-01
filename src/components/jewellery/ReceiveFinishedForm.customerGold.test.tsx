@@ -42,6 +42,8 @@ const PREVIEW = {
   completesJob: false,
   mixed: false,
   company: { pendingBefore: "0.000", finishedFine: "0.000", returnedFine: "0.000", scrapFine: "0.000", processLossFine: "0.000", pendingAfter: "0.000", costMoved: null as string | null },
+  charges: { labour: "0.00", making: "0.00", setting: "0.00", plating: "0.00", other: "0.00", total: "0.00" },
+  posting: null,
   fingerprint: "cg-fp-1",
 };
 
