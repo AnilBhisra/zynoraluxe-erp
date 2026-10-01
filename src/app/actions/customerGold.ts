@@ -34,6 +34,14 @@ import {
 } from "@/lib/jewellery/customerGoldCommercial";
 import { CustomerGoldError, ENTRY_KIND_LABEL } from "@/lib/jewellery/customerGoldLedger";
 import { planCustomerGoldReceiptReversal, reverseCustomerGoldJobReceipt, type ReceiptReversalPlan } from "@/lib/jewellery/customerGoldReceiptReversal";
+import {
+  customerGoldPurchaseReversalBlock,
+  exchangeOldGold,
+  oldGoldExchangeFingerprint,
+  planOldGoldExchange,
+  reverseCustomerGoldPurchase,
+  type OldGoldExchangeInput,
+} from "@/lib/jewellery/oldGoldExchange";
 import { PostingError } from "@/lib/jewellery/posting";
 import { deleteJewelleryAsset } from "@/lib/storage/jewelleryMedia";
 import { CorrectionError } from "@/lib/corrections/types";
@@ -341,6 +349,148 @@ export async function purchaseCustomerGoldAction(_prev: CustomerGoldFormState, f
       if (existing) return { success: true, code: existing.purchaseCode, replayed: true };
     }
     return { error: failure("purchase", error) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Old Gold Exchange (Owner): intake + approved purchase of exactly that intake
+// ---------------------------------------------------------------------------
+
+export type OldGoldExchangePreview = {
+  customerName: string;
+  purityDisplayName: string;
+  finenessPercent: string;
+  statedPurity: string | null;
+  grossWeight: string;
+  deductionWeight: string;
+  netGrossWeight: string;
+  fineWeight: string;
+  rateBasis: string;
+  rate: string;
+  value: string;
+  perGrossGram: string;
+  perFineGram: string;
+  settlement: string;
+  creditBefore: string;
+  creditAfter: string;
+  fingerprint: string;
+};
+
+function exchangeInput(fd: FormData): OldGoldExchangeInput {
+  const basis = str(fd, "inputBasis");
+  if (basis !== "GROSS" && basis !== "FINE") throw new CustomerGoldError("Choose whether the weight is gross or fine.");
+  const rateBasis = str(fd, "rateBasis") as MetalRateBasis;
+  if (!["PER_GROSS_GRAM", "PER_FINE_GRAM", "FIXED_TOTAL"].includes(rateBasis)) throw new CustomerGoldError("Choose how the rate is given.");
+  const settlement = str(fd, "settlement") as CustomerGoldSettlement;
+  if (settlement !== "PAY_CUSTOMER" && settlement !== "CREDIT_TO_INVOICE") throw new CustomerGoldError("Choose how the Customer is settled.");
+  return {
+    customerId: str(fd, "customerId"),
+    exchangeDate: date(fd, "exchangeDate"),
+    purityId: str(fd, "purityId"),
+    statedPurity: opt(fd, "statedPurity"),
+    inputBasis: basis,
+    weight: str(fd, "weight"),
+    deductionWeight: opt(fd, "deductionWeight"),
+    rateBasis,
+    rate: str(fd, "rate"),
+    settlement,
+    reason: str(fd, "reason"),
+    reference: str(fd, "reference"),
+    photoAssetId: opt(fd, "photoAssetId"),
+  };
+}
+
+export async function previewOldGoldExchangeAction(_prev: { error?: string; preview?: OldGoldExchangePreview } | undefined, fd: FormData) {
+  await requireOwner();
+  try {
+    const input = exchangeInput(fd);
+    const plan = await planOldGoldExchange(prisma, input);
+    return {
+      preview: {
+        customerName: plan.customerName,
+        purityDisplayName: plan.purityDisplayName,
+        finenessPercent: plan.finenessPercent.toFixed(3),
+        statedPurity: plan.statedPurity,
+        grossWeight: plan.grossWeight.toFixed(3),
+        deductionWeight: plan.deductionWeight.toFixed(3),
+        netGrossWeight: plan.netGrossWeight.toFixed(3),
+        fineWeight: plan.fineWeight.toFixed(3),
+        rateBasis: plan.rateBasis,
+        rate: plan.rate.toFixed(4),
+        value: plan.value.toFixed(2),
+        perGrossGram: plan.perGrossGram.toFixed(4),
+        perFineGram: plan.perFineGram.toFixed(4),
+        settlement: plan.settlement,
+        creditBefore: plan.creditBefore.toFixed(2),
+        creditAfter: plan.creditAfter.toFixed(2),
+        fingerprint: oldGoldExchangeFingerprint(input, plan),
+      },
+    };
+  } catch (error) {
+    return { error: failure("old gold exchange preview", error) };
+  }
+}
+
+export async function exchangeOldGoldAction(_prev: CustomerGoldFormState, fd: FormData): Promise<CustomerGoldFormState> {
+  const user = await requireOwner();
+  const idempotencyKey = str(fd, "idempotencyKey");
+  const fingerprint = str(fd, "previewFingerprint");
+  if (!fingerprint) return { error: "Preview first, then approve." };
+  const fy = await getCompanyFySettings();
+  try {
+    const r = await prisma.$transaction(
+      (tx) =>
+        exchangeOldGold(tx, {
+          ...exchangeInput(fd),
+          approved: str(fd, "approved") === "1",
+          expectedFingerprint: fingerprint,
+          idempotencyKey,
+          actor: { id: user.id, role: user.role },
+          ...fy,
+        }),
+      TX
+    );
+    revalidateAll();
+    return { success: true, code: r.purchase.purchaseCode, id: r.purchase.id, replayed: r.replayed };
+  } catch (error) {
+    if (isIdempotencyConflict(error)) {
+      const existing = await prisma.customerGoldPurchase.findUnique({ where: { idempotencyKey } });
+      if (existing) return { success: true, code: existing.purchaseCode, id: existing.id, replayed: true };
+    }
+    return { error: failure("old gold exchange", error) };
+  }
+}
+
+/** Owner: can this purchase / exchange be reversed now, and if not, exactly why. */
+export type PurchaseReversalCheck = { purchaseId: string; error?: string; block?: string | null };
+
+export async function previewCustomerGoldPurchaseReversalAction(_prev: PurchaseReversalCheck | undefined, fd: FormData): Promise<PurchaseReversalCheck> {
+  await requireOwner();
+  const purchaseId = str(fd, "purchaseId");
+  try {
+    return { purchaseId, block: await prisma.$transaction((tx) => customerGoldPurchaseReversalBlock(tx, purchaseId), TX) };
+  } catch (error) {
+    return { purchaseId, error: failure("purchase reversal preview", error) };
+  }
+}
+
+export async function reverseCustomerGoldPurchaseAction(_prev: CustomerGoldFormState, fd: FormData): Promise<CustomerGoldFormState> {
+  const user = await requireOwner();
+  const idempotencyKey = str(fd, "idempotencyKey");
+  const fy = await getCompanyFySettings();
+  try {
+    const r = await prisma.$transaction(
+      (tx) => reverseCustomerGoldPurchase(tx, { purchaseId: str(fd, "purchaseId"), reason: str(fd, "reason"), idempotencyKey, actor: { id: user.id, role: user.role }, ...fy }),
+      TX
+    );
+    revalidateAll();
+    return { success: true, code: r.purchase.purchaseCode, replayed: r.replayed };
+  } catch (error) {
+    if (isIdempotencyConflict(error)) {
+      const existing = await prisma.customerGoldPurchase.findUnique({ where: { reversalIdempotencyKey: idempotencyKey } });
+      if (existing) return { success: true, code: existing.purchaseCode, replayed: true };
+    }
+    return { error: failure("purchase reversal", error) };
   }
 }
 

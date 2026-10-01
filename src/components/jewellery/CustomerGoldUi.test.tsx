@@ -15,6 +15,10 @@ vi.mock("@/app/actions/customerGold", () => ({
   previewCustomerGoldIntakeAction: vi.fn(),
   previewCustomerGoldPurchaseAction: vi.fn(),
   previewCustomerGoldTransferAction: vi.fn(),
+  previewOldGoldExchangeAction: vi.fn(),
+  exchangeOldGoldAction: vi.fn(),
+  previewCustomerGoldPurchaseReversalAction: vi.fn(),
+  reverseCustomerGoldPurchaseAction: vi.fn(),
   purchaseCustomerGoldAction: vi.fn(),
   receiveCustomerGoldAction: vi.fn(),
   reverseCustomerGoldEntryAction: vi.fn(),
@@ -70,6 +74,7 @@ function tabData(isOwner: boolean): CustomerGoldTabData {
       pieces: [],
       bills: isOwner ? [] : null,
       deliveries: [],
+      credit: isOwner ? { granted: "0.00", applied: "0.00", available: "0.00" } : null,
     },
     purities: [{ id: "p24", metalType: "GOLD", displayName: "24K", finenessPercent: "99.900" }],
     karigars: [{ id: "k1", name: "Test Karigar" }],
@@ -96,7 +101,12 @@ describe("Customer Gold tab", () => {
     expect(screen.getByTestId("cg-intake-form")).toBeTruthy();
     expect(screen.getByText(/Declared value/)).toBeTruthy();
     fireEvent.click(screen.getByLabelText(/Purchase\/exchange gold from Customer/));
-    expect(screen.getByTestId("cg-purchase-form")).toBeTruthy();
+    // Phase 8C: the purchase choice is the one-step Old Gold Exchange (intake + approved purchase).
+    expect(screen.getByTestId("cg-exchange-form")).toBeTruthy();
+    expect(screen.getByLabelText(/Stated purity/)).toBeTruthy();
+    expect(screen.getByLabelText("Tested purity")).toBeTruthy();
+    expect(screen.getByLabelText(/Allowed deduction/)).toBeTruthy();
+    expect(screen.getByLabelText(/Reference \(required/)).toBeTruthy();
     expect(screen.queryByTestId("cg-intake-form")).toBeNull();
   });
 

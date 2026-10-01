@@ -123,6 +123,7 @@ model User {
   customerGoldReceiptsCreated    CustomerGoldReceipt[]       @relation("CustomerGoldReceiptCreatedBy")
   customerGoldEntriesCreated     CustomerGoldEntry[]         @relation("CustomerGoldEntryCreatedBy")
   customerGoldPurchasesApproved  CustomerGoldPurchase[]      @relation("CustomerGoldPurchaseApprovedBy")
+  customerGoldPurchasesReversed  CustomerGoldPurchase[]      @relation("CustomerGoldPurchaseReversedBy")
   customerJewelleryBillsCreated  CustomerJewelleryBill[]     @relation("CustomerJewelleryBillCreatedBy")
   customerJewelleryBillsReversed CustomerJewelleryBill[]     @relation("CustomerJewelleryBillReversedBy")
   customerDeliveriesMade         CustomerJewelleryDelivery[] @relation("CustomerJewelleryDeliveryDeliveredBy")
@@ -468,6 +469,7 @@ model Voucher {
 
   customerJewelleryBill             CustomerJewelleryBill?     @relation("CustomerJewelleryBillVoucher")
   customerJewelleryBillReversal     CustomerJewelleryBill?     @relation("CustomerJewelleryBillReversalVoucher")
+  customerGoldPurchaseReversal      CustomerGoldPurchase?      @relation("CustomerGoldPurchaseReversalVoucher")
   customerJewelleryDeliveryCogs     CustomerJewelleryDelivery? @relation("CustomerJewelleryDeliveryCogsVoucher")
   customerJewelleryDeliveryReversal CustomerJewelleryDelivery? @relation("CustomerJewelleryDeliveryReversalVoucher")
 
@@ -3637,14 +3639,19 @@ model CustomerGoldReceipt {
 
   reference     String?
   reason        String
+  /// Old Gold Exchange: the purity the Customer claimed (free text, e.g. "22K hallmark"),
+  /// kept beside the tested/approved purity above. Documentation only.
+  statedPurity  String?
   photoAssetId  String?
   /// Documentation / insurance only. Never Company inventory cost; Owner-only.
   declaredValue Decimal? @db.Decimal(14, 2)
 
-  idempotencyKey  String?  @unique
-  createdByUserId String
-  createdBy       User     @relation("CustomerGoldReceiptCreatedBy", fields: [createdByUserId], references: [id])
-  createdAt       DateTime @default(now())
+  idempotencyKey   String?               @unique
+  createdByUserId  String
+  createdBy        User                  @relation("CustomerGoldReceiptCreatedBy", fields: [createdByUserId], references: [id])
+  /// Old Gold Exchange: the approved purchase that bought exactly this intake.
+  exchangePurchase CustomerGoldPurchase? @relation("CustomerGoldPurchaseIntake")
+  createdAt        DateTime              @default(now())
 
   entries CustomerGoldEntry[]
 
@@ -3737,13 +3744,25 @@ model CustomerGoldPurchase {
   metalPurchaseId String        @unique
   metalPurchase   MetalPurchase @relation("CustomerGoldPurchaseMetalPurchase", fields: [metalPurchaseId], references: [id])
 
-  reason           String
-  reference        String?
-  approvedByUserId String
-  approvedBy       User     @relation("CustomerGoldPurchaseApprovedBy", fields: [approvedByUserId], references: [id])
-  approvedAt       DateTime
-  idempotencyKey   String?  @unique
-  createdAt        DateTime @default(now())
+  reason                 String
+  reference              String?
+  approvedByUserId       String
+  approvedBy             User                       @relation("CustomerGoldPurchaseApprovedBy", fields: [approvedByUserId], references: [id])
+  /// Old Gold Exchange: the intake receipt this purchase bought in full, in the same transaction.
+  customerGoldReceiptId  String?                    @unique
+  customerGoldReceipt    CustomerGoldReceipt?       @relation("CustomerGoldPurchaseIntake", fields: [customerGoldReceiptId], references: [id])
+  /// Owner reversal (audited mirror; the purchase itself is never edited or deleted otherwise).
+  status                 CustomerJewelleryDocStatus @default(POSTED)
+  reversedAt             DateTime?
+  reversedByUserId       String?
+  reversedBy             User?                      @relation("CustomerGoldPurchaseReversedBy", fields: [reversedByUserId], references: [id])
+  reversalReason         String?
+  reversalVoucherId      String?                    @unique
+  reversalVoucher        Voucher?                   @relation("CustomerGoldPurchaseReversalVoucher", fields: [reversalVoucherId], references: [id])
+  reversalIdempotencyKey String?                    @unique
+  approvedAt             DateTime
+  idempotencyKey         String?                    @unique
+  createdAt              DateTime                   @default(now())
 
   entries CustomerGoldEntry[]
 

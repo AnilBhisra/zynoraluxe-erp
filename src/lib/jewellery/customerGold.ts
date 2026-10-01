@@ -70,6 +70,8 @@ export type CustomerGoldIntakeInput = {
   reason: string;
   photoAssetId?: string | null;
   declaredValue?: DecimalInput | null;
+  /** Old Gold Exchange: what the Customer said it was (free text), beside the tested purity. */
+  statedPurity?: string | null;
   idempotencyKey: string;
   actor: Actor;
 };
@@ -150,6 +152,7 @@ export async function receiveCustomerGold(tx: Tx, input: CustomerGoldIntakeInput
       fineWeight: plan.fineWeight.toFixed(3),
       reference: input.reference?.trim() || null,
       reason,
+      statedPurity: input.statedPurity?.trim().slice(0, 60) || null,
       photoAssetId: input.photoAssetId || null,
       declaredValue: input.declaredValue != null && String(input.declaredValue).trim() !== "" ? new Decimal(input.declaredValue).toFixed(2) : null,
       idempotencyKey: input.idempotencyKey,
@@ -427,7 +430,7 @@ export async function customerGoldReversalBlock(tx: Tx, entryId: string): Promis
   if (e.reversedBy) return `It was already reversed by ${e.reversedBy.entryCode}.`;
   if (e.jewelleryReceiptId) return "It is part of a jewellery receipt and cannot be reversed on its own.";
   if (e.kind === "DELIVER") return "Deliveries are reversed from the delivery itself (job page).";
-  if (e.kind === "CONVERT_TO_COMPANY") return "An approved purchase/exchange is corrected by an Owner correction, not reversed here.";
+  if (e.kind === "CONVERT_TO_COMPANY") return "An approved purchase/exchange is reversed from the purchase itself (Owner), not from this entry.";
   if (!REVERSIBLE_KINDS.includes(e.kind)) return "This kind of entry cannot be reversed.";
   // Newest first: any LATER live entry of the same pool depends on this one's balance.
   const later = await tx.customerGoldEntry.findMany({

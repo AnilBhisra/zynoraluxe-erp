@@ -112,6 +112,7 @@ const purchaseInput = (over: Partial<CustomerGoldPurchaseInput>): CustomerGoldPu
   rate: "7000",
   settlement: "CREDIT_TO_INVOICE",
   reason: "Customer exchanged old gold against the new order",
+  reference: "Old-gold slip 101",
   approved: true,
   ...over,
 });

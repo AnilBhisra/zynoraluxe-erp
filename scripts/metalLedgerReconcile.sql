@@ -7,6 +7,13 @@
 -- 1330 Finished Jewellery   vs AVAILABLE pieces at authoritative cost (metal + diamond + labour)
 -- 1340 Customer Jewellery   vs Company cost in Customer-owned pieces awaiting delivery
 --                              (only once account 1340 exists: 4 lines before the Customer Gold migration, 5 after)
+-- CGCR Customer gold credit  (Phase 8C, a 6th line, same 4-field shape): Accounts Payable lines of every
+--                              Customer Gold purchase/exchange voucher (+ its reversal) and of every bill's
+--                              "Gold-purchase credit applied" lines (+ their reversals), against the records:
+--                              approved value of live purchases − credit applied by live bills.
+--                              Needs the Customer Gold tables (production has them since 027a8a2); the
+--                              purchase status is read through row_to_json so the line also runs, unchanged,
+--                              before the Old Gold Exchange migration (every purchase then counts as live).
 -- Posted revaluations are added to the pool/WIP/finished figure they restate.
 -- Works before and after the custody migration: movement types are compared
 -- as text and no custody column is referenced. The transaction is READ ONLY.
@@ -50,4 +57,21 @@ rec as (
 )
 select led.code || '|' || led.bal || '|' || round(rec.expected, 2) || '|' || round(led.bal - rec.expected, 2)
 from led join rec on rec.code = led.code order by led.code;
+with ap as (select id from accounts where code = '2000'),
+p as (
+  select p.*, coalesce(row_to_json(p)->>'status', 'POSTED') as st, row_to_json(p)->>'reversalVoucherId' as rv, mp."voucherId" as pv
+  from customer_gold_purchases p join metal_purchases mp on mp.id = p."metalPurchaseId"
+),
+b as (select * from customer_jewellery_bills),
+ledger as (
+  select coalesce((select sum(j.credit - j.debit) from journal_entries j join p on j."voucherId" in (p.pv, p.rv) and j."partyId" = p."customerId"
+                   where j."accountId" = (select id from ap)), 0)
+       + coalesce((select sum(j.credit - j.debit) from journal_entries j join b on j."voucherId" in (b."voucherId", b."reversalVoucherId") and j."partyId" = b."customerId"
+                   where j."accountId" = (select id from ap) and j.description like '%Gold-purchase credit applied%'), 0) as bal
+),
+records as (
+  select coalesce((select sum("approvedValue") from p where st = 'POSTED'), 0)
+       - coalesce((select sum("creditApplied") from b where status::text = 'POSTED'), 0) as expected
+)
+select 'CGCR|' || round(ledger.bal, 2) || '|' || round(records.expected, 2) || '|' || round(ledger.bal - records.expected, 2) from ledger, records;
 rollback;

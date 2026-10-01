@@ -4,6 +4,7 @@ import type { CustomerGoldEntryKind, CustomerGoldLocation } from "@/generated/pr
 import { Decimal, ZERO } from "@/lib/accounting/money";
 import type { Tx } from "@/lib/corrections/types";
 import { round3 } from "@/lib/diamond/allocation";
+import { customerCreditSummaryInTx } from "@/lib/jewellery/oldGoldExchange";
 import {
   ENTRY_KIND_LABEL,
   LOCATION_LABEL,
@@ -148,11 +149,33 @@ export type CustomerGoldStatement = {
     fineWeight: string;
     reference: string | null;
     reason: string;
+    /** Old Gold Exchange: what the Customer said the purity was (documentation only). */
+    statedPurity: string | null;
     /** Owner only; documentation / insurance, never Company cost. */
     declaredValue: string | null;
   }[];
   entries: CustomerGoldStatementEntry[];
-  purchases: { purchaseCode: string; date: string; purityDisplayName: string; gross: string; fine: string; settlement: string; fromCustody: boolean; approvedValue: string | null }[];
+  purchases: {
+    id: string;
+    purchaseCode: string;
+    date: string;
+    purityDisplayName: string;
+    gross: string;
+    fine: string;
+    settlement: string;
+    fromCustody: boolean;
+    /** Set for a one-step Old Gold Exchange: the intake it bought. */
+    intakeReceiptCode: string | null;
+    reference: string | null;
+    status: string;
+    reversedAt: string | null;
+    /** Owner only. */
+    rateBasis: string | null;
+    rate: string | null;
+    approvedValue: string | null;
+  }[];
+  /** Owner only: gold-purchase credit granted, applied by bills, still usable. */
+  credit: { granted: string; applied: string; available: string } | null;
   pieces: { id: string; finishedCode: string; jobCode: string; status: string; netMetalWeight: string; fineMetalWeight: string; customerGoldFineWeight: string; companyCost: string | null }[];
   bills: { billCode: string; date: string; jobCode: string; status: string; taxableValue: string; taxAmount: string; grandTotal: string; creditApplied: string; amountDue: string }[] | null;
   deliveries: { deliveryCode: string; date: string; jobCode: string; status: string; receivedByName: string; deliveredBy: string; reference: string | null; customerGoldFine: string; pieces: string[] }[];
@@ -161,7 +184,7 @@ export type CustomerGoldStatement = {
 export async function customerGoldStatement(tx: Tx, customerId: string, opts: { includeValues: boolean }): Promise<CustomerGoldStatement | null> {
   const customer = await tx.party.findUnique({ where: { id: customerId } });
   if (!customer || customer.type !== "CUSTOMER") return null;
-  const [pools, receipts, entries, purchases, pieces, bills, deliveries] = await Promise.all([
+  const [pools, receipts, entries, purchases, pieces, bills, deliveries, credit] = await Promise.all([
     listCustomerGoldPools(tx, customerId),
     tx.customerGoldReceipt.findMany({ where: { customerId }, include: { purity: true }, orderBy: { createdAt: "asc" } }),
     tx.customerGoldEntry.findMany({
@@ -169,10 +192,11 @@ export async function customerGoldStatement(tx: Tx, customerId: string, opts: { 
       include: { purity: true, karigar: true, job: true, finishedJewellery: true, createdBy: true, reversedBy: true },
       orderBy: { createdAt: "asc" },
     }),
-    tx.customerGoldPurchase.findMany({ where: { customerId }, include: { purity: true }, orderBy: { createdAt: "asc" } }),
+    tx.customerGoldPurchase.findMany({ where: { customerId }, include: { purity: true, customerGoldReceipt: { select: { receiptCode: true } } }, orderBy: { createdAt: "asc" } }),
     tx.finishedJewellery.findMany({ where: { customerId, ownership: "CUSTOMER" }, include: { job: true }, orderBy: { finishedCode: "asc" } }),
     opts.includeValues ? tx.customerJewelleryBill.findMany({ where: { customerId }, include: { job: true }, orderBy: { createdAt: "asc" } }) : Promise.resolve(null),
     tx.customerJewelleryDelivery.findMany({ where: { customerId }, include: { job: true, deliveredBy: true, items: { include: { finishedJewellery: true } } }, orderBy: { createdAt: "asc" } }),
+    opts.includeValues ? customerCreditSummaryInTx(tx, customerId) : Promise.resolve(null),
   ]);
   const place = (loc: CustomerGoldLocation, e: (typeof entries)[number]) => {
     const s = scopeOf(loc, e);
@@ -202,6 +226,7 @@ export async function customerGoldStatement(tx: Tx, customerId: string, opts: { 
       fineWeight: new Decimal(r.fineWeight).toFixed(3),
       reference: r.reference,
       reason: r.reason,
+      statedPurity: r.statedPurity,
       declaredValue: opts.includeValues && r.declaredValue != null ? new Decimal(r.declaredValue).toFixed(2) : null,
     })),
     entries: entries.map((e) => ({
@@ -233,6 +258,7 @@ export async function customerGoldStatement(tx: Tx, customerId: string, opts: { 
         newestLive.get(`${e.purityId}|${new Decimal(e.finenessPercentSnapshot).toFixed(3)}`) === e.id,
     })),
     purchases: purchases.map((p) => ({
+      id: p.id,
       purchaseCode: p.purchaseCode,
       date: p.purchaseDate.toISOString(),
       purityDisplayName: p.purity.displayName,
@@ -240,8 +266,15 @@ export async function customerGoldStatement(tx: Tx, customerId: string, opts: { 
       fine: new Decimal(p.fineWeight).toFixed(3),
       settlement: p.settlement,
       fromCustody: p.fromCustody,
+      intakeReceiptCode: p.customerGoldReceipt?.receiptCode ?? null,
+      reference: p.reference,
+      status: p.status,
+      reversedAt: p.reversedAt?.toISOString() ?? null,
+      rateBasis: opts.includeValues ? p.rateBasis : null,
+      rate: opts.includeValues ? new Decimal(p.rate).toFixed(4) : null,
       approvedValue: opts.includeValues ? new Decimal(p.approvedValue).toFixed(2) : null,
     })),
+    credit: credit ? { granted: credit.granted.toFixed(2), applied: credit.applied.toFixed(2), available: credit.available.toFixed(2) } : null,
     pieces: pieces.map((p) => ({
       id: p.id,
       finishedCode: p.finishedCode,

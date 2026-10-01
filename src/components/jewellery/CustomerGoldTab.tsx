@@ -5,13 +5,17 @@ import { useActionState, useEffect, useRef, useState, useTransition } from "reac
 
 import {
   discardCustomerGoldPhotoAction,
+  exchangeOldGoldAction,
   postCustomerGoldTransferAction,
   previewCustomerGoldIntakeAction,
   previewCustomerGoldPurchaseAction,
+  previewCustomerGoldPurchaseReversalAction,
   previewCustomerGoldTransferAction,
+  previewOldGoldExchangeAction,
   purchaseCustomerGoldAction,
   receiveCustomerGoldAction,
   reverseCustomerGoldEntryAction,
+  reverseCustomerGoldPurchaseAction,
 } from "@/app/actions/customerGold";
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
@@ -162,12 +166,12 @@ function IntakePanel({
           <input type="radio" name="intakeChoice" checked={choice === "PURCHASE"} onChange={() => setChoice("PURCHASE")} className="mt-0.5 h-4 w-4" />
           <span>
             <span className="font-medium">Purchase/exchange gold from Customer</span>
-            <span className="block text-xs text-zinc-500 dark:text-zinc-400">The Company buys it at an agreed value (Owner approval). It becomes Company stock.</span>
+            <span className="block text-xs text-zinc-500 dark:text-zinc-400">Old gold the Company buys at an agreed value (Owner approval). It becomes Company stock and, if you choose, the Customer&apos;s bill credit.</span>
           </span>
         </label>
       </fieldset>
       {choice === "CUSTODY" ? <IntakeForm customerId={customerId} purities={purities} onDone={onDone} /> : null}
-      {choice === "PURCHASE" ? <PurchaseForm mode="DIRECT" customerId={customerId} purities={purities} pools={[]} onClose={onClose} onDone={onDone} embedded /> : null}
+      {choice === "PURCHASE" ? <ExchangeForm customerId={customerId} purities={purities} onDone={onDone} /> : null}
     </div>
   );
 }
@@ -314,6 +318,275 @@ function IntakeForm({ customerId, purities, onDone }: { customerId: string; puri
         ) : null}
       </div>
     </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Old Gold Exchange (Owner): one step — intake + approved purchase of exactly it
+// ---------------------------------------------------------------------------
+
+const RATE_LABEL: Record<string, string> = {
+  PER_FINE_GRAM: "Rate per FINE gram (₹)",
+  PER_GROSS_GRAM: "Rate per GROSS gram (₹)",
+  FIXED_TOTAL: "Agreed total (₹)",
+};
+const BASIS_TEXT: Record<string, string> = { PER_FINE_GRAM: "per fine gram", PER_GROSS_GRAM: "per gross gram", FIXED_TOTAL: "fixed total" };
+
+function ExchangeForm({ customerId, purities, onDone }: { customerId: string; purities: CustomerGoldTabData["purities"]; onDone: () => void }) {
+  const [previewState, previewAction, previewPending] = useActionState(previewOldGoldExchangeAction, undefined);
+  const [postState, postAction, postPending] = useActionState(exchangeOldGoldAction, undefined);
+  const [, startTransition] = useTransition();
+  const [idempotencyKey] = useState(() => crypto.randomUUID());
+  const [exchangeDate, setExchangeDate] = useState(today());
+  const [purityId, setPurityId] = useState(purities[0]?.id ?? "");
+  const [statedPurity, setStatedPurity] = useState("");
+  const [basis, setBasis] = useState<"GROSS" | "FINE">("GROSS");
+  const [weight, setWeight] = useState("");
+  const [deduction, setDeduction] = useState("");
+  const [rateBasis, setRateBasis] = useState("PER_FINE_GRAM");
+  const [rate, setRate] = useState("");
+  const [settlement, setSettlement] = useState("CREDIT_TO_INVOICE");
+  const [reference, setReference] = useState("");
+  const [reason, setReason] = useState("");
+  const [photoAssetId, setPhotoAssetId] = useState<string | null>(null);
+  const [approved, setApproved] = useState(false);
+  const [previewed, setPreviewed] = useState("");
+  const current = JSON.stringify({ exchangeDate, purityId, statedPurity, basis, weight, deduction, rateBasis, rate, settlement, reference, reason, photoAssetId });
+  const preview = previewState?.preview && previewed === current ? previewState.preview : null;
+  // Same rule as the intake form: a photo uploaded for an exchange that is then
+  // abandoned or never saved is discarded, never left orphaned in storage.
+  const photoRef = useRef<string | null>(null);
+  const savedRef = useRef(false);
+  useEffect(() => {
+    photoRef.current = photoAssetId;
+  }, [photoAssetId]);
+  useEffect(() => {
+    if (postState?.success) savedRef.current = true;
+  }, [postState?.success]);
+  useEffect(() => {
+    const discard = () => {
+      if (photoRef.current && !savedRef.current) {
+        void discardCustomerGoldPhotoAction(photoRef.current);
+        photoRef.current = null;
+      }
+    };
+    window.addEventListener("pagehide", discard);
+    return () => {
+      window.removeEventListener("pagehide", discard);
+      discard();
+    };
+  }, []);
+  useEffect(() => {
+    if (postState?.success) onDone();
+  }, [postState?.success, onDone]);
+  const payload = (fingerprint: string) => {
+    const fd = new FormData();
+    fd.set("customerId", customerId);
+    fd.set("exchangeDate", exchangeDate);
+    fd.set("purityId", purityId);
+    fd.set("statedPurity", statedPurity);
+    fd.set("inputBasis", basis);
+    fd.set("weight", weight);
+    fd.set("deductionWeight", deduction);
+    fd.set("rateBasis", rateBasis);
+    fd.set("rate", rate);
+    fd.set("settlement", settlement);
+    fd.set("reference", reference);
+    fd.set("reason", reason);
+    if (photoAssetId) fd.set("photoAssetId", photoAssetId);
+    fd.set("approved", approved ? "1" : "");
+    fd.set("idempotencyKey", idempotencyKey);
+    fd.set("previewFingerprint", fingerprint);
+    return fd;
+  };
+  if (postState?.success) {
+    return (
+      <div className="mt-3 flex flex-col gap-2" data-testid="cg-exchange-done">
+        <Alert tone="success">Exchange posted — {postState.code}. The accepted gold is now Company stock.</Alert>
+        {postState.id ? (
+          <a className="text-sm font-medium underline underline-offset-4" href={`/customer-gold/purchase/${postState.id}`} target="_blank" rel="noreferrer">
+            Print the exchange acknowledgment
+          </a>
+        ) : null}
+      </div>
+    );
+  }
+  return (
+    <form className="mt-4 flex flex-col gap-3" data-testid="cg-exchange-form" onSubmit={(e) => e.preventDefault()}>
+      <p className="text-xs text-amber-700 dark:text-amber-400">
+        Old gold the Company BUYS (or takes in exchange) at an agreed value, with the Owner&apos;s approval. It is recorded as received from the Customer and, in the same step, becomes Company stock. / કંપની આ સોનું ખરીદે છે.
+      </p>
+      {previewState?.error ? <Alert tone="error">{previewState.error}</Alert> : null}
+      {postState?.error ? <Alert tone="error">{postState.error}</Alert> : null}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <Field label="Date" name="exchangeDate" type="date" value={exchangeDate} max={today()} onChange={(e) => setExchangeDate(e.target.value)} />
+        <Field label="Stated purity (what the Customer says)" name="statedPurity" value={statedPurity} onChange={(e) => setStatedPurity(e.target.value)} maxLength={60} hint="Documentation only." />
+        <label className="text-xs font-medium">
+          Tested / approved purity
+          <select aria-label="Tested purity" value={purityId} onChange={(e) => setPurityId(e.target.value)} className={inputCls}>
+            {purities.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.metalType} {p.displayName} ({p.finenessPercent}%)
+              </option>
+            ))}
+          </select>
+        </label>
+        <fieldset className="flex flex-col gap-1.5">
+          <legend className="text-sm font-medium text-zinc-800 dark:text-zinc-200">Weight entered as</legend>
+          <div className="flex flex-wrap gap-4 text-sm">
+            <label className="flex items-center gap-2">
+              <input type="radio" name="cgExBasis" checked={basis === "GROSS"} onChange={() => setBasis("GROSS")} className="h-4 w-4" /> Gross grams (as weighed)
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="radio" name="cgExBasis" checked={basis === "FINE"} onChange={() => setBasis("FINE")} className="h-4 w-4" /> Accepted fine grams
+            </label>
+          </div>
+        </fieldset>
+        <Field label={basis === "FINE" ? "Accepted fine weight (g)" : "Gross weight (g, as weighed)"} name="weight" type="number" step="0.001" min="0" inputMode="decimal" value={weight} onChange={(e) => setWeight(e.target.value)} />
+        <Field label="Allowed deduction — stone / dust (g)" name="deductionWeight" type="number" step="0.001" min="0" inputMode="decimal" value={deduction} onChange={(e) => setDeduction(e.target.value)} />
+        <label className="text-xs font-medium">
+          Valuation rate basis
+          <select aria-label="Exchange rate basis" value={rateBasis} onChange={(e) => setRateBasis(e.target.value)} className={inputCls}>
+            <option value="PER_FINE_GRAM">₹ per fine gram</option>
+            <option value="PER_GROSS_GRAM">₹ per gross gram</option>
+            <option value="FIXED_TOTAL">Fixed total ₹</option>
+          </select>
+        </label>
+        <Field label={RATE_LABEL[rateBasis]} name="rate" type="number" step="0.0001" min="0" inputMode="decimal" value={rate} onChange={(e) => setRate(e.target.value)} />
+        <label className="text-xs font-medium">
+          Settlement
+          <select aria-label="Exchange settlement" value={settlement} onChange={(e) => setSettlement(e.target.value)} className={inputCls}>
+            <option value="CREDIT_TO_INVOICE">Credit against the Customer&apos;s jewellery bill</option>
+            <option value="PAY_CUSTOMER">Pay the Customer (Payment Given)</option>
+          </select>
+        </label>
+        <Field label="Reference (required — slip / register number)" name="reference" value={reference} onChange={(e) => setReference(e.target.value)} maxLength={120} />
+      </div>
+      <Field label="Reason / notes (required)" name="reason" value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} />
+      <JewelleryPhotoUploadField category="jewellery-finished" label="Photo of the old gold (optional)" assetId={photoAssetId} onUploaded={setPhotoAssetId} />
+      {preview ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm dark:border-amber-900 dark:bg-amber-950/30" data-testid="cg-exchange-preview">
+          <p className="font-medium">
+            {preview.customerName}&apos;s old gold — stated {preview.statedPurity ?? "—"}, tested {preview.purityDisplayName} ({preview.finenessPercent}%): gross {g(preview.grossWeight)} − deduction {g(preview.deductionWeight)} = net{" "}
+            <strong>{g(preview.netGrossWeight)}</strong> = <strong>{g(preview.fineWeight)} fine</strong>.
+          </p>
+          <ul className="mt-1 list-disc pl-5 text-xs">
+            <li data-testid="cg-exchange-value">
+              Rate saved: ₹{preview.rate} {BASIS_TEXT[preview.rateBasis]} → value <strong>₹{preview.value}</strong> (= ₹{preview.perGrossGram} per gross gram / ₹{preview.perFineGram} per fine gram).
+            </li>
+            <li>Posts once: Dr Metal Inventory ₹{preview.value} / Cr Accounts Payable ({preview.customerName}) ₹{preview.value}; {g(preview.netGrossWeight)} enters Company stock at ₹{preview.value}.</li>
+            <li data-testid="cg-exchange-credit">
+              {preview.settlement === "CREDIT_TO_INVOICE"
+                ? `Credit for the Customer's bill: ₹${preview.creditBefore} → ₹${preview.creditAfter}.`
+                : "Settled by paying the Customer (Payment Given) — no bill credit."}
+            </li>
+          </ul>
+          <label className="mt-2 flex items-center gap-2 text-sm font-medium">
+            <input type="checkbox" checked={approved} onChange={(e) => setApproved(e.target.checked)} className="h-4 w-4" aria-label="I approve this exchange" /> I approve buying this gold from the Customer at this value.
+          </label>
+        </div>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={previewPending || postPending || !purityId || !(Number(weight) > 0) || !(Number(rate) > 0) || reason.trim().length < 3 || reference.trim().length < 2}
+          onClick={() => {
+            setPreviewed(current);
+            setApproved(false);
+            startTransition(() => previewAction(payload("")));
+          }}
+        >
+          {previewPending ? "Checking…" : "Preview exchange"}
+        </Button>
+        {preview ? (
+          <Button type="button" disabled={postPending || !approved} onClick={() => startTransition(() => postAction(payload(preview.fingerprint)))}>
+            {postPending ? "Posting…" : "Approve and post exchange"}
+          </Button>
+        ) : null}
+      </div>
+    </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// One approved purchase / exchange: acknowledgment and Owner reversal
+// ---------------------------------------------------------------------------
+
+function PurchaseRow({ p, isOwner, onDone }: { p: CustomerGoldStatement["purchases"][number]; isOwner: boolean; onDone: () => void }) {
+  const [checkState, checkAction, checkPending] = useActionState(previewCustomerGoldPurchaseReversalAction, undefined);
+  const [state, action, pending] = useActionState(reverseCustomerGoldPurchaseAction, undefined);
+  const [, startTransition] = useTransition();
+  const [reason, setReason] = useState("");
+  const [idempotencyKey] = useState(() => crypto.randomUUID());
+  useEffect(() => {
+    if (state?.success) onDone();
+  }, [state?.success, onDone]);
+  const reversed = p.status === "REVERSED";
+  return (
+    <li className="rounded-lg border border-[var(--border)] p-2" data-testid={`cg-purchase-${p.purchaseCode}`}>
+      <p>
+        <strong>{p.purchaseCode}</strong> · {new Date(p.date).toLocaleDateString("en-IN")} · {p.purityDisplayName} {p.fine} g fine ({p.gross} g gross) ·{" "}
+        {p.intakeReceiptCode ? `exchange (intake ${p.intakeReceiptCode})` : p.fromCustody ? "from custody" : "handed over"} · {p.settlement === "CREDIT_TO_INVOICE" ? "credit to bill" : "pay Customer"}
+        {p.reference ? ` · ref ${p.reference}` : ""}
+        {p.approvedValue ? ` · ₹${p.approvedValue}` : ""}
+        {p.rate && p.rateBasis ? ` (₹${p.rate} ${BASIS_TEXT[p.rateBasis]})` : ""}
+        {reversed ? <span className="ml-1 font-semibold text-amber-700 dark:text-amber-300"> · REVERSED</span> : null}
+      </p>
+      {isOwner ? (
+        <div className="mt-1 flex flex-wrap items-center gap-3">
+          <a className="underline underline-offset-2" href={`/customer-gold/purchase/${p.id}`} target="_blank" rel="noreferrer">
+            Acknowledgment
+          </a>
+          {!reversed ? (
+            <button
+              type="button"
+              className="underline underline-offset-2"
+              disabled={checkPending}
+              onClick={() => {
+                const fd = new FormData();
+                fd.set("purchaseId", p.id);
+                startTransition(() => checkAction(fd));
+              }}
+            >
+              {checkPending ? "Checking…" : `Reverse ${p.purchaseCode}`}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {isOwner && !reversed && checkState && checkState.purchaseId === p.id ? (
+        checkState.error ? (
+          <Alert tone="error">{checkState.error}</Alert>
+        ) : checkState.block ? (
+          <p className="mt-1 text-amber-700 dark:text-amber-300" data-testid={`cg-purchase-block-${p.purchaseCode}`}>
+            Cannot reverse now: {checkState.block}
+          </p>
+        ) : (
+          <div className="mt-2 flex flex-col gap-2" data-testid={`cg-purchase-reverse-${p.purchaseCode}`}>
+            <p>
+              Reversing posts a mirror voucher (Dr Accounts Payable / Cr Metal Inventory), takes the same {p.gross} g out of Company stock at the same value
+              {p.fromCustody ? ", and puts the gold back in the Customer's safe" : ""}. Nothing is deleted.
+            </p>
+            {state?.error ? <Alert tone="error">{state.error}</Alert> : null}
+            <Field label="Reason for reversing (at least 10 characters)" name={`reverseReason-${p.id}`} value={reason} onChange={(e) => setReason(e.target.value)} maxLength={300} />
+            <Button
+              type="button"
+              variant="danger"
+              disabled={pending || reason.trim().length < 10}
+              onClick={() => {
+                const fd = new FormData();
+                fd.set("purchaseId", p.id);
+                fd.set("reason", reason);
+                fd.set("idempotencyKey", idempotencyKey);
+                startTransition(() => action(fd));
+              }}
+            >
+              {pending ? "Reversing…" : `Confirm reversal of ${p.purchaseCode}`}
+            </Button>
+          </div>
+        )
+      ) : null}
+    </li>
   );
 }
 
@@ -573,6 +846,7 @@ function PurchaseForm({
   if (postState?.success) {
     return <Alert tone="success">Approved purchase posted — {postState.code}. The gold is now Company stock.</Alert>;
   }
+  void mode;
   return (
     <form className={`${embedded ? "mt-4" : cardCls} flex flex-col gap-3`} data-testid="cg-purchase-form" onSubmit={(e) => e.preventDefault()}>
       {!embedded ? (
@@ -657,7 +931,7 @@ function PurchaseForm({
             <option value="PAY_CUSTOMER">Pay the Customer (Payment Given)</option>
           </select>
         </label>
-        <Field label="Reference (optional)" name="reference" value={reference} onChange={(e) => setReference(e.target.value)} maxLength={120} />
+        <Field label="Reference (required — slip / register number)" name="reference" value={reference} onChange={(e) => setReference(e.target.value)} maxLength={120} />
       </div>
       <Field label="Reason (required)" name="reason" value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} />
       {preview ? (
@@ -683,7 +957,7 @@ function PurchaseForm({
         <Button
           type="button"
           variant="secondary"
-          disabled={previewPending || postPending || reason.trim().length < 3 || !(Number(rate) > 0) || (!all && !(Number(weight) > 0))}
+          disabled={previewPending || postPending || reason.trim().length < 3 || reference.trim().length < 2 || !(Number(rate) > 0) || (!all && !(Number(weight) > 0))}
           onClick={() => {
             setPreviewed(current);
             setApproved(false);
@@ -759,7 +1033,7 @@ function StatementView({ statement, isOwner, onDone }: { statement: CustomerGold
                 <a className="font-medium underline underline-offset-2" href={`/customer-gold/receipt/${r.id}`} target="_blank" rel="noreferrer">
                   {r.receiptCode}
                 </a>{" "}
-                · {new Date(r.intakeDate).toLocaleDateString("en-IN")} · {r.purityDisplayName} ({r.finenessPercent}%) · gross {r.grossWeight} − {r.deductionWeight} = {r.netGrossWeight} g · fine {r.fineWeight} g
+                · {new Date(r.intakeDate).toLocaleDateString("en-IN")} · {r.statedPurity ? `stated ${r.statedPurity}, tested ` : ""}{r.purityDisplayName} ({r.finenessPercent}%) · gross {r.grossWeight} − {r.deductionWeight} = {r.netGrossWeight} g · fine {r.fineWeight} g
                 {r.declaredValue ? ` · declared ₹${r.declaredValue} (not Company cost)` : ""}
               </li>
             ))}
@@ -790,16 +1064,34 @@ function StatementView({ statement, isOwner, onDone }: { statement: CustomerGold
         </div>
       ) : null}
 
+      {statement.credit ? (
+        <div className={cardCls} data-testid="cg-credit">
+          <p className="text-sm font-semibold">Gold-purchase credit (Owner)</p>
+          <dl className="mt-2 grid grid-cols-3 gap-2 text-xs">
+            <div>
+              <dt className="text-zinc-500 dark:text-zinc-400">Given by purchases / exchanges</dt>
+              <dd className="font-semibold">₹{statement.credit.granted}</dd>
+            </div>
+            <div>
+              <dt className="text-zinc-500 dark:text-zinc-400">Applied to bills</dt>
+              <dd className="font-semibold">₹{statement.credit.applied}</dd>
+            </div>
+            <div>
+              <dt className="text-zinc-500 dark:text-zinc-400">Still available</dt>
+              <dd className="font-semibold" data-testid="cg-credit-available">
+                ₹{statement.credit.available}
+              </dd>
+            </div>
+          </dl>
+        </div>
+      ) : null}
+
       {statement.purchases.length ? (
         <div className={cardCls}>
           <p className="text-sm font-semibold">Approved purchases / exchanges</p>
-          <ul className="mt-2 flex flex-col gap-1 text-xs">
+          <ul className="mt-2 flex flex-col gap-2 text-xs">
             {statement.purchases.map((p) => (
-              <li key={p.purchaseCode}>
-                {p.purchaseCode} · {new Date(p.date).toLocaleDateString("en-IN")} · {p.purityDisplayName} {p.fine} g fine ({p.gross} g gross) · {p.fromCustody ? "from custody" : "handed over"} ·{" "}
-                {p.settlement === "CREDIT_TO_INVOICE" ? "credit to bill" : "pay Customer"}
-                {p.approvedValue ? ` · ₹${p.approvedValue}` : ""}
-              </li>
+              <PurchaseRow key={p.purchaseCode} p={p} isOwner={isOwner} onDone={onDone} />
             ))}
           </ul>
         </div>

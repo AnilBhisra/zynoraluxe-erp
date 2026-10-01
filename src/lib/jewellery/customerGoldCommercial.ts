@@ -48,6 +48,13 @@ function reasonOf(r: string | null | undefined, min = 3) {
   return t;
 }
 const money = (v: DecimalInput | null | undefined) => round2(v === null || v === undefined || String(v).trim() === "" ? 0 : v);
+/** A purchase rate at the 4 decimals it is stored with (round half-up). */
+const rate4 = (v: DecimalInput) => new Decimal(v).toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
+function referenceOf(r: string | null | undefined) {
+  const t = r?.trim() ?? "";
+  if (t.length < 2) throw new CustomerGoldError("Enter the reference (bill, slip or register number) for this purchase/exchange.");
+  return t.slice(0, 120);
+}
 
 // ---------------------------------------------------------------------------
 // Purchase / exchange of a Customer's gold (Owner-approved)
@@ -70,9 +77,16 @@ export type CustomerGoldPurchaseInput = {
   rate: DecimalInput;
   settlement: CustomerGoldSettlement;
   reason: string;
+  /** Phase 8C: required — the bill / slip / register number the purchase can be traced to. */
   reference?: string | null;
   /** The Owner's explicit approval of the purchase and its value. */
   approved: boolean;
+  /**
+   * Old Gold Exchange (internal): buy EXACTLY this intake's net gross / fine out
+   * of the safe, in the same transaction that recorded it — never a share of
+   * whatever else the Customer holds there.
+   */
+  exactIntake?: { receiptId: string; gross: Decimal; fine: Decimal } | null;
 };
 
 export type CustomerGoldPurchasePlan = {
@@ -89,6 +103,7 @@ export type CustomerGoldPurchasePlan = {
 
 export async function planCustomerGoldPurchase(tx: Tx, input: CustomerGoldPurchaseInput): Promise<CustomerGoldPurchasePlan> {
   reasonOf(input.reason);
+  referenceOf(input.reference);
   const customer = await tx.party.findUnique({ where: { id: input.customerId } });
   if (!customer || customer.type !== "CUSTOMER") throw new CustomerGoldError("Choose the Customer the gold is bought from.");
   const purity = await tx.metalPurity.findUnique({ where: { id: input.purityId } });
@@ -113,7 +128,7 @@ export async function planCustomerGoldPurchase(tx: Tx, input: CustomerGoldPurcha
     const pool = await loadPoolInTx(tx, { customerId: customer.id, metalType: purity.metalType, purityId: purity.id, finenessPercentSnapshot: poolFineness });
     safeBefore = placeBalance(pool, { location: "SAFE", scopeId: null });
     const want = input.all ? { all: true } : input.fineWeight != null && String(input.fineWeight).trim() !== "" ? { fine: d3(input.fineWeight) } : { gross: d3(input.grossWeight) };
-    const moved = shareOf(safeBefore, want, poolFineness);
+    const moved = input.exactIntake ? { gross: input.exactIntake.gross, fine: input.exactIntake.fine } : shareOf(safeBefore, want, poolFineness);
     if (!moved.fine.greaterThan(0)) throw new CustomerGoldError(`${customer.name} has no ${purity.displayName} in the safe to sell.`);
     if (moved.fine.greaterThan(safeBefore.fine) || moved.gross.greaterThan(safeBefore.gross)) {
       throw new CustomerGoldError(`${customer.name} has only ${safeBefore.fine.toFixed(3)} g fine / ${safeBefore.gross.toFixed(3)} g gross of ${purity.displayName} in the safe.`);
@@ -122,7 +137,9 @@ export async function planCustomerGoldPurchase(tx: Tx, input: CustomerGoldPurcha
     fine = moved.fine;
     safeAfter = { gross: round3(safeBefore.gross.minus(gross)), fine: round3(safeBefore.fine.minus(fine)) };
   }
-  const rate = new Decimal(input.rate);
+  // The rate is stored to 4 decimals, so it is used at exactly those 4 decimals:
+  // the value on the voucher is always reproducible from the stored rate.
+  const rate = rate4(input.rate);
   if (!rate.greaterThan(0)) throw new CustomerGoldError("Enter the agreed rate (or fixed total).");
   const value = input.rateBasis === "PER_GROSS_GRAM" ? round2(rate.times(gross)) : input.rateBasis === "PER_FINE_GRAM" ? round2(rate.times(fine)) : round2(rate);
   if (!value.greaterThan(0)) throw new CustomerGoldError("The agreed value must be above zero.");
@@ -164,7 +181,7 @@ export async function purchaseCustomerGold(tx: Tx, input: CustomerGoldPurchaseIn
     purityId: input.purityId,
     grossWeight: plan.gross,
     rateBasis: input.rateBasis,
-    rate: input.rate,
+    rate: rate4(input.rate),
     currencyCode: "INR",
     exchangeRate: 1,
     totalPurchaseCost: plan.value,
@@ -173,6 +190,8 @@ export async function purchaseCustomerGold(tx: Tx, input: CustomerGoldPurchaseIn
     notes: `Purchase/exchange of Customer gold ${purchaseCode} — ${reason}`,
     idempotencyKey: `${input.idempotencyKey}:metal`,
     createdByUserId: input.actor.id,
+    // The value was derived from the stored 4-dp rate: let the posting re-derive and prove it.
+    totalManuallyEdited: false,
   });
   if (!new Decimal(metalPurchase.fineWeight).equals(plan.fine)) throw new CustomerGoldError("Internal check failed: fine weight mismatch. Nothing was saved.");
   const purchase = await tx.customerGoldPurchase.create({
@@ -186,13 +205,14 @@ export async function purchaseCustomerGold(tx: Tx, input: CustomerGoldPurchaseIn
       grossWeight: plan.gross.toFixed(3),
       fineWeight: plan.fine.toFixed(3),
       rateBasis: input.rateBasis,
-      rate: new Decimal(input.rate).toFixed(4),
+      rate: rate4(input.rate).toFixed(4),
       approvedValue: plan.value.toFixed(2),
       settlement: input.settlement,
       fromCustody: input.source === "CUSTODY",
       metalPurchaseId: metalPurchase.id,
+      customerGoldReceiptId: input.exactIntake?.receiptId ?? null,
       reason,
-      reference: input.reference?.trim() || null,
+      reference: referenceOf(input.reference),
       approvedByUserId: input.actor.id,
       approvedAt: new Date(),
       idempotencyKey: input.idempotencyKey,
@@ -224,9 +244,12 @@ export async function purchaseCustomerGold(tx: Tx, input: CustomerGoldPurchaseIn
  */
 export async function availableCustomerCreditInTx(tx: Tx, customerId: string): Promise<Decimal> {
   const [credits, bills, ap] = await Promise.all([
-    tx.customerGoldPurchase.aggregate({ where: { customerId, settlement: "CREDIT_TO_INVOICE" }, _sum: { approvedValue: true } }),
+    tx.customerGoldPurchase.aggregate({ where: { customerId, settlement: "CREDIT_TO_INVOICE", status: "POSTED" }, _sum: { approvedValue: true } }),
     tx.customerJewelleryBill.aggregate({ where: { customerId, status: "POSTED" }, _sum: { creditApplied: true } }),
-    tx.journalEntry.aggregate({ where: { partyId: customerId, account: { code: SYSTEM_ACCOUNT_CODES.ACCOUNTS_PAYABLE }, voucher: { status: { not: "CANCELLED" } } }, _sum: { credit: true, debit: true } }),
+    // Every line counts: a cancelled voucher keeps its lines and gains a
+    // mirror REVERSAL voucher, so the two net to zero. Excluding the cancelled
+    // original but keeping its mirror would mis-state the payable.
+    tx.journalEntry.aggregate({ where: { partyId: customerId, account: { code: SYSTEM_ACCOUNT_CODES.ACCOUNTS_PAYABLE } }, _sum: { credit: true, debit: true } }),
   ]);
   const purchaseCredit = round2(new Decimal(credits._sum.approvedValue ?? 0).minus(bills._sum.creditApplied ?? 0));
   const payable = round2(new Decimal(ap._sum.credit ?? 0).minus(ap._sum.debit ?? 0));

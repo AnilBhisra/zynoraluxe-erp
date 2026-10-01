@@ -20,7 +20,7 @@ export default async function CustomerGoldReceiptPage({ params }: { params: Prom
   const isOwner = user.role === "OWNER";
   const { id } = await params;
   const [receipt, company] = await Promise.all([
-    prisma.customerGoldReceipt.findUnique({ where: { id }, include: { customer: true, purity: true, createdBy: { select: { name: true } } } }),
+    prisma.customerGoldReceipt.findUnique({ where: { id }, include: { customer: true, purity: true, createdBy: { select: { name: true } }, exchangePurchase: { select: { purchaseCode: true, status: true } } } }),
     prisma.companySettings.findUnique({ where: { id: "default" } }),
   ]);
   if (!receipt) return <p className="text-sm text-zinc-500">Receipt not found.</p>;
@@ -39,15 +39,29 @@ export default async function CustomerGoldReceiptPage({ params }: { params: Prom
           <p className="text-sm text-zinc-600">Date: {receipt.intakeDate.toLocaleDateString("en-IN")}</p>
         </div>
       </div>
-      <p className="mt-4 text-sm">
-        Received from <strong>{receipt.customer.name}</strong>
-        {receipt.customer.phone ? ` (${receipt.customer.phone})` : ""} — the Customer&apos;s own gold, held for manufacturing their jewellery. It remains the
-        Customer&apos;s property and is not purchased by the Company.
-      </p>
+      {receipt.exchangePurchase ? (
+        <p className="mt-4 text-sm" data-testid="intake-exchange-note">
+          Received from <strong>{receipt.customer.name}</strong>
+          {receipt.customer.phone ? ` (${receipt.customer.phone})` : ""} as old gold for exchange — bought by the Company in {receipt.exchangePurchase.purchaseCode}
+          {receipt.exchangePurchase.status === "REVERSED" ? " (that purchase was later reversed: the gold is the Customer's again)" : ""}.
+        </p>
+      ) : (
+        <p className="mt-4 text-sm">
+          Received from <strong>{receipt.customer.name}</strong>
+          {receipt.customer.phone ? ` (${receipt.customer.phone})` : ""} — the Customer&apos;s own gold, held for manufacturing their jewellery. It remains the
+          Customer&apos;s property and is not purchased by the Company.
+        </p>
+      )}
       <table className="mt-4 w-full text-sm">
         <tbody className="[&_td]:border-b [&_td]:border-zinc-200 [&_td]:py-1.5">
+          {receipt.statedPurity ? (
+            <tr>
+              <td>Stated purity (Customer)</td>
+              <td className="text-right">{receipt.statedPurity}</td>
+            </tr>
+          ) : null}
           <tr>
-            <td>Metal and purity</td>
+            <td>{receipt.statedPurity ? "Tested / approved purity" : "Metal and purity"}</td>
             <td className="text-right font-medium">
               {receipt.metalType} {receipt.purity.displayName} ({new Decimal(String(receipt.finenessPercentSnapshot)).toFixed(3)}%)
             </td>
