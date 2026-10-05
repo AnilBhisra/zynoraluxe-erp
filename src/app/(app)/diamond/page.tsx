@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 
 import { requireUser } from "@/lib/auth/dal";
 import { prisma } from "@/lib/db/prisma";
+import { listEntryCorrections } from "@/lib/corrections/entry/service";
+import { CORRECTION_TRANSACTION_OPTIONS } from "@/lib/corrections/types";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { HelpLink } from "@/components/help/HelpLink";
 import {
@@ -289,6 +291,7 @@ async function JobsTabContent({
         totalPolishedCarat: r.totalPolishedCarat.toFixed(3),
         returnedRoughCarat: r.returnedRoughCarat.toFixed(3),
         returnedRoughPieces: r.returnedRoughPieces,
+        reversedBy: r.reversedBy,
         returnedRows: r.returnedRows.map((x) => ({ roughCode: x.roughCode, kind: x.kind, pieces: x.pieces, carat: x.carat.toFixed(3) })),
         weightLossCarat: r.weightLossCarat.toFixed(3),
         yieldPercent: r.yieldPercent.toFixed(3),
@@ -314,7 +317,13 @@ async function JobsTabContent({
         createdAt: m.createdAt.toISOString(),
       })),
     };
-    return <JobDetailView job={serialized} isOwner={isOwner} />;
+    // Correction history of the job and its receipts: counts and details for everyone,
+    // vouchers and amounts only in the Owner's payload.
+    const entryHistory = await prisma.$transaction(
+      (tx) => listEntryCorrections(tx, [detail.id, ...detail.receipts.map((r) => r.id)], { includeMoney: isOwner }),
+      CORRECTION_TRANSACTION_OPTIONS
+    );
+    return <JobDetailView job={serialized} isOwner={isOwner} entryHistory={entryHistory} />;
   }
 
   const statusList: DiamondJobStatus[] | undefined =

@@ -3,6 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 
 // The view's forms import Server Actions, whose module creates the real Prisma
 // client at import time (no DATABASE_URL under Vitest) — mock them out.
+vi.mock("@/app/actions/entryCorrections", () => ({
+  entryCorrectionOptionsAction: vi.fn(),
+  previewEntryCorrectionAction: vi.fn(),
+  postEntryCorrectionAction: vi.fn(),
+  reverseEntryCorrectionAction: vi.fn(),
+}));
 vi.mock("@/app/actions/jewellery", () => ({
   markJewelleryJobInProgressAction: vi.fn(),
   setJewelleryJobNeedsCorrectionAction: vi.fn(),

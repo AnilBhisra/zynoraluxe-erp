@@ -211,6 +211,8 @@ export type EntryHistoryItem = {
   id: string;
   code: string;
   kind: EntryKind;
+  /** The corrected record (job or receipt id), so a page can badge the right row. */
+  entityId: string;
   entityLabel: string;
   state: "ACTIVE" | "REVERSED";
   reason: string;
@@ -250,6 +252,7 @@ export async function listEntryCorrections(tx: Tx, entityIds: string[], opts: { 
       id: c.id,
       code: c.correctionCode,
       kind,
+      entityId: c.entityId,
       entityLabel: c.entityLabel,
       state: reversed ? "REVERSED" : "ACTIVE",
       reason: c.reason,

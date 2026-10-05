@@ -4,6 +4,10 @@ import { stickerHref } from "@/lib/jewellery/stickerLinks";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { EntryCorrectionHistory, EntryCorrectionPanel } from "@/components/corrections/EntryCorrection";
+import { Alert } from "@/components/ui/Alert";
+import type { EntryHistoryItem } from "@/lib/corrections/entry/service";
+
 import { markJewelleryJobInProgressAction, setJewelleryJobNeedsCorrectionAction } from "@/app/actions/jewellery";
 import {
   IssueMaterialsForm,
@@ -222,9 +226,12 @@ export function JobDetailView({
   custodySources = [],
   customerGoldSources = [],
   customerGold = null,
+  entryHistory = [],
 }: {
   job: SerializedJobDetail;
   isOwner: boolean;
+  /** Correct-entry history of the job and its receipts (money fields only for the Owner). */
+  entryHistory?: EntryHistoryItem[];
   purities: MetalPurityOption[];
   availableDiamonds: AvailablePolishedDiamondOption[];
   availablePackets?: AvailablePacketOption[];
@@ -259,6 +266,12 @@ export function JobDetailView({
     handleSaved();
   }
   const jobBack = `/jewellery-jobs?jobId=${job.id}`;
+  // Correct entry: the panel closes on success, so its confirmation lives here.
+  const [entryNotice, setEntryNotice] = useState<string | null>(null);
+  function handleEntryDone(message: string) {
+    setEntryNotice(message);
+    router.refresh();
+  }
   const savedReceipt = savedReceiptCode ? job.receipts.find((r) => r.receiptCode === savedReceiptCode) : undefined;
   const savedPieces = savedReceipt ? job.finishedOutputs.filter((o) => o.receiptId === savedReceipt.id) : [];
 
@@ -545,6 +558,33 @@ export function JobDetailView({
           </div>
         </div>
       ) : null}
+
+      {isOwner ? (
+        <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6" data-testid="jewellery-correct-entry">
+          <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Correct entry (Owner)</p>
+          <div className="mt-2 flex flex-col gap-2 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-zinc-700 dark:text-zinc-300">{job.jobCode} details</span>
+              <EntryCorrectionPanel target={{ entityType: "JEWELLERY_JOB", entityId: job.id }} recordLabel={job.jobCode} onDone={handleEntryDone} />
+            </div>
+            {job.receipts.map((r) => (
+              <div key={r.id} className="flex flex-wrap items-center gap-2">
+                <span className="text-zinc-700 dark:text-zinc-300">{r.receiptCode} notes</span>
+                <EntryCorrectionPanel target={{ entityType: "JEWELLERY_RECEIPT", entityId: r.id }} recordLabel={r.receiptCode} onDone={handleEntryDone} />
+              </div>
+            ))}
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              Weights, charges and outcomes are corrected with the tools below: add missing charges, reverse a Customer Gold receipt, or transfer metal.
+            </p>
+          </div>
+        </div>
+      ) : null}
+      {entryNotice ? (
+        <div data-testid="entry-notice">
+          <Alert tone="success">{entryNotice}</Alert>
+        </div>
+      ) : null}
+      <EntryCorrectionHistory items={entryHistory} isOwner={isOwner} onDone={handleEntryDone} />
 
       {job.receipts.length > 0 ? (
         <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">

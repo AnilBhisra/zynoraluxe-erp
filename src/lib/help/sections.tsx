@@ -525,6 +525,24 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
             </li>
           </Steps>
 
+          <SubHeading>ભૂલ સુધારવી — Correct entry (ફક્ત Owner)</SubHeading>
+          <Steps>
+            <li>
+              Job ખોલો. Receipt માટે <Btn>Correct a receipt</Btn> માં receipt સામે <Btn>Correct entry</Btn>, અને job ની વિગત માટે job ની નીચે <Btn>Correct entry</Btn>.
+            </li>
+            <li>
+              શું સુધારવું છે તે પસંદ કરો: <strong>Returned pieces</strong> (ફક્ત નંગ — carat, cost, loss, charge, voucher બદલાતા નથી), <strong>Details</strong> (notes, તારીખ,
+              સૂચના), અથવા <strong>Reverse this receipt</strong> (carat / charge / loss ખોટું હોય ત્યારે — mirror correction voucher બને, પછી receipt ફરી ભરો).
+            </li>
+            <li>
+              નવું value અને કારણ (ઓછામાં ઓછા 10 અક્ષર) ભરી <Btn>Preview</Btn>, પછી <Btn>Confirm correction</Btn>. Preview પછી કંઈ બદલો તો ફરી Preview કરવું પડે.
+            </li>
+            <li>
+              Rough આગળના process માં ગયો હોય તો સુધારો નકારાય — એ job નો code બતાવે. પહેલાં નવામાં નવી entry ઉલટાવવી પડે. મૂળ value <strong>Correction history</strong> માં
+              કાયમ દેખાય; <Btn>Reverse this correction</Btn> થી પાછું કરી શકાય (rough વપરાયો ન હોય ત્યાં સુધી).
+            </li>
+          </Steps>
+
           <SubHeading>Job Manufacturer — polished packets process માટે આપવા</SubHeading>
           <Steps>
             <li>Diamond → Job Manufacturer પર જાવ, <Btn>Issue packets</Btn> દબાવો.</li>

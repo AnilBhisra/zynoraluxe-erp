@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 
 import { requireUser } from "@/lib/auth/dal";
 import { prisma } from "@/lib/db/prisma";
+import { listEntryCorrections } from "@/lib/corrections/entry/service";
+import { CORRECTION_TRANSACTION_OPTIONS } from "@/lib/corrections/types";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { HelpLink } from "@/components/help/HelpLink";
 import {
@@ -393,10 +395,16 @@ async function JobsTabContent({
       })),
     };
 
+    // Correct-entry history of the job and its receipts (vouchers and amounts only for the Owner).
+    const entryHistory = await prisma.$transaction(
+      (tx) => listEntryCorrections(tx, [detail.id, ...detail.receipts.map((r) => r.id)], { includeMoney: isOwner }),
+      CORRECTION_TRANSACTION_OPTIONS
+    );
     return (
       <JobDetailView
         job={serialized}
         isOwner={isOwner}
+        entryHistory={entryHistory}
         purities={toMetalPurityOptions(purities)}
         availableDiamonds={availableDiamonds}
         availablePackets={availablePackets}

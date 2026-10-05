@@ -2,6 +2,12 @@ import * as React from "react";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/app/actions/entryCorrections", () => ({
+  entryCorrectionOptionsAction: vi.fn(),
+  previewEntryCorrectionAction: vi.fn(),
+  postEntryCorrectionAction: vi.fn(),
+  reverseEntryCorrectionAction: vi.fn(),
+}));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }) }));
 vi.mock("@/app/actions/diamond", () => {
   const names = [

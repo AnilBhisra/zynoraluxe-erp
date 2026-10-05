@@ -10,6 +10,8 @@ import { CHARGE_RATE_BASIS_LABELS, type ChargeRateBasis } from "@/lib/diamond/pr
 import { CancelJobForm } from "@/components/diamond/CancelJobForm";
 import { ReceiptLabourCorrectionForm, ReverseLabourCorrectionForm } from "@/components/diamond/ReceiptLabourCorrectionForm";
 import { Alert } from "@/components/ui/Alert";
+import { EntryCorrectionHistory, EntryCorrectionPanel } from "@/components/corrections/EntryCorrection";
+import type { EntryHistoryItem } from "@/lib/corrections/entry/service";
 import { Button } from "@/components/ui/Button";
 import { shapeLabel } from "@/lib/diamond/shapes";
 import type { DiamondShape } from "@/generated/prisma/enums";
@@ -67,6 +69,8 @@ export type SerializedJobDetail = {
     labourCorrection: { correctionId: string; code: string; added: string; corrected: string } | null;
     /** Owner-only: this receipt's labour re-priced per issued carat at the job's rate. */
     perIssuedCaratLabour: string | null;
+    /** Set when the receipt was reversed through Correct entry. */
+    reversedBy?: string | null;
   }[];
   timeline: { id: string; type: string; pieces: number; carat: string; costValue: string | null; sourceDocument: string; createdAt: string }[];
 };
@@ -82,10 +86,14 @@ const MOVEMENT_LABELS: Record<string, string> = {
   ROUGH_PARCEL_MERGE_OUT: "Parcel: issued portion taken back out (cancel)",
   ROUGH_PARCEL_MERGE_IN: "Parcel: issued portion merged back into the parcel",
   POLISHED_RECEIVE_IN: "Polished received",
+  ROUGH_COUNT_CORRECTION_IN: "Returned stone count corrected (+ pieces, no carat or value)",
+  ROUGH_COUNT_CORRECTION_OUT: "Returned stone count corrected (− pieces, no carat or value)",
+  ROUGH_RETURN_REVERSAL_OUT: "Receipt reversed — returned rough taken back out of stock",
+  ROUGH_CONSUMED_REVERSAL_IN: "Receipt reversed — weight loss back to pending",
   POLISHED_RECUT_OUT: "Marked for recut",
 };
 
-export function JobDetailView({ job, isOwner }: { job: SerializedJobDetail; isOwner: boolean }) {
+export function JobDetailView({ job, isOwner, entryHistory = [] }: { job: SerializedJobDetail; isOwner: boolean; entryHistory?: EntryHistoryItem[] }) {
   const router = useRouter();
   const [showReceiveForm, setShowReceiveForm] = useState(false);
 
@@ -105,6 +113,13 @@ export function JobDetailView({ job, isOwner }: { job: SerializedJobDetail; isOw
   // The correction form unmounts once its receipt re-renders as corrected, so
   // the lasting confirmation lives here.
   const [labourNotice, setLabourNotice] = useState<string | null>(null);
+  // Correct entry: the panel closes on success, so its confirmation lives here.
+  const [entryNotice, setEntryNotice] = useState<string | null>(null);
+  function handleEntryDone(message: string) {
+    setEntryNotice(message);
+    router.refresh();
+  }
+  const activeCorrections = (entityId: string) => entryHistory.filter((h) => h.entityId === entityId && h.state === "ACTIVE");
   function handleLabourDone(message: string) {
     setLabourNotice(message);
     router.refresh();
@@ -198,6 +213,12 @@ export function JobDetailView({ job, isOwner }: { job: SerializedJobDetail; isOw
           />
         ) : null}
         {job.notes ? <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">{job.notes}</p> : null}
+        {isOwner ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-sm" data-testid="job-correct-entry">
+            <EntryCorrectionPanel target={{ entityType: "DIAMOND_JOB", entityId: job.id }} recordLabel={job.jobCode} onDone={handleEntryDone} />
+            {activeCorrections(job.id).length ? <span className="text-xs text-emerald-700 dark:text-emerald-300">Details corrected ({activeCorrections(job.id).map((h) => h.code).join(", ")})</span> : null}
+          </div>
+        ) : null}
         {job.status === "CANCELLED" && job.cancellationReason ? (
           <p className="mt-2 text-sm text-red-600 dark:text-red-400">Cancelled: {job.cancellationReason}</p>
         ) : null}
@@ -280,7 +301,19 @@ export function JobDetailView({ job, isOwner }: { job: SerializedJobDetail; isOw
               <tbody className="divide-y divide-[var(--border)]">
                 {job.receipts.map((r) => (
                   <tr key={r.id}>
-                    <td className="px-3 py-2 font-medium text-zinc-800 dark:text-zinc-200">{r.receiptCode}</td>
+                    <td className="px-3 py-2 font-medium text-zinc-800 dark:text-zinc-200">
+                      {r.receiptCode}
+                      {r.reversedBy ? (
+                        <span className="ml-1 rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700 dark:bg-red-950/40 dark:text-red-300" data-testid={`receipt-reversed-${r.receiptCode}`}>
+                          Reversed ({r.reversedBy})
+                        </span>
+                      ) : null}
+                      {activeCorrections(r.id).filter((h) => h.kind !== "RECEIPT_REVERSAL").map((h) => (
+                        <span key={h.id} className="ml-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300" data-testid={`receipt-corrected-${r.receiptCode}`}>
+                          Corrected ({h.code})
+                        </span>
+                      ))}
+                    </td>
                     <td className="px-3 py-2">{new Date(r.receiveDate).toLocaleDateString("en-IN")}</td>
                     <td className="px-3 py-2">
                       {r.totalPolishedCarat}ct ({r.polishedCount})
@@ -323,8 +356,26 @@ export function JobDetailView({ job, isOwner }: { job: SerializedJobDetail; isOw
               </tbody>
             </table>
           </div>
+          {isOwner ? (
+            <div className="mt-3 flex flex-col gap-2 border-t border-[var(--border)] pt-3" data-testid="receipt-corrections">
+              <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Correct a receipt (Owner)</p>
+              {job.receipts.map((r) => (
+                <div key={r.id} className="flex flex-wrap items-center gap-2 text-sm">
+                  <span className="text-zinc-700 dark:text-zinc-300">{r.receiptCode}</span>
+                  <EntryCorrectionPanel target={{ entityType: "DIAMOND_RECEIPT", entityId: r.id }} recordLabel={r.receiptCode} onDone={handleEntryDone} />
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
       ) : null}
+
+      {entryNotice ? (
+        <div data-testid="entry-notice">
+          <Alert tone="success">{entryNotice}</Alert>
+        </div>
+      ) : null}
+      <EntryCorrectionHistory items={entryHistory} isOwner={isOwner} onDone={handleEntryDone} />
 
       <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
         <h3 className="mb-3 text-sm font-semibold text-zinc-700 dark:text-zinc-300">Audit timeline</h3>
