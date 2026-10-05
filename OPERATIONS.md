@@ -9,27 +9,30 @@ Living document for whoever releases, checks or supports the system. Older
 |---|---|---|
 | Accounting, Diamond, Jewellery Jobs, Costing, Finished Sales (Phases 1–7) | ≤ `6cb6c07` | live |
 | Phase 8A corrections, revaluation, adjustment accounting, read-path cost replay | `88921c9`…`9e820da` | live |
-| Rough/polished parcel partial issue, stone→parcel, missing receipt charges, job status repair, job-to-job transfer, Complete reconciled job, packet stock summary, photo upload timeout/size | `610d310`…`554f4e7` | live |
+| Parcel partial issue, stone→parcel, missing receipt charges, job status repair, job-to-job transfer, packet stock summary, photo upload fixes | `610d310`…`554f4e7` | live |
 | Karigar Metal custody, receipt-time allocation, Staff receipt against Karigar balance | `8f7fbc5`, `1aaee32`, `9e742f3` | live |
-| Job manufacturing total, Customer Gold (incl. receipt reversal), receipt-charge persistence | `adba980`, `027a8a2`, `9a2eff7` | live (production = `9a2eff7`, 28 migrations) |
-| Phase 8B metal-rate clarity + Metal Stock history | `d013945` | **not deployed** |
-| Phase 8C Old Gold Exchange (+ migration 29) | `5761149` | **not deployed** |
-| Finished-piece stickers (+ fixes `8b06011`, `7719c9e` found in browser acceptance) | `5593109` | **not deployed** |
-| Performance (N+1 / serial reads) | `0989f49` | **not deployed** |
-| In-app Help (Gujarati) / documentation | `9e964e6`, this commit | **not deployed** |
+| Job manufacturing total, Customer Gold, receipt-charge persistence | `adba980`, `027a8a2`, `9a2eff7` | live |
+| Phase 8B / 8C (Old Gold Exchange, migration 29), stickers, performance, Help | ≤ `1a10aec` | live (2026-10-02) |
+| Processed-rough batch return (4P / Laser) | `dd477b5` | live (2026-10-05) — **production = `dd477b5`, 29 migrations** |
+| Owner "Correct entry" framework (+ migration 30) — see `CORRECTIONS_MATRIX.md` | `1ea7c27`…(branch `feature/correct-entry-framework`) | **not deployed** |
 
 ## 2. Migrations
 
-29 in `prisma/migrations/`. Production has the first 28. The 29th,
-`20261007090000_old_gold_exchange`, is additive only (nullable columns, one
-column with default `POSTED`, unique indexes, foreign keys); it rewrites no
-row. It was rehearsed on a restored copy of the latest backup and on a copy
-holding purchases posted by the live code: every pre-existing table
-byte-identical outside the new columns, reconciliation unchanged, a second
-deploy a no-op.
+30 in `prisma/migrations/` on the Correct-entry branch; production has 29. The
+30th, `20261008090000_entry_corrections`, only adds 8 enum values
+(`StockMovementType`: ROUGH_COUNT_CORRECTION_IN / _OUT, ROUGH_RETURN_REVERSAL_OUT,
+ROUGH_CONSUMED_REVERSAL_IN; `JewellerySequenceType`: ENTRY_CORRECTION;
+`CorrectionMode`: ENTRY_METADATA, ENTRY_QUANTITY; `CorrectionImpactKind`: RECORD).
+No table, column, index or row changes. Checksum
+`85582344a32c098b0199282ef85ee70222e419de4b1691d29e73a2468c03337d` (the file is kept
+LF by `.gitattributes`, so a Windows checkout records the same checksum).
 
-Apply migrations **before** the code that reads them: the new code reads
-`customer_gold_purchases.status`.
+Rehearsed on a restore of `zynoraluxe-prod-20261005T123341-release-dd477b5-pre-deploy.dump`
+on the scratch cluster: all 68 tables byte-identical (every column), exactly the 8
+values added and none removed, metal reconciliation output identical, no schema
+drift, second deploy a no-op.
+
+Apply the migration **before** the code: the new code writes the new values.
 
 ## 3. Reconciliation (run read-only, expect every difference 0.00)
 
@@ -75,25 +78,34 @@ Also check: no voucher with Σdebit ≠ Σcredit; Customer Gold tab "Difference"
 * **Stickers**: `/stickers` prints saved pieces only, never cost, and writes
   nothing.
 
-## 5. Release order for the next release (not executed)
+## 5. Release order for the Correct-entry release (not executed)
 
-1. Verify `origin/main` is still `9a2eff7` and the branch is a fast-forward of it.
-2. Read-only production checks: identity, 28 migrations, reconciliation (5 lines + CGCR), no unbalanced vouchers.
-3. Maintenance on; fresh `pg_dump`; restore-test it on the scratch cluster; fingerprint every table.
-4. `prisma migrate deploy` (29th migration) — before the code.
-5. Re-fingerprint: every pre-existing table identical outside the new columns; 29 migrations; reconciliation unchanged.
+1. Verify `origin/main` and the live Vercel deployment are still `dd477b5`, and the
+   branch is a fast-forward of it.
+2. Read-only production checks: identity, 29 migrations, reconciliation (5 lines +
+   CGCR), no unbalanced vouchers.
+3. Maintenance on; fresh `pg_dump`; restore-test it on the scratch cluster;
+   fingerprint every table.
+4. `prisma migrate deploy` (30th migration) — before the code. Print and check
+   `DIRECT_URL` first (Prisma CLI reads only `DIRECT_URL`).
+5. Re-fingerprint: every table identical; 30 migrations; recorded checksum = the
+   one in section 2.
 6. Fast-forward push; wait for Vercel Production Ready at the new SHA.
-7. Owner and Staff read-only checks (no test postings on real data): Metal Stock history, Karigar Metal, Customer Gold, a job page, a sticker preview; Staff sees no ₹.
+7. Read-only checks, **no correction posted by the release itself**: Owner opens
+   ZL-JOB-2026-000010 → "Correct entry" on ZL-REC-2026-000010 must show
+   *Blocked: ZL-JOB-2026-000011*; Close without confirming. Staff sees no
+   "Correct entry" and no ₹.
 8. Reconciliation again; maintenance off.
+9. Afterwards the Owner decides and posts the real correction (`CORRECTIONS_MATRIX.md`
+   names the correctable receipt).
 
 ## 6. Rollback limits
 
-* Never roll the schema back: the migrations are additive and the data written
-  after them would be lost.
-* Code rollback to `9a2eff7` is safe only **until the new code has posted an
-  Old Gold Exchange or reversed a purchase**: the old code does not read the
-  purchase `status`, so it would show a reversed purchase as live and mis-state
-  the Customer's credit. After that point, fix forward.
+* Never roll the schema back: enum values cannot be dropped safely and the
+  migrations are additive.
+* Code rollback to `dd477b5` is safe only **until the first Correct-entry
+  correction is posted**. After that the old code would show a reversed receipt as
+  live and does not know the new movement types or correction modes. Fix forward.
 * Restore a backup only if data was damaged, and only after a fresh backup of
   the damaged state.
 
@@ -122,4 +134,6 @@ unless the Owner explicitly asks.
   the whole list).
 * Sticker reprints are not audit-logged (there is no general audit table).
 * QR codes on stickers point at the host that printed them.
-* 8E's single shared "Correct / Reverse" component for every module is not built.
+* "Correct entry" covers details, processed-rough returned pieces and processed-rough
+  receipt reversal. Polished receipts and Company jewellery receipts cannot be
+  reversed; see `CORRECTIONS_MATRIX.md` for every type.

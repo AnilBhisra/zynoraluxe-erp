@@ -14,7 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Decimal, ZERO } from "@/lib/accounting/money";
 import { prisma } from "@/lib/db/prisma";
 import { CORRECTION_TRANSACTION_OPTIONS, CorrectionError } from "@/lib/corrections/types";
-import { cancelDiamondJob, createRoughLotWithPieces, issueRoughToKarigar, receiveProcessedRough } from "@/lib/diamond/posting";
+import { cancelDiamondJob, createRoughLotWithPieces, issueRoughToKarigar, receivePolishedDiamonds, receiveProcessedRough } from "@/lib/diamond/posting";
 import { getDiamondJobDetail, getRoughStockSummary, listRoughPieces } from "@/lib/diamond/reports";
 import { createJewelleryJob, issueMaterialsToJewelleryJob, postOpeningMetalStock, receiveFinishedJewellery } from "@/lib/jewellery/posting";
 
@@ -390,6 +390,32 @@ describe("metadata corrections (details only)", () => {
     expect([restored.notes, restored.dueDate]).toEqual([null, null]);
     await expect(post(target, "METADATA", { notes: "" })).rejects.toThrow(/Nothing has changed/);
     await expect(post(target, "METADATA", { issuedRoughCarat: "1" } as Record<string, string>)).rejects.toThrow(/cannot be corrected on this record/);
+  });
+
+  it("diamond receipt notes — processed-rough and polished receipts: notes only, no stock or voucher, reversible", async () => {
+    const fx = await exactCase("rnotes");
+    const polishingId = (await prisma.diamondProcess.findFirstOrThrow({ where: { outputKind: "POLISHED", isActive: true } })).id;
+    const lot = await prisma.$transaction((tx) => createRoughLotWithPieces(tx, { ...FY, purchaseDate: DATE, supplierId, purchaseRate: 600, rateBasis: "PER_CARAT", currencyCode: "INR", exchangeRate: 1, totalPurchaseCost: "3000.00", gstTreatment: "NONE", idempotencyKey: key("pol-lot"), createdByUserId: ownerId, pieces: [{ carat: "5.000" }] }), TX);
+    const stone = await prisma.roughPiece.findFirstOrThrow({ where: { lotId: lot.id } });
+    const job = await prisma.$transaction((tx) => issueRoughToKarigar(tx, { ...FY, karigarId: laserHouseId, roughPieceIds: [stone.id], requiredShape: "ROUND", issueDate: DATE, processId: polishingId, idempotencyKey: key("pol-issue"), createdByUserId: ownerId }), TX);
+    const polished = await prisma.$transaction(
+      (tx) => receivePolishedDiamonds(tx, { ...FY, jobId: job.id, receiveDate: DATE, returnedRoughCarat: 0, labourCharge: 0, shape: "ROUND", markJobComplete: true, idempotencyKey: key("pol-rec"), createdByUserId: ownerId, outputs: [{ shape: "ROUND", carat: "2.000" }] }),
+      TX
+    );
+    for (const receiptId of [fx.receipt.id, polished.receipt.id]) {
+      const target: EntryTarget = { entityType: "DIAMOND_RECEIPT", entityId: receiptId };
+      const options = await prisma.$transaction((tx) => entryCorrectionOptions(tx, target), TX);
+      expect(options.find((o) => o.kind === "METADATA")?.fields.map((f) => f.field)).toEqual(["notes"]);
+      const before = await valuePicture();
+      const vouchers = await prisma.voucher.count();
+      const res = await post(target, "METADATA", { notes: "Weighed again at the counter" });
+      expect((await prisma.polishedReceipt.findUniqueOrThrow({ where: { id: receiptId } })).notes).toBe("Weighed again at the counter");
+      expect([await valuePicture(), await prisma.voucher.count()]).toEqual([before, vouchers]);
+      await reverse(res.correction.id);
+      expect((await prisma.polishedReceipt.findUniqueOrThrow({ where: { id: receiptId } })).notes).toBeNull();
+    }
+    await expect(post({ entityType: "DIAMOND_RECEIPT", entityId: polished.receipt.id }, "METADATA", { labourCharge: "1" } as Record<string, string>)).rejects.toThrow(/cannot be corrected on this record/);
+    await reconcile();
   });
 
   it("jewellery job and jewellery receipt details", async () => {
