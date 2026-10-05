@@ -10,6 +10,7 @@ import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import type { PartyOption } from "@/components/accounting/PartySelect";
+import { originText, pcsCt, type SerializedRoughOrigin } from "@/components/diamond/roughOrigin";
 
 /** Prisma `Decimal` fields converted to plain strings before crossing the
  * Server -> Client boundary — same rule as SerializedVoucherRow. */
@@ -38,6 +39,8 @@ export type SerializedRoughPiece = {
   colorEstimate: string | null;
   clarityNote: string | null;
   returnedFromJobCode: string | null;
+  /** Processed / returned rough: the job and receipt it came back from (weights and counts only). */
+  origin: SerializedRoughOrigin | null;
   /** Set when an Owner converted this row from a single stone into a parcel. */
   convertedToParcel: { at: string; byName: string | null; reason: string } | null;
   photoUrl: string | null;
@@ -94,10 +97,13 @@ export function RoughStockTab({
   suppliers,
   paymentAccounts,
   gstRates,
+  returnedRough = [],
   isOwner,
   search,
 }: {
   lots: SerializedRoughLot[];
+  /** Rough with no purchase lot: processed returns (stones or batch parcels), unused leftovers, and portions split off them. */
+  returnedRough?: SerializedRoughPiece[];
   suppliers: PartyOption[];
   paymentAccounts: { id: string; name: string; method: string }[];
   gstRates: { id: string; label: string; ratePercent: string }[];
@@ -275,10 +281,7 @@ export function RoughStockTab({
                               ) : null}
                             </td>
                             <td className="px-3 py-2">
-                              {piece.carat}ct
-                              {piece.kind === "PARCEL" && piece.pieceCount != null ? (
-                                <span className="ml-1 text-xs text-zinc-500 dark:text-zinc-400">· {piece.pieceCount} stones</span>
-                              ) : null}
+                              {piece.kind === "PARCEL" && piece.pieceCount != null ? pcsCt(piece.pieceCount, piece.carat) : piece.kind === "STONE" ? pcsCt(1, piece.carat) : `${piece.carat} ct`}
                               {piece.kind === "PARCEL" && !piece.parentRoughCode && piece.originalCarat && piece.originalCarat !== piece.carat ? (
                                 <span className="block text-xs text-zinc-500 dark:text-zinc-400">
                                   remaining of {piece.originalCarat}ct bought
@@ -318,6 +321,71 @@ export function RoughStockTab({
           })}
         </ul>
       )}
+
+      {returnedRough.length > 0 ? <ReturnedRoughSection rows={returnedRough} isOwner={isOwner} /> : null}
     </div>
+  );
+}
+
+/** Rough that came back from a Manufacturer (or was split off such rough): one card per row, pcs and ct always together. */
+function ReturnedRoughSection({ rows, isOwner }: { rows: SerializedRoughPiece[]; isOwner: boolean }) {
+  return (
+    <section className="flex flex-col gap-2" data-testid="returned-rough">
+      <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Processed and returned rough</h2>
+      <p className="text-xs text-zinc-500 dark:text-zinc-400">
+        Rough returned by a Manufacturer (4P / Laser and other rough processes) or left over on a receipt. A batch return is one parcel:
+        its stones were counted and weighed together, so no single stone has its own weight.
+      </p>
+      <ul className="flex flex-col gap-2">
+        {rows.map((p) => {
+          const stones = p.kind === "PARCEL" ? p.pieceCount : 1;
+          const changed = p.kind === "PARCEL" && p.originalCarat != null && (p.originalCarat !== p.carat || p.originalPieceCount !== p.pieceCount);
+          return (
+            <li key={p.id} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 text-sm" data-testid={`returned-rough-${p.roughCode}`}>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-semibold text-zinc-900 dark:text-zinc-50">
+                  {p.roughCode}
+                  <span className="ml-2 rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                    {p.kind === "PARCEL" ? (p.parentRoughCode ? "Issued portion" : "Batch parcel") : "Stone"}
+                  </span>
+                </p>
+                <StatusPill status={p.status === "CANCELLED" && p.parentRoughCode ? "MERGED_BACK" : p.status} />
+              </div>
+              <p className="mt-1 font-medium text-zinc-800 dark:text-zinc-200" data-testid="returned-rough-balance">
+                {stones != null ? pcsCt(stones, p.carat) : `${p.carat} ct (stones not counted)`}
+                {changed ? (
+                  <span className="text-xs font-normal text-zinc-500 dark:text-zinc-400">
+                    {" "}
+                    remaining of {pcsCt(p.originalPieceCount ?? 0, p.originalCarat!)} returned
+                  </span>
+                ) : null}
+                {isOwner && p.allocatedCost != null ? (
+                  <span className="text-xs font-normal text-zinc-600 dark:text-zinc-400">
+                    {" "}
+                    · {formatMoney(p.allocatedCost)}
+                    {changed && p.originalCost ? ` of ${formatMoney(p.originalCost)}` : ""}
+                  </span>
+                ) : null}
+              </p>
+              {p.origin ? (
+                <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400" data-testid="returned-rough-origin">
+                  {originText(p.origin)}
+                </p>
+              ) : p.returnedFromJobCode ? (
+                <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">Returned from job {p.returnedFromJobCode}</p>
+              ) : null}
+              {p.withParty ? (
+                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                  {p.withParty.partyName} · {p.withParty.jobCode}: {p.withParty.pendingCarat} ct still pending of {p.withParty.issuedCarat} ct issued
+                </p>
+              ) : null}
+              {p.colorEstimate || p.clarityNote ? (
+                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{[p.colorEstimate, p.clarityNote].filter(Boolean).join(" · ")}</p>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }

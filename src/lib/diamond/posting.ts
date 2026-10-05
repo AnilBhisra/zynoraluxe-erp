@@ -1222,10 +1222,12 @@ export async function receivePolishedDiamonds(
 
 // ---------------------------------------------------------------------------
 // Phase 7 — Manufacturer: receive processed rough (4P / Laser, HPHT / Grow,
-// Rough Polish). The stones come back as ROUGH, so each processed piece
-// becomes a new Available RoughPiece carrying its share of the resolved WIP
-// cost plus the process charge. Same pending/loss rules as a polished
-// receipt: a partial return never recognises loss.
+// Rough Polish). The stones come back as ROUGH: entered individually, each
+// processed piece becomes a new Available rough STONE carrying its share of the
+// resolved WIP cost plus the process charge; entered as a batch (a stone count
+// and one total weight — 10 stones may come back as 26), they become ONE rough
+// PARCEL carrying all of it. Same pending/loss rules as a polished receipt: a
+// partial return never recognises loss, and loss is only ever a carat gap.
 // ---------------------------------------------------------------------------
 
 export type ProcessedRoughPieceDraft = {
@@ -1235,12 +1237,28 @@ export type ProcessedRoughPieceDraft = {
   internalNote?: string | null;
 };
 
+/**
+ * A processed return counted and weighed as ONE batch: the Manufacturer hands
+ * back `pieceCount` stones (4P / Laser often divides them, so this may be more
+ * than were issued) weighed together as `carat`. Saved as a single Rough
+ * PARCEL row; no individual stone weight is ever invented.
+ */
+export type ProcessedRoughBatchDraft = {
+  pieceCount: number;
+  carat: DecimalInput;
+  colorEstimate?: string | null;
+  clarityNote?: string | null;
+};
+
 export async function receiveProcessedRough(
   tx: Tx,
   input: FyInput & {
     jobId: string;
     receiveDate: Date;
-    pieces: ProcessedRoughPieceDraft[];
+    /** Individual mode: each entry becomes one rough STONE. Exactly one of `pieces` / `batch`. */
+    pieces?: ProcessedRoughPieceDraft[];
+    /** Batch mode: one rough PARCEL holding every returned stone. */
+    batch?: ProcessedRoughBatchDraft | null;
     /** Only for a job without an agreed rate; a rate-based job computes its own. */
     manualCharge?: DecimalInput | null;
     markJobComplete: boolean;
@@ -1249,9 +1267,38 @@ export async function receiveProcessedRough(
     createdByUserId: string;
   }
 ) {
+  const pieceDrafts = input.pieces ?? [];
+  const batch = input.batch ?? null;
+  if (batch && pieceDrafts.length > 0) {
+    throw new PostingError("Enter the return either as one batch (pieces + total carat) or as individual pieces — not both.");
+  }
+  if (!batch && pieceDrafts.length === 0) throw new PostingError("Add at least one processed rough piece.");
+  let batchCount = 0;
+  let batchCarat = ZERO;
+  if (batch) {
+    if (!Number.isInteger(batch.pieceCount) || batch.pieceCount < 1) {
+      throw new PostingError("Returned pieces must be a whole number of at least 1.");
+    }
+    batchCount = batch.pieceCount;
+    batchCarat = round3(parseCaratQuantity(batch.carat, "Total returned carat"));
+  }
+
   // Serialise against a concurrent cancel or a second receipt on the same job:
   // the pending carat below is read-then-written.
   await lockRows(tx, "diamond_jobs", [input.jobId]);
+  // Idempotent: a repeat of an already-committed return (double click, retry)
+  // hands back what it saved. Checked after the lock, so a concurrent
+  // duplicate that waited sees the winner instead of saving twice.
+  if (input.idempotencyKey) {
+    const existing = await tx.polishedReceipt.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
+    if (existing) {
+      const [pieces, job] = await Promise.all([
+        tx.roughPiece.findMany({ where: { returnedFromReceiptId: existing.id }, orderBy: { roughCode: "asc" } }),
+        tx.diamondJob.findUniqueOrThrow({ where: { id: existing.jobId } }),
+      ]);
+      return { receipt: existing, pieces, job, returnedPieces: pieces.reduce((n, p) => n + (p.originalPieceCount ?? 1), 0), replayed: true as const };
+    }
+  }
   const job = await tx.diamondJob.findUnique({ where: { id: input.jobId } });
   if (!job) throw new PostingError("Job not found.");
   if (job.status === "CANCELLED") throw new PostingError("This job has been cancelled.");
@@ -1259,12 +1306,15 @@ export async function receiveProcessedRough(
   if (job.processOutputKindSnapshot !== "ROUGH") {
     throw new PostingError("Only a job for a rough process (4P / Laser, HPHT / Grow, Rough Polish) can return processed rough.");
   }
-  if (input.pieces.length === 0) throw new PostingError("Add at least one processed rough piece.");
 
-  const pieceCarats = input.pieces.map((p) => round3(p.carat));
+  // The rows this return creates: individual stones, or one batch parcel.
+  const pieceCarats = batch ? [batchCarat] : pieceDrafts.map((p) => round3(p.carat));
   if (pieceCarats.some((c) => !c.greaterThan(0))) {
     throw new PostingError("Each processed rough piece's carat must be greater than zero.");
   }
+  // A piece count is never limited by the issued count: 10 stones can come
+  // back as 26. Only carat is bounded (by what is still pending).
+  const returnedPieces = batch ? batchCount : pieceDrafts.length;
   const processedCarat = round3(pieceCarats.reduce((sum, c) => sum.plus(c), ZERO));
 
   const pendingCaratBefore = round3(
@@ -1293,7 +1343,9 @@ export async function receiveProcessedRough(
         basis: job.chargeRateBasis,
         rate: new Decimal(job.chargeRate ?? 0).toFixed(4),
         carat: processedCarat.toFixed(3),
-        pieces: input.pieces.length,
+        // Existing rule: a per-piece rate is charged on the pieces RETURNED by
+        // this receipt — the same whether they are entered one by one or as a batch.
+        pieces: returnedPieces,
         isFinal,
         issuedCarat: round3(processedCarat.plus(weightLossCarat)).toFixed(3),
       })
@@ -1376,8 +1428,49 @@ export async function receiveProcessedRough(
   });
 
   const createdPieces = [];
-  for (let i = 0; i < input.pieces.length; i++) {
-    const draft = input.pieces[i];
+  if (batch) {
+    // ONE parcel row for the whole batch: its stone count and total carat as
+    // counted and weighed, the whole resolved cost + charge (a larger stone
+    // count never multiplies cost), and an immutable snapshot of both.
+    const roughCode = await nextDiamondCode(tx, "ROUGH_PIECE");
+    const cost = totalToPieces.toFixed(2);
+    const piece = await tx.roughPiece.create({
+      data: {
+        roughCode,
+        lotId: null,
+        returnedFromJobId: job.id,
+        returnedFromReceiptId: receipt.id,
+        kind: "PARCEL",
+        pieceCount: batchCount,
+        originalPieceCount: batchCount,
+        carat: batchCarat.toFixed(3),
+        originalCarat: batchCarat.toFixed(3),
+        allocatedCost: cost,
+        originalCost: cost,
+        colorEstimate: batch.colorEstimate ?? null,
+        clarityNote: batch.clarityNote ?? null,
+        internalNote: `${job.processNameSnapshot} — job ${job.jobCode}: issued ${job.issuedPiecesCount} pcs / ${round3(job.issuedRoughCarat).toFixed(3)} ct → returned ${batchCount} pcs / ${batchCarat.toFixed(3)} ct (${receiptCode}, batch weight)`,
+        costLocked: false,
+        status: "AVAILABLE",
+        createdByUserId: input.createdByUserId,
+      },
+    });
+    await tx.stockMovement.create({
+      data: {
+        type: "ROUGH_RETURN_IN",
+        roughPieceId: piece.id,
+        diamondJobId: job.id,
+        pieces: batchCount,
+        carat: piece.carat,
+        costValue: piece.allocatedCost,
+        sourceDocument: receiptCode,
+        createdByUserId: input.createdByUserId,
+      },
+    });
+    createdPieces.push(piece);
+  }
+  for (let i = 0; i < pieceDrafts.length; i++) {
+    const draft = pieceDrafts[i];
     const roughCode = await nextDiamondCode(tx, "ROUGH_PIECE");
     const allocatedCost = allocation.find((a) => a.key === String(i))!.amount;
     const piece = await tx.roughPiece.create({
@@ -1443,7 +1536,7 @@ export async function receiveProcessedRough(
     });
   }
 
-  return { receipt, pieces: createdPieces, job: updatedJob };
+  return { receipt, pieces: createdPieces, job: updatedJob, returnedPieces, replayed: false as const };
 }
 
 // ---------------------------------------------------------------------------

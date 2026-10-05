@@ -873,7 +873,18 @@ export async function receiveProcessedRoughAction(
     notes: formData.get("notes") || "",
     markJobComplete: formData.get("markJobComplete") || "false",
     idempotencyKey: formData.get("idempotencyKey") || undefined,
-    pieces: readJsonArray(formData, "piecesJson"),
+    // A form without a mode is the original individual-rows form.
+    mode: formData.get("mode") || "INDIVIDUAL",
+    pieces: formData.get("mode") === "BATCH" ? [] : readJsonArray(formData, "piecesJson"),
+    batch:
+      formData.get("mode") === "BATCH"
+        ? {
+            pieceCount: formData.get("batchPieces") || undefined,
+            carat: String(formData.get("batchCarat") ?? ""),
+            colorEstimate: formData.get("batchColor") || "",
+            clarityNote: formData.get("batchClarity") || "",
+          }
+        : undefined,
   });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Please check the form." };
@@ -901,6 +912,15 @@ export async function receiveProcessedRoughAction(
           notes: data.notes || null,
           idempotencyKey: data.idempotencyKey || null,
           createdByUserId: user.id,
+          batch:
+            data.mode === "BATCH" && data.batch
+              ? {
+                  pieceCount: data.batch.pieceCount,
+                  carat: data.batch.carat,
+                  colorEstimate: data.batch.colorEstimate || null,
+                  clarityNote: data.batch.clarityNote || null,
+                }
+              : null,
           pieces: data.pieces.map((p) => ({
             carat: p.carat,
             colorEstimate: p.colorEstimate || null,

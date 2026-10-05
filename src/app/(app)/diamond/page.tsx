@@ -14,8 +14,11 @@ import {
   listPolishedDiamonds,
   listRoughLots,
   listRoughPieces,
+  listReturnedRough,
+  type RoughPieceRow,
 } from "@/lib/diamond/reports";
-import { RoughStockTab, type SerializedRoughLot } from "@/components/diamond/RoughStockTab";
+import { serializeOrigin } from "@/components/diamond/roughOrigin";
+import { RoughStockTab, type SerializedRoughLot, type SerializedRoughPiece } from "@/components/diamond/RoughStockTab";
 import { JobsTab, type SerializedDiamondJob } from "@/components/diamond/JobsTab";
 import { JobDetailView, type SerializedJobDetail } from "@/components/diamond/JobDetailView";
 import { PolishedStockTab, type SerializedPolishedDiamond } from "@/components/diamond/PolishedStockTab";
@@ -138,14 +141,47 @@ export default async function DiamondPage({ searchParams }: { searchParams: Prom
 }
 
 async function RoughStockTabContent({ search, isOwner }: { search: string; isOwner: boolean }) {
-  const [lots, suppliers, paymentAccounts, gstRates, summary, withParty] = await Promise.all([
+  const [lots, suppliers, paymentAccounts, gstRates, summary, withParty, returnedRough] = await Promise.all([
     listRoughLots({ search: search || undefined }),
     prisma.party.findMany({ where: { type: "SUPPLIER", isActive: true }, orderBy: { name: "asc" } }),
     prisma.paymentAccount.findMany({ where: { isActive: true }, orderBy: { name: "asc" } }),
     prisma.gstRate.findMany({ where: { isActive: true }, orderBy: { ratePercent: "asc" } }),
     getRoughStockSummary(),
     getRoughWithPartySummary(),
+    listReturnedRough({ search: search || undefined }),
   ]);
+
+  // One serializer for a rough row, purchase-lot or returned: cost via ownerOnly.
+  const serializePiece = async (p: RoughPieceRow): Promise<SerializedRoughPiece> => ({
+    id: p.id,
+    roughCode: p.roughCode,
+    kind: p.kind,
+    pieceCount: p.pieceCount,
+    originalCarat: p.originalCarat ? p.originalCarat.toFixed(3) : null,
+    originalPieceCount: p.originalPieceCount,
+    originalCost: p.originalCost ? ownerOnly(isOwner, p.originalCost.toFixed(2)) : null,
+    parentRoughCode: p.parentRoughCode,
+    withParty: p.withParty
+      ? {
+          jobCode: p.withParty.jobCode,
+          partyName: p.withParty.partyName,
+          issuedCarat: p.withParty.issuedCarat.toFixed(3),
+          pendingCarat: p.withParty.pendingCarat.toFixed(3),
+        }
+      : null,
+    carat: p.carat.toFixed(3),
+    allocatedCost: ownerOnly(isOwner, p.allocatedCost.toFixed(2)),
+    costLocked: p.costLocked,
+    status: p.status,
+    colorEstimate: p.colorEstimate,
+    clarityNote: p.clarityNote,
+    returnedFromJobCode: p.returnedFromJobCode,
+    origin: serializeOrigin(p.origin),
+    convertedToParcel: p.convertedToParcel
+      ? { at: p.convertedToParcel.at.toISOString(), byName: p.convertedToParcel.byName, reason: p.convertedToParcel.reason }
+      : null,
+    photoUrl: await resolveDiamondAssetUrl(p.photoAssetId),
+  });
 
   const serializedLots: SerializedRoughLot[] = await Promise.all(
     lots.map(async (lot) => ({
@@ -159,44 +195,18 @@ async function RoughStockTabContent({ search, isOwner }: { search: string; isOwn
       status: lot.status,
       availableCarat: lot.availableCarat.toFixed(3),
       photoUrl: await resolveDiamondAssetUrl(lot.photoAssetId),
-      pieces: await Promise.all(
-        lot.pieces.map(async (p) => ({
-          id: p.id,
-          roughCode: p.roughCode,
-          kind: p.kind,
-          pieceCount: p.pieceCount,
-          originalCarat: p.originalCarat ? p.originalCarat.toFixed(3) : null,
-          originalPieceCount: p.originalPieceCount,
-          originalCost: p.originalCost ? ownerOnly(isOwner, p.originalCost.toFixed(2)) : null,
-          parentRoughCode: p.parentRoughCode,
-          withParty: p.withParty
-            ? {
-                jobCode: p.withParty.jobCode,
-                partyName: p.withParty.partyName,
-                issuedCarat: p.withParty.issuedCarat.toFixed(3),
-                pendingCarat: p.withParty.pendingCarat.toFixed(3),
-              }
-            : null,
-          carat: p.carat.toFixed(3),
-          allocatedCost: ownerOnly(isOwner, p.allocatedCost.toFixed(2)),
-          costLocked: p.costLocked,
-          status: p.status,
-          colorEstimate: p.colorEstimate,
-          clarityNote: p.clarityNote,
-          returnedFromJobCode: p.returnedFromJobCode,
-          convertedToParcel: p.convertedToParcel
-            ? { at: p.convertedToParcel.at.toISOString(), byName: p.convertedToParcel.byName, reason: p.convertedToParcel.reason }
-            : null,
-          photoUrl: await resolveDiamondAssetUrl(p.photoAssetId),
-        }))
-      ),
+      pieces: await Promise.all(lot.pieces.map(serializePiece)),
     }))
   );
 
   return (
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <SummaryStat label="Available rough" value={`${summary.totalCarat.toFixed(3)}ct`} sub={`${summary.pieceCount} row${summary.pieceCount === 1 ? "" : "s"} (stones and parcels)`} />
+        <SummaryStat
+          label="Available rough"
+          value={`${summary.stoneCount} pcs / ${summary.totalCarat.toFixed(3)} ct`}
+          sub={`${summary.pieceCount} row${summary.pieceCount === 1 ? "" : "s"} (stones and parcels)${summary.uncountedParcels ? ` · ${summary.uncountedParcels} parcel${summary.uncountedParcels === 1 ? "" : "s"} without a stone count, counted as 1` : ""}`}
+        />
         {isOwner ? <SummaryStat label="Available rough cost" value={`₹${summary.totalCost.toFixed(2)}`} /> : null}
         <SummaryStat
           label="With Manufacturers / Karigars (still pending)"
@@ -207,6 +217,7 @@ async function RoughStockTabContent({ search, isOwner }: { search: string; isOwn
       </div>
       <RoughStockTab
         lots={serializedLots}
+        returnedRough={await Promise.all(returnedRough.map(serializePiece))}
         suppliers={suppliers.map((s) => ({ id: s.id, name: s.name, type: s.type, stateCode: s.stateCode }))}
         paymentAccounts={paymentAccounts.map((p) => ({ id: p.id, name: p.name, method: p.method }))}
         gstRates={gstRates.map((g) => ({ id: g.id, label: g.label, ratePercent: g.ratePercent.toString() }))}
@@ -250,6 +261,7 @@ async function JobsTabContent({
       issuedRoughCarat: detail.issuedRoughCarat.toFixed(3),
       receivedPolishedCarat: detail.receivedPolishedCarat.toFixed(3),
       returnedRoughCarat: detail.returnedRoughCarat.toFixed(3),
+      returnedRoughPieces: detail.returnedRoughPieces,
       pendingCarat: detail.pendingCarat.toFixed(3),
       status: detail.status,
       issuedCostValue: ownerOnly(isOwner, detail.issuedCostValue.toFixed(2)),
@@ -261,7 +273,14 @@ async function JobsTabContent({
       finalYieldPercent: detail.finalYieldPercent ? detail.finalYieldPercent.toFixed(3) : null,
       cancellationReason: detail.cancellationReason,
       ...serializeJobProcessFields(detail, isOwner),
-      pieces: detail.pieces.map((p) => ({ roughCode: p.roughCode, carat: p.carat.toFixed(3), lotCode: p.lotCode })),
+      pieces: detail.pieces.map((p) => ({
+        roughCode: p.roughCode,
+        carat: p.carat.toFixed(3),
+        pieces: p.pieces,
+        kind: p.kind,
+        lotCode: p.lotCode,
+        origin: serializeOrigin(p.origin),
+      })),
       receipts: detail.receipts.map((r) => ({
         id: r.id,
         receiptCode: r.receiptCode,
@@ -269,6 +288,8 @@ async function JobsTabContent({
         polishedCount: r.polishedCount,
         totalPolishedCarat: r.totalPolishedCarat.toFixed(3),
         returnedRoughCarat: r.returnedRoughCarat.toFixed(3),
+        returnedRoughPieces: r.returnedRoughPieces,
+        returnedRows: r.returnedRows.map((x) => ({ roughCode: x.roughCode, kind: x.kind, pieces: x.pieces, carat: x.carat.toFixed(3) })),
         weightLossCarat: r.weightLossCarat.toFixed(3),
         yieldPercent: r.yieldPercent.toFixed(3),
         labourCharge: ownerOnly(isOwner, r.labourCharge.toFixed(2)),
@@ -323,6 +344,8 @@ async function JobsTabContent({
     dueDate: j.dueDate ? j.dueDate.toISOString() : null,
     issuedPiecesCount: j.issuedPiecesCount,
     issuedRoughCarat: j.issuedRoughCarat.toFixed(3),
+    returnedRoughCarat: j.returnedRoughCarat.toFixed(3),
+    returnedRoughPieces: j.returnedRoughPieces,
     pendingCarat: j.pendingCarat.toFixed(3),
     status: j.status,
     totalLabourCharge: ownerOnly(isOwner, j.totalLabourCharge.toFixed(2)),
@@ -337,6 +360,9 @@ async function JobsTabContent({
     pieceCount: p.pieceCount,
     carat: p.carat.toFixed(3),
     allocatedCost: ownerOnly(isOwner, p.allocatedCost.toFixed(2)),
+    colorEstimate: p.colorEstimate,
+    clarityNote: p.clarityNote,
+    origin: serializeOrigin(p.origin),
   }));
 
   return (
@@ -349,7 +375,11 @@ async function JobsTabContent({
               <div key={k.karigarId} className="rounded-lg border border-[var(--border)] bg-[var(--surface-muted)] p-3">
                 <p className="text-sm font-medium text-zinc-800 dark:text-zinc-200">{k.karigarName}</p>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                  {k.openJobsCount} open job{k.openJobsCount === 1 ? "" : "s"} · {k.pendingCarat.toFixed(3)}ct pending
+                  {k.openJobsCount} open job{k.openJobsCount === 1 ? "" : "s"} · {k.pendingCarat.toFixed(3)} ct pending
+                </p>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400" data-testid="party-pieces">
+                  {k.issuedPiecesCount} pcs issued · {k.returnedPiecesCount} pcs returned
+                  {k.pendingPiecesCount > 0 ? ` · ${k.pendingPiecesCount} pcs not yet received` : ""}
                 </p>
               </div>
             ))}

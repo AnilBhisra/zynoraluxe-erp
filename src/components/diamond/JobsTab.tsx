@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import type { PartyOption } from "@/components/accounting/PartySelect";
 import { shapeLabel } from "@/lib/diamond/shapes";
+import { pcsCt } from "@/components/diamond/roughOrigin";
 import type { DiamondShape } from "@/generated/prisma/enums";
 
 export type SerializedDiamondJob = {
@@ -20,6 +21,9 @@ export type SerializedDiamondJob = {
   dueDate: string | null;
   issuedPiecesCount: number;
   issuedRoughCarat: string;
+  /** Rough returned so far (processed or unused) — the piece count may exceed what was issued. */
+  returnedRoughCarat: string;
+  returnedRoughPieces: number;
   pendingCarat: string;
   status: string;
   /** Owner-only — null for Staff (redacted on the server). */
@@ -123,8 +127,11 @@ export function JobsTab({
                   <StatusPill status={job.status} />
                 </div>
                 <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                  {job.karigarName} · {job.processName ?? "Cutting-Polishing (legacy)"} · {job.customShapeName || shapeLabel(job.requiredShape)} · {job.issuedPiecesCount} piece
-                  {job.issuedPiecesCount === 1 ? "" : "s"} · {job.issuedRoughCarat}ct issued · {job.pendingCarat}ct pending
+                  {job.karigarName} · {job.processName ?? "Cutting-Polishing (legacy)"} · {job.customShapeName || shapeLabel(job.requiredShape)}
+                </p>
+                <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400" data-testid="job-row-figures">
+                  Issued {pcsCt(job.issuedPiecesCount, job.issuedRoughCarat)}
+                  {job.returnedRoughPieces > 0 ? ` · returned ${pcsCt(job.returnedRoughPieces, job.returnedRoughCarat)}` : ""} · {job.pendingCarat} ct pending
                 </p>
               </div>
               <a

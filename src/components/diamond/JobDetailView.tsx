@@ -13,6 +13,7 @@ import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { shapeLabel } from "@/lib/diamond/shapes";
 import type { DiamondShape } from "@/generated/prisma/enums";
+import { originText, pcs, pcsCt, type SerializedRoughOrigin } from "@/components/diamond/roughOrigin";
 
 export type SerializedJobDetail = {
   id: string;
@@ -29,6 +30,8 @@ export type SerializedJobDetail = {
   issuedRoughCarat: string;
   receivedPolishedCarat: string;
   returnedRoughCarat: string;
+  /** Rough stones returned so far — may exceed the issued count (4P / Laser divides stones). */
+  returnedRoughPieces: number;
   pendingCarat: string;
   status: string;
   /** Owner-only cost figures — null for Staff (redacted on the server). */
@@ -46,7 +49,7 @@ export type SerializedJobDetail = {
   chargeRateBasis: ChargeRateBasis | null;
   /** Owner-only — null for Staff. */
   chargeRate: string | null;
-  pieces: { roughCode: string; carat: string; lotCode: string | null }[];
+  pieces: { roughCode: string; carat: string; pieces: number; kind: "STONE" | "PARCEL"; lotCode: string | null; origin: SerializedRoughOrigin | null }[];
   receipts: {
     id: string;
     receiptCode: string;
@@ -54,6 +57,9 @@ export type SerializedJobDetail = {
     polishedCount: number;
     totalPolishedCarat: string;
     returnedRoughCarat: string;
+    returnedRoughPieces: number;
+    /** The rough rows this receipt created (a batch return is ONE parcel row). */
+    returnedRows: { roughCode: string; kind: "STONE" | "PARCEL"; pieces: number; carat: string }[];
     weightLossCarat: string;
     yieldPercent: string;
     labourCharge: string | null;
@@ -84,6 +90,15 @@ export function JobDetailView({ job, isOwner }: { job: SerializedJobDetail; isOw
   const [showReceiveForm, setShowReceiveForm] = useState(false);
 
   function handleSaved() {
+    router.refresh();
+  }
+
+  // A return that completes the job unmounts its form in the same refresh, so
+  // the lasting confirmation lives here.
+  const [receiveNotice, setReceiveNotice] = useState<string | null>(null);
+  function handleProcessedRoughSaved(code: string) {
+    setReceiveNotice(`Processed rough received as ${code}.`);
+    setShowReceiveForm(false);
     router.refresh();
   }
 
@@ -140,19 +155,29 @@ export function JobDetailView({ job, isOwner }: { job: SerializedJobDetail; isOw
         <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
           <Stat label="Issue date" value={new Date(job.issueDate).toLocaleDateString("en-IN")} />
           <Stat label="Due date" value={job.dueDate ? new Date(job.dueDate).toLocaleDateString("en-IN") : "—"} />
-          <Stat label="Pieces issued" value={String(job.issuedPiecesCount)} />
-          <Stat label="Issued carat" value={`${job.issuedRoughCarat}ct`} />
-          <Stat label="Received" value={`${job.receivedPolishedCarat}ct`} />
-          <Stat label="Returned" value={`${job.returnedRoughCarat}ct`} />
+          <Stat label="Issued" value={pcsCt(job.issuedPiecesCount, job.issuedRoughCarat)} />
+          {job.processOutputKind !== "ROUGH" ? <Stat label="Received polished" value={`${job.receivedPolishedCarat} ct`} /> : null}
+          <Stat label="Returned rough" value={pcsCt(job.returnedRoughPieces, job.returnedRoughCarat)} />
           <Stat
             label={job.isCompleted ? "Weight loss (final)" : "Pending with Karigar"}
-            value={`${job.isCompleted ? job.finalWeightLossCarat : job.pendingCarat}ct`}
+            value={`${job.isCompleted ? job.finalWeightLossCarat : job.pendingCarat} ct`}
           />
           {job.isCompleted && job.finalYieldPercent ? <Stat label="Yield" value={`${job.finalYieldPercent}%`} /> : null}
           {isOwner ? <Stat label="Issued cost" value={`₹${job.issuedCostValue}`} /> : null}
           {isOwner ? <Stat label="Remaining WIP cost" value={`₹${job.remainingWipCost}`} /> : null}
           {isOwner ? <Stat label="Labour so far" value={`₹${job.totalLabourCharge}`} /> : null}
         </div>
+
+        {job.processOutputKind === "ROUGH" ? (
+          <p className="mt-4 text-sm font-medium text-zinc-800 dark:text-zinc-200" data-testid="job-lineage">
+            Issued: {pcsCt(job.issuedPiecesCount, job.issuedRoughCarat)} → {job.processName ?? "Process"} returned:{" "}
+            {pcsCt(job.returnedRoughPieces, job.returnedRoughCarat)}
+            {job.isCompleted ? ` · final weight loss ${job.finalWeightLossCarat} ct` : ` · ${job.pendingCarat} ct still pending`}
+            <span className="block text-xs font-normal text-zinc-500 dark:text-zinc-400">
+              The number of pieces can change in processing; only a carat difference is ever weight loss.
+            </span>
+          </p>
+        ) : null}
 
         {job.customShapeInstruction ? (
           <p className="mt-4 text-sm text-zinc-600 dark:text-zinc-400">
@@ -182,12 +207,19 @@ export function JobDetailView({ job, isOwner }: { job: SerializedJobDetail; isOw
           <div className="flex flex-wrap gap-2">
             {job.pieces.map((p) => (
               <span key={p.roughCode} className="rounded-full border border-[var(--border)] px-2.5 py-1 text-xs text-zinc-600 dark:text-zinc-400">
-                {p.roughCode} ({p.carat}ct){p.lotCode ? ` · ${p.lotCode}` : ""}
+                {p.roughCode} ({pcsCt(p.pieces, p.carat)}){p.lotCode ? ` · ${p.lotCode}` : ""}
+                {p.origin ? <span className="block text-[11px] text-zinc-500 dark:text-zinc-400">{originText(p.origin)}</span> : null}
               </span>
             ))}
           </div>
         </div>
       </div>
+
+      {receiveNotice ? (
+        <div data-testid="processed-rough-saved">
+          <Alert tone="success">{receiveNotice}</Alert>
+        </div>
+      ) : null}
 
       {canReceive ? (
         <div>
@@ -202,8 +234,12 @@ export function JobDetailView({ job, isOwner }: { job: SerializedJobDetail; isOw
                   jobCode={job.jobCode}
                   processName={job.processName ?? "This process"}
                   pendingCarat={job.pendingCarat}
+                  issuedPieces={job.issuedPiecesCount}
+                  issuedCarat={job.issuedRoughCarat}
+                  returnedPieces={job.returnedRoughPieces}
+                  returnedCarat={job.returnedRoughCarat}
                   chargeFromAgreedRate={job.chargeRateBasis !== null}
-                  onDone={handleSaved}
+                  onDone={handleProcessedRoughSaved}
                 />
               ) : (
                 <ReceivePolishedForm
@@ -249,7 +285,16 @@ export function JobDetailView({ job, isOwner }: { job: SerializedJobDetail; isOw
                     <td className="px-3 py-2">
                       {r.totalPolishedCarat}ct ({r.polishedCount})
                     </td>
-                    <td className="px-3 py-2">{r.returnedRoughCarat}ct</td>
+                    <td className="px-3 py-2">
+                      {r.returnedRoughPieces > 0 || Number(r.returnedRoughCarat) > 0 ? pcsCt(r.returnedRoughPieces, r.returnedRoughCarat) : "—"}
+                      {r.returnedRows.length > 0 ? (
+                        <span className="block text-xs text-zinc-500 dark:text-zinc-400" data-testid="receipt-returned-rows">
+                          {r.returnedRows
+                            .map((x) => (x.kind === "PARCEL" ? `${x.roughCode} (batch ${pcsCt(x.pieces, x.carat)})` : x.roughCode))
+                            .join(", ")}
+                        </span>
+                      ) : null}
+                    </td>
                     <td className="px-3 py-2">{r.weightLossCarat}ct</td>
                     <td className="px-3 py-2">{r.yieldPercent}%</td>
                     {isOwner ? (
@@ -288,7 +333,8 @@ export function JobDetailView({ job, isOwner }: { job: SerializedJobDetail; isOw
             <li key={m.id} className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border)] pb-2 text-sm last:border-0 last:pb-0">
               <span className="text-zinc-700 dark:text-zinc-300">{MOVEMENT_LABELS[m.type] ?? m.type}</span>
               <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                {m.carat}ct{isOwner ? ` · ₹${m.costValue}` : ""} · {new Date(m.createdAt).toLocaleString("en-IN")}
+                {m.pieces > 0 ? `${pcs(m.pieces)} · ` : ""}
+                {m.carat} ct{isOwner ? ` · ₹${m.costValue}` : ""} · {m.sourceDocument} · {new Date(m.createdAt).toLocaleString("en-IN")}
               </span>
             </li>
           ))}

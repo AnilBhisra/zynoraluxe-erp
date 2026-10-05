@@ -294,15 +294,41 @@ export const processedRoughPieceSchema = z.object({
   internalNote: optionalString(500),
 });
 
-export const receiveProcessedRoughSchema = z.object({
-  jobId: z.string().trim().min(1),
-  receiveDate: DATE_ONLY,
-  manualCharge: z.coerce.number().min(0, "The charge cannot be negative.").default(0),
-  notes: optionalString(1000),
-  markJobComplete: booleanFlag,
-  idempotencyKey: z.string().trim().max(100).optional(),
-  pieces: z.array(processedRoughPieceSchema).min(1, "Add at least one processed rough piece."),
+/** A batch return: how many stones came back and what they weigh together. */
+export const processedRoughBatchSchema = z.object({
+  pieceCount: z.coerce
+    .number({ message: "Enter the number of returned pieces." })
+    .int("Returned pieces must be a whole number.")
+    .min(1, "Returned pieces must be at least 1."),
+  // Kept as text so the carat is saved exactly as typed (no float rounding).
+  carat: z
+    .string()
+    .trim()
+    .regex(/^\d+(\.\d{1,3})?$/, "Total returned carat must be a number with at most 3 decimals.")
+    .refine((v) => Number(v) > 0, "Total returned carat must be greater than zero."),
+  colorEstimate: optionalString(100),
+  clarityNote: optionalString(200),
 });
+
+export const receiveProcessedRoughSchema = z
+  .object({
+    jobId: z.string().trim().min(1),
+    receiveDate: DATE_ONLY,
+    manualCharge: z.coerce.number().min(0, "The charge cannot be negative.").default(0),
+    notes: optionalString(1000),
+    markJobComplete: booleanFlag,
+    idempotencyKey: z.string().trim().max(100).optional(),
+    /** BATCH = total pieces + total carat (one parcel); INDIVIDUAL = one row per piece. */
+    mode: z.enum(["BATCH", "INDIVIDUAL"]).default("INDIVIDUAL"),
+    pieces: z.array(processedRoughPieceSchema).default([]),
+    batch: processedRoughBatchSchema.optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (v.mode === "BATCH" && !v.batch) ctx.addIssue({ code: "custom", message: "Enter the returned pieces and total returned carat." });
+    if (v.mode === "BATCH" && v.pieces.length > 0) ctx.addIssue({ code: "custom", message: "A batch return has no individual piece rows." });
+    if (v.mode === "INDIVIDUAL" && v.pieces.length === 0) ctx.addIssue({ code: "custom", message: "Add at least one processed rough piece." });
+    if (v.mode === "INDIVIDUAL" && v.batch) ctx.addIssue({ code: "custom", message: "Individual pieces cannot also carry a batch total." });
+  });
 
 export const packetProcessIssueSchema = z.object({
   manufacturerId: z.string().trim().min(1, "Choose the Manufacturer."),

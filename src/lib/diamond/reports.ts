@@ -68,10 +68,62 @@ export type RoughPieceRow = {
   clarityNote: string | null;
   photoAssetId: string | null;
   returnedFromJobCode: string | null;
+  /** Where processed / returned rough came from (its own job, or — for a
+   * portion split off it — its parent's). Null for purchased rough. */
+  origin: RoughOrigin | null;
   /** Set when an Owner converted this row from a single stone into a parcel. */
   convertedToParcel: { at: Date; byName: string | null; reason: string } | null;
   createdAt: Date;
 };
+
+/**
+ * The immutable lineage of processed / returned rough: the job that returned
+ * it (process, issued pcs / ct) and the receipt (that return's pcs / ct).
+ * Issued pcs / ct are the job's own snapshot; the returned figures are the
+ * returned row's immutable original* snapshot, so later splits never change it.
+ */
+export type RoughOrigin = {
+  jobCode: string;
+  processName: string | null;
+  receiptCode: string | null;
+  issuedPieces: number;
+  issuedCarat: Decimal;
+  returnedPieces: number;
+  returnedCarat: Decimal;
+  /** The returned row this one was split from, when it is an issued portion. */
+  viaParcel: string | null;
+};
+
+type OriginJob = { jobCode: string; processNameSnapshot: string | null; issuedPiecesCount: number; issuedRoughCarat: DecimalInput };
+type OriginRow = {
+  roughCode: string;
+  kind: RoughPieceKind;
+  carat: DecimalInput;
+  originalCarat: DecimalInput | null;
+  originalPieceCount: number | null;
+  returnedFromJob: OriginJob | null;
+  returnedFromReceipt: { receiptCode: string } | null;
+};
+const ORIGIN_INCLUDE = {
+  returnedFromJob: { select: { jobCode: true, processNameSnapshot: true, issuedPiecesCount: true, issuedRoughCarat: true } },
+  returnedFromReceipt: { select: { receiptCode: true } },
+} as const;
+
+function originOf(row: OriginRow & { parentPiece?: OriginRow | null }): RoughOrigin | null {
+  const source = row.returnedFromJob ? row : row.parentPiece?.returnedFromJob ? row.parentPiece : null;
+  if (!source || !source.returnedFromJob) return null;
+  const j = source.returnedFromJob;
+  return {
+    jobCode: j.jobCode,
+    processName: j.processNameSnapshot,
+    receiptCode: source.returnedFromReceipt?.receiptCode ?? null,
+    issuedPieces: j.issuedPiecesCount,
+    issuedCarat: round3(j.issuedRoughCarat),
+    returnedPieces: source.kind === "PARCEL" ? (source.originalPieceCount ?? 1) : 1,
+    returnedCarat: round3(source.originalCarat ?? source.carat),
+    viaParcel: source === row ? null : source.roughCode,
+  };
+}
 
 type ConversionFields = {
   convertedToParcelAt: Date | null;
@@ -121,13 +173,37 @@ export async function listRoughPieces(filters?: {
           ]
         : undefined,
     },
-    include: { lot: { include: { supplier: true } }, returnedFromJob: true, convertedToParcelBy: { select: { name: true } } },
+    include: {
+      lot: { include: { supplier: true } },
+      ...ORIGIN_INCLUDE,
+      parentPiece: { select: { roughCode: true, kind: true, carat: true, originalCarat: true, originalPieceCount: true, ...ORIGIN_INCLUDE } },
+      convertedToParcelBy: { select: { name: true } },
+    },
     orderBy: { createdAt: "desc" },
     take: 500,
   });
 
   const withParty = await withPartyByPieceId(pieces.filter((p) => p.status === "WITH_KARIGAR").map((p) => p.id));
-  return pieces.map((p) => ({
+  return pieces.map((p) => toRoughPieceRow(p, withParty));
+}
+
+type RoughRowSource = OriginRow & {
+  id: string;
+  lot: { lotCode: string; supplier: { name: string } } | null;
+  pieceCount: number | null;
+  originalCost: DecimalInput | null;
+  parentPiece: OriginRow | null;
+  allocatedCost: DecimalInput;
+  costLocked: boolean;
+  status: RoughPieceStatus;
+  colorEstimate: string | null;
+  clarityNote: string | null;
+  photoAssetId: string | null;
+  createdAt: Date;
+} & ConversionFields;
+
+function toRoughPieceRow(p: RoughRowSource, withParty: Map<string, RoughPieceWithParty>): RoughPieceRow {
+  return {
     id: p.id,
     roughCode: p.roughCode,
     lotCode: p.lot?.lotCode ?? null,
@@ -137,7 +213,7 @@ export async function listRoughPieces(filters?: {
     originalCarat: p.originalCarat ? round3(p.originalCarat) : null,
     originalPieceCount: p.originalPieceCount ?? null,
     originalCost: p.originalCost ? round2(p.originalCost) : null,
-    parentRoughCode: null,
+    parentRoughCode: p.parentPiece?.roughCode ?? null,
     withParty: withParty.get(p.id) ?? null,
     carat: round3(p.carat),
     allocatedCost: round2(p.allocatedCost),
@@ -147,10 +223,45 @@ export async function listRoughPieces(filters?: {
     clarityNote: p.clarityNote,
     photoAssetId: p.photoAssetId,
     returnedFromJobCode: p.returnedFromJob?.jobCode ?? null,
+    origin: originOf(p),
     convertedToParcel: conversionOf(p),
     createdAt: p.createdAt,
-  }));
+  };
 }
+
+/**
+ * Rough that did not come from a purchase lot: processed rough returned by a
+ * Manufacturer (4P / Laser, HPHT / Grow, Rough Polish — as stones or as a
+ * counted batch parcel), unused rough handed back on a polished receipt, and
+ * any portion later split off those. The purchase-lot list cannot show these.
+ */
+export async function listReturnedRough(filters?: { search?: string }): Promise<RoughPieceRow[]> {
+  const rows = await prisma.roughPiece.findMany({
+    where: {
+      lotId: null,
+      OR: filters?.search
+        ? [
+            { roughCode: { contains: filters.search, mode: "insensitive" } },
+            { returnedFromJob: { jobCode: { contains: filters.search, mode: "insensitive" } } },
+            { parentPiece: { roughCode: { contains: filters.search, mode: "insensitive" } } },
+          ]
+        : undefined,
+    },
+    include: {
+      lot: { include: { supplier: true } },
+      ...ORIGIN_INCLUDE,
+      parentPiece: { select: { roughCode: true, kind: true, carat: true, originalCarat: true, originalPieceCount: true, ...ORIGIN_INCLUDE } },
+      convertedToParcelBy: { select: { name: true } },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 300,
+  });
+  const withParty = await withPartyByPieceId(rows.filter((p) => p.status === "WITH_KARIGAR").map((p) => p.id));
+  return rows.map((p) => toRoughPieceRow(p, withParty));
+}
+
+/** Stones in a rough row: a counted parcel's count, else one (an uncounted parcel is reported separately). */
+const stonesIn = (p: { kind: RoughPieceKind; pieceCount: number | null }) => (p.kind === "PARCEL" ? (p.pieceCount ?? 1) : 1);
 
 export type RoughLotRow = {
   id: string;
@@ -231,6 +342,7 @@ export async function listRoughLots(filters?: {
           clarityNote: p.clarityNote,
           photoAssetId: p.photoAssetId,
           returnedFromJobCode: null,
+          origin: null,
           convertedToParcel: conversionOf(p),
           createdAt: p.createdAt,
         })),
@@ -243,15 +355,26 @@ export async function listRoughLots(filters?: {
 export async function getRoughStockSummary(): Promise<{
   totalCarat: Decimal;
   totalCost: Decimal;
+  /** Rows (stones and parcels). */
   pieceCount: number;
+  /** Stones: a counted parcel's count, one per stone, one per uncounted parcel. */
+  stoneCount: number;
+  /** Parcels whose stone count was never recorded (each counted once above). */
+  uncountedParcels: number;
 }> {
   const available = await prisma.roughPiece.findMany({
     where: { status: "AVAILABLE" },
-    select: { carat: true, allocatedCost: true },
+    select: { carat: true, allocatedCost: true, kind: true, pieceCount: true },
   });
   const totalCarat = available.reduce((sum, p) => sum.plus(new Decimal(p.carat)), ZERO);
   const totalCost = available.reduce((sum, p) => sum.plus(new Decimal(p.allocatedCost)), ZERO);
-  return { totalCarat: round3(totalCarat), totalCost: round2(totalCost), pieceCount: available.length };
+  return {
+    totalCarat: round3(totalCarat),
+    totalCost: round2(totalCost),
+    pieceCount: available.length,
+    stoneCount: available.reduce((n, p) => n + stonesIn(p), 0),
+    uncountedParcels: available.filter((p) => p.kind === "PARCEL" && p.pieceCount == null).length,
+  };
 }
 
 /** Rough currently out with Manufacturers / Karigars: the carat still
@@ -393,6 +516,9 @@ export type DiamondJobRow = {
   issuedRoughCarat: Decimal;
   receivedPolishedCarat: Decimal;
   returnedRoughCarat: Decimal;
+  /** Rough stones returned so far (processed or unused), from the immutable
+   * stock ledger — may exceed issuedPiecesCount (4P / Laser divides stones). */
+  returnedRoughPieces: number;
   pendingCarat: Decimal;
   status: DiamondJobStatus;
   issuedCostValue: Decimal;
@@ -439,7 +565,7 @@ function toJobRow(j: {
   processOutputKindSnapshot: DiamondProcessOutputKind | null;
   chargeRateBasis: ProcessChargeRateBasis | null;
   chargeRate: Decimal | null;
-}): DiamondJobRow {
+}, returnedRoughPieces: number): DiamondJobRow {
   const pendingCarat = unresolvedCarat(j);
   return {
     id: j.id,
@@ -454,6 +580,7 @@ function toJobRow(j: {
     issuedRoughCarat: round3(j.issuedRoughCarat),
     receivedPolishedCarat: round3(j.receivedPolishedCarat),
     returnedRoughCarat: round3(j.returnedRoughCarat),
+    returnedRoughPieces,
     pendingCarat,
     status: j.status,
     // Issue history is preserved; only what is CURRENTLY still in WIP is
@@ -490,14 +617,30 @@ export async function listDiamondJobs(filters?: {
     take: 300,
   });
 
-  return jobs.map(toJobRow);
+  const returned = await returnedPiecesByJob(jobs.map((j) => j.id));
+  return jobs.map((j) => toJobRow(j, returned.get(j.id) ?? 0));
+}
+
+/** Rough stones each job has returned, summed from its ROUGH_RETURN_IN movements. */
+async function returnedPiecesByJob(jobIds: string[]): Promise<Map<string, number>> {
+  if (jobIds.length === 0) return new Map();
+  const grouped = await prisma.stockMovement.groupBy({
+    by: ["diamondJobId"],
+    where: { diamondJobId: { in: jobIds }, type: "ROUGH_RETURN_IN" },
+    _sum: { pieces: true },
+  });
+  return new Map(grouped.map((g) => [g.diamondJobId!, g._sum.pieces ?? 0]));
 }
 
 export type KarigarMaterialBalance = {
   karigarId: string;
   karigarName: string;
   openJobsCount: number;
+  /** Stones on open jobs nothing has come back from yet (each job's issued stone count). */
   pendingPiecesCount: number;
+  /** Stones issued on every open job, and stones already returned on them. */
+  issuedPiecesCount: number;
+  returnedPiecesCount: number;
   pendingCarat: Decimal;
 };
 
@@ -514,16 +657,19 @@ export async function getKarigarMaterialBalances(): Promise<KarigarMaterialBalan
 
   const openJobs = await prisma.diamondJob.findMany({
     where: { status: { in: ["ISSUED", "IN_PROGRESS", "PARTIALLY_RECEIVED"] } },
-    include: { pieces: true },
   });
+  const returned = await returnedPiecesByJob(openJobs.map((j) => j.id));
 
   return karigars.map((k) => {
     const jobsForKarigar = openJobs.filter((j) => j.karigarId === k.id);
     const pendingCarat = round3(
       jobsForKarigar.reduce((sum, j) => sum.plus(unresolvedCarat(j)), ZERO)
     );
+    // Stones, not rows: a parcel issued as one row carries its stone count.
+    // Once anything has come back the pending STONE count is unknowable (4P /
+    // Laser divides stones), so only untouched jobs count here; carat is exact.
     const pendingPiecesCount = jobsForKarigar.reduce(
-      (sum, j) => sum + (j.status === "ISSUED" || j.status === "IN_PROGRESS" ? j.pieces.length : 0),
+      (sum, j) => sum + (j.status === "ISSUED" || j.status === "IN_PROGRESS" ? j.issuedPiecesCount : 0),
       0
     );
     return {
@@ -531,6 +677,8 @@ export async function getKarigarMaterialBalances(): Promise<KarigarMaterialBalan
       karigarName: k.name,
       openJobsCount: jobsForKarigar.length,
       pendingPiecesCount,
+      issuedPiecesCount: jobsForKarigar.reduce((sum, j) => sum + j.issuedPiecesCount, 0),
+      returnedPiecesCount: jobsForKarigar.reduce((sum, j) => sum + (returned.get(j.id) ?? 0), 0),
       pendingCarat,
     };
   });
@@ -557,7 +705,9 @@ export type DiamondJobDetail = DiamondJobRow & {
   isCompleted: boolean;
   finalWeightLossCarat: Decimal | null;
   finalYieldPercent: Decimal | null;
-  pieces: { roughCode: string; carat: Decimal; lotCode: string | null }[];
+  /** Each issued row: its carat and stones AT ISSUE (immutable), and — for
+   * processed rough issued onward — where it came from. */
+  pieces: { roughCode: string; carat: Decimal; pieces: number; kind: RoughPieceKind; lotCode: string | null; origin: RoughOrigin | null }[];
   receipts: {
     id: string;
     receiptCode: string;
@@ -565,6 +715,10 @@ export type DiamondJobDetail = DiamondJobRow & {
     polishedCount: number;
     totalPolishedCarat: Decimal;
     returnedRoughCarat: Decimal;
+    /** Rough stones this receipt returned (a batch counts its stones). */
+    returnedRoughPieces: number;
+    /** The rough rows this receipt created, as created (original* snapshot). */
+    returnedRows: { roughCode: string; kind: RoughPieceKind; pieces: number; carat: Decimal }[];
     weightLossCarat: Decimal;
     yieldPercent: Decimal;
     labourCharge: Decimal;
@@ -581,7 +735,17 @@ export async function getDiamondJobDetail(jobId: string): Promise<DiamondJobDeta
     where: { id: jobId },
     include: {
       karigar: true,
-      pieces: { include: { roughPiece: { include: { lot: true } } } },
+      pieces: {
+        include: {
+          roughPiece: {
+            include: {
+              lot: true,
+              ...ORIGIN_INCLUDE,
+              parentPiece: { select: { roughCode: true, kind: true, carat: true, originalCarat: true, originalPieceCount: true, ...ORIGIN_INCLUDE } },
+            },
+          },
+        },
+      },
       receipts: {
         orderBy: { receiveDate: "asc" },
         include: {
@@ -589,6 +753,7 @@ export async function getDiamondJobDetail(jobId: string): Promise<DiamondJobDeta
             where: { correction: { state: "POSTED", reversedByCorrectionId: null } },
             include: { correction: { select: { id: true, correctionCode: true } } },
           },
+          returnedPieces: { select: { roughCode: true, kind: true, carat: true, originalCarat: true, originalPieceCount: true }, orderBy: { roughCode: "asc" } },
         },
       },
       stockMovements: { orderBy: { createdAt: "asc" } },
@@ -596,7 +761,10 @@ export async function getDiamondJobDetail(jobId: string): Promise<DiamondJobDeta
   });
   if (!job) return null;
 
-  const row = toJobRow(job);
+  const returnIns = job.stockMovements.filter((m) => m.type === "ROUGH_RETURN_IN");
+  const row = toJobRow(job, returnIns.reduce((n, m) => n + m.pieces, 0));
+  // Stones each row went out with, from the immutable issue movement.
+  const issuedStones = new Map(job.stockMovements.filter((m) => m.type === "ROUGH_ISSUE_OUT" && m.roughPieceId).map((m) => [m.roughPieceId!, m.pieces]));
 
   return {
     ...row,
@@ -623,7 +791,10 @@ export async function getDiamondJobDetail(jobId: string): Promise<DiamondJobDeta
     pieces: job.pieces.map((link) => ({
       roughCode: link.roughPiece.roughCode,
       carat: round3(link.caratAtIssue),
+      pieces: issuedStones.get(link.roughPieceId) ?? 1,
+      kind: link.roughPiece.kind,
       lotCode: link.roughPiece.lot?.lotCode ?? null,
+      origin: originOf(link.roughPiece),
     })),
     receipts: job.receipts.map((r) => ({
       id: r.id,
@@ -632,6 +803,13 @@ export async function getDiamondJobDetail(jobId: string): Promise<DiamondJobDeta
       polishedCount: r.polishedCount,
       totalPolishedCarat: round3(r.totalPolishedCarat),
       returnedRoughCarat: round3(r.returnedRoughCarat),
+      returnedRoughPieces: returnIns.filter((m) => m.sourceDocument === r.receiptCode).reduce((n, m) => n + m.pieces, 0),
+      returnedRows: r.returnedPieces.map((p) => ({
+        roughCode: p.roughCode,
+        kind: p.kind,
+        pieces: p.kind === "PARCEL" ? (p.originalPieceCount ?? 1) : 1,
+        carat: round3(p.originalCarat ?? p.carat),
+      })),
       weightLossCarat: round3(r.weightLossCarat),
       yieldPercent: round3(r.yieldPercent),
       labourCharge: round2(r.labourCharge),

@@ -505,8 +505,25 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
             <li>Charge નક્કી હોય તો <Btn>Process charge</Btn> (per carat / per piece / fixed) અને rate ભરો.</li>
           </Steps>
           <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
-            4P / Laser, HPHT / Grow અને Rough Polish માંથી માલ <strong>rough</strong> તરીકે પાછો આવે છે — job ખોલી <Btn>Receive processed rough</Btn> માં દરેક piece નો carat ભરો; દરેક piece નવો Rough Diamond piece બને છે. Polishing માંથી polished આવે, એટલે <Btn>Receive Polished</Btn> વાપરો. HPHT / Grow ફક્ત બહાર કરાવેલું કામ (issue-return) છે.
+            4P / Laser, HPHT / Grow અને Rough Polish માંથી માલ <strong>rough</strong> તરીકે પાછો આવે છે — job ખોલી <Btn>Receive processed rough</Btn> દબાવો. Polishing માંથી polished આવે, એટલે <Btn>Receive Polished</Btn> વાપરો. HPHT / Grow ફક્ત બહાર કરાવેલું કામ (issue-return) છે.
           </p>
+          <Steps>
+            <li>
+              <Btn>Batch / parcel</Btn> (default): કુલ <strong>Returned pieces</strong> અને કુલ <strong>Total returned carat</strong> ભરો. દા.ત. 10 pcs / 45.130 ct આપ્યા અને 4P /
+              Laser પછી 26 pcs પાછા આવ્યા — 26 અને કુલ વજન ભરો. આખો batch <strong>એક rough parcel</strong> તરીકે save થાય; કોઈ એક piece નું અલગ વજન બનાવાતું નથી.
+            </li>
+            <li>
+              <Btn>Individual pieces</Btn>: દરેક piece નું પોતાનું વજન હોય ત્યારે જ — દરેક line એક અલગ rough stone બને.
+            </li>
+            <li>
+              Pieces વધે કે ઘટે એ loss નથી. Loss ફક્ત carat નો ફરક છે, અને તે ફક્ત <Btn>Nothing more will come back</Btn> ✓ કરીને job પૂરો કરો ત્યારે જ નોંધાય.
+              એક job પર ઘણી વાર (partial) માલ લઈ શકાય.
+            </li>
+            <li>
+              પછીના process માં <Btn>Issue Rough</Btn> માં એ parcel “Returned parcel” તરીકે દેખાય (કયા process / job માંથી આવ્યો, pcs અને ct). આખો આપો, અથવા ભાગ — ત્યારે
+              <strong> pieces અને carat બંને</strong> ભરો (સરેરાશ વજનથી carat ગણાતો નથી). Form પહેલાં, આપ્યું અને બાકી રહેલું — બંને pcs / ct માં બતાવે.
+            </li>
+          </Steps>
 
           <SubHeading>Job Manufacturer — polished packets process માટે આપવા</SubHeading>
           <Steps>
