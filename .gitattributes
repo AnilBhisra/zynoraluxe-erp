@@ -1,0 +1,3 @@
+# Prisma checksums the migration file byte-for-byte: keep LF in every checkout
+# (a CRLF working copy records a different checksum in _prisma_migrations).
+prisma/migrations/**/migration.sql text eol=lf

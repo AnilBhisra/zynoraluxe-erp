@@ -1058,6 +1058,15 @@ enum StockMovementType {
   JEWELLERY_DAMAGED_LOSS_OUT
   /// A reversed jewellery receipt put this diamond back with its job.
   JEWELLERY_RECEIPT_REVERSAL_IN
+  /// Owner entry correction of a returned rough row's STONE COUNT only:
+  /// `pieces` is the change, carat and costValue are always 0. Never a value move.
+  ROUGH_COUNT_CORRECTION_IN
+  ROUGH_COUNT_CORRECTION_OUT
+  /// Owner reversal of a processed-rough receipt: its returned row leaves stock
+  /// (mirrors that receipt's ROUGH_RETURN_IN) and its recognised loss comes back
+  /// to the job (mirrors its ROUGH_CONSUMED_OUT). Linked by reversalOfMovementId.
+  ROUGH_RETURN_REVERSAL_OUT
+  ROUGH_CONSUMED_REVERSAL_IN
 }
 
 // Immutable audit ledger. Never updated or deleted after insert — a
@@ -2216,6 +2225,8 @@ enum JewellerySequenceType {
   CUSTOMER_GOLD_PURCHASE
   CUSTOMER_JEWELLERY_BILL
   CUSTOMER_JEWELLERY_DELIVERY
+  /// Owner "Correct entry" corrections that post no voucher (metadata, counts).
+  ENTRY_CORRECTION
 }
 
 model JewellerySequence {
@@ -3302,6 +3313,14 @@ enum CorrectionMode {
   /// voucher stand; a CORRECTION voucher (Dr Polished Inventory, Cr the
   /// Manufacturer's payable) and a DiamondReceiptLabourCorrection carry it.
   ADD_MANUFACTURER_LABOUR
+  /// "Correct entry": a descriptive field (notes, instructions, references,
+  /// non-posting dates) that touches no stock and no voucher. Before -> After is
+  /// kept as CorrectionImpact rows; reversal restores the before value.
+  ENTRY_METADATA
+  /// "Correct entry": a count nothing financial depends on (a processed-rough
+  /// return's stone count). No voucher; a compensating ROUGH_COUNT_CORRECTION
+  /// movement keeps the stock ledger append-only.
+  ENTRY_QUANTITY
 }
 
 enum CorrectionState {
@@ -3321,6 +3340,9 @@ enum CorrectionImpactKind {
   PARTY
   LEDGER
   CUSTODY
+  /// A field of the corrected record itself (notes, a stone count, a status)
+  /// that moves no stock value and no ledger balance.
+  RECORD
 }
 
 /// What a single MetalRevaluation row restates.
