@@ -621,15 +621,30 @@ export async function listDiamondJobs(filters?: {
   return jobs.map((j) => toJobRow(j, returned.get(j.id) ?? 0));
 }
 
-/** Rough stones each job has returned, summed from its ROUGH_RETURN_IN movements. */
+/**
+ * Signed effect of each movement type on a job's RETURNED stone count: what came
+ * back, plus Owner count corrections, minus returns undone by a receipt reversal.
+ * The one definition every report uses, so job, receipt and stock always agree.
+ */
+export const RETURNED_PIECES_SIGN: Partial<Record<string, 1 | -1>> = {
+  ROUGH_RETURN_IN: 1,
+  ROUGH_COUNT_CORRECTION_IN: 1,
+  ROUGH_COUNT_CORRECTION_OUT: -1,
+  ROUGH_RETURN_REVERSAL_OUT: -1,
+};
+export const netReturnedPieces = (moves: { type: string; pieces: number }[]) => moves.reduce((n, m) => n + (RETURNED_PIECES_SIGN[m.type] ?? 0) * m.pieces, 0);
+
+/** Rough stones each job has returned, net of corrections and reversals (immutable stock ledger). */
 async function returnedPiecesByJob(jobIds: string[]): Promise<Map<string, number>> {
   if (jobIds.length === 0) return new Map();
   const grouped = await prisma.stockMovement.groupBy({
-    by: ["diamondJobId"],
-    where: { diamondJobId: { in: jobIds }, type: "ROUGH_RETURN_IN" },
+    by: ["diamondJobId", "type"],
+    where: { diamondJobId: { in: jobIds }, type: { in: ["ROUGH_RETURN_IN", "ROUGH_COUNT_CORRECTION_IN", "ROUGH_COUNT_CORRECTION_OUT", "ROUGH_RETURN_REVERSAL_OUT"] } },
     _sum: { pieces: true },
   });
-  return new Map(grouped.map((g) => [g.diamondJobId!, g._sum.pieces ?? 0]));
+  const out = new Map<string, number>();
+  for (const g of grouped) out.set(g.diamondJobId!, (out.get(g.diamondJobId!) ?? 0) + (RETURNED_PIECES_SIGN[g.type] ?? 0) * (g._sum.pieces ?? 0));
+  return out;
 }
 
 export type KarigarMaterialBalance = {
@@ -715,8 +730,10 @@ export type DiamondJobDetail = DiamondJobRow & {
     polishedCount: number;
     totalPolishedCarat: Decimal;
     returnedRoughCarat: Decimal;
-    /** Rough stones this receipt returned (a batch counts its stones). */
+    /** Rough stones this receipt returned (a batch counts its stones), after any Owner count correction. */
     returnedRoughPieces: number;
+    /** Set when the receipt was reversed through Correct entry: that correction's code. */
+    reversedBy: string | null;
     /** The rough rows this receipt created, as created (original* snapshot). */
     returnedRows: { roughCode: string; kind: RoughPieceKind; pieces: number; carat: Decimal }[];
     weightLossCarat: Decimal;
@@ -761,8 +778,12 @@ export async function getDiamondJobDetail(jobId: string): Promise<DiamondJobDeta
   });
   if (!job) return null;
 
-  const returnIns = job.stockMovements.filter((m) => m.type === "ROUGH_RETURN_IN");
-  const row = toJobRow(job, returnIns.reduce((n, m) => n + m.pieces, 0));
+  const row = toJobRow(job, netReturnedPieces(job.stockMovements));
+  const reversals = await prisma.correction.findMany({
+    where: { entityType: "DIAMOND_RECEIPT", entityId: { in: job.receipts.map((r) => r.id) }, mode: "REVERSE_REPOST", state: "POSTED", reversedByCorrectionId: null },
+    select: { entityId: true, correctionCode: true },
+  });
+  const reversedBy = new Map(reversals.map((c) => [c.entityId, c.correctionCode]));
   // Stones each row went out with, from the immutable issue movement.
   const issuedStones = new Map(job.stockMovements.filter((m) => m.type === "ROUGH_ISSUE_OUT" && m.roughPieceId).map((m) => [m.roughPieceId!, m.pieces]));
 
@@ -803,7 +824,9 @@ export async function getDiamondJobDetail(jobId: string): Promise<DiamondJobDeta
       polishedCount: r.polishedCount,
       totalPolishedCarat: round3(r.totalPolishedCarat),
       returnedRoughCarat: round3(r.returnedRoughCarat),
-      returnedRoughPieces: returnIns.filter((m) => m.sourceDocument === r.receiptCode).reduce((n, m) => n + m.pieces, 0),
+      // The rows this receipt created, at their current (Owner-corrected) count.
+      returnedRoughPieces: r.returnedPieces.reduce((n, p) => n + (p.kind === "PARCEL" ? (p.originalPieceCount ?? 1) : 1), 0),
+      reversedBy: reversedBy.get(r.id) ?? null,
       returnedRows: r.returnedPieces.map((p) => ({
         roughCode: p.roughCode,
         kind: p.kind,
