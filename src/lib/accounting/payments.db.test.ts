@@ -29,7 +29,6 @@ import {
   VOUCHER_TRANSACTION_OPTIONS,
 } from "@/lib/accounting/posting";
 import {
-  getAdvanceBreakdown,
   getCashBankSummary,
   getPartyBalances,
   getPartyLedger,
@@ -219,7 +218,7 @@ describe("Payment Given — Supplier", () => {
     await give(s, bank, "100500");
     await expectParty(s, "SUPPLIER", "500.00", "ADVANCE_PAID");
     expect(classifyPartyBalance("SUPPLIER", "500.00").label).toBe("Advance paid ₹500.00");
-    expect(new Decimal((await getAdvanceBreakdown()).advancesPaid).greaterThanOrEqualTo(500)).toBe(true);
+    expect(new Decimal((await getReceivablePayableSummary()).advancesPaid).greaterThanOrEqualTo(500)).toBe(true);
   });
 });
 
@@ -641,14 +640,11 @@ describe("Everything agrees", () => {
       if (p.balance.greaterThan(0)) receivable = receivable.plus(p.balance);
       if (p.balance.lessThan(0)) payable = payable.plus(p.balance.abs());
     }
-    const dashboard = await getReceivablePayableSummary();
-    expect(dashboard.receivable.toFixed(2)).toBe(receivable.toFixed(2));
-    expect(dashboard.payable.toFixed(2)).toBe(payable.toFixed(2));
     // AR 1100 + AP 2000 together equal the net of every party balance (no party-less control lines).
     expect(new Decimal(await ledgerCode("1100")).plus(await ledgerCode("2000")).toFixed(2)).toBe(receivable.minus(payable).toFixed(2));
-    // The advance breakdown is a subset of the totals, never extra money.
-    const advances = await getAdvanceBreakdown();
-    expect(advances.advancesPaid.lessThanOrEqualTo(dashboard.receivable)).toBe(true);
-    expect(advances.customerCredit.lessThanOrEqualTo(dashboard.payable)).toBe(true);
+    // Dashboard: the two control accounts kept apart — each side reconciles to its own control account.
+    const dashboard = await getReceivablePayableSummary();
+    expect(dashboard.receivable.minus(dashboard.customerCredit).toFixed(2)).toBe(await ledgerCode("1100"));
+    expect(dashboard.advancesPaid.minus(dashboard.payable).toFixed(2)).toBe(await ledgerCode("2000"));
   });
 });

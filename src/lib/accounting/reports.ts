@@ -4,7 +4,6 @@ import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { SYSTEM_ACCOUNT_CODES } from "@/lib/accounting/accounts";
 import { Decimal, round2, ZERO } from "@/lib/accounting/money";
-import { classifyPartyBalance } from "@/lib/accounting/partyBalance";
 import { voucherVisibilityWhere } from "@/lib/accounting/voucherVisibility";
 import type { PartyType, PaymentMethod, UserRole, VoucherStatus, VoucherType } from "@/generated/prisma/enums";
 
@@ -110,48 +109,61 @@ export async function getCashBankSummary(): Promise<CashBankSummary> {
 }
 
 /**
- * Totals of every party balance, by sign only: receivable = what parties owe
- * us (sum of positive balances), payable = what we owe parties (sum of
- * negative balances). A party's type never changes these totals — editing a
- * party from Customer to Supplier must leave every figure identical.
+ * Each party's two control-account sides, kept apart (one grouped query, no
+ * Party table): receivable = Dr − Cr on 1100, payable = Cr − Dr on 2000.
  */
-export type ReceivablePayableSummary = { receivable: Decimal; payable: Decimal };
-
-export async function getReceivablePayableSummary(): Promise<ReceivablePayableSummary> {
-  let receivable = ZERO;
-  let payable = ZERO;
-  for (const net of (await partyNetBalances()).values()) {
-    if (net.greaterThan(0)) receivable = receivable.plus(net);
-    else if (net.lessThan(0)) payable = payable.plus(net.abs());
+export async function partySideBalances(db: Db = prisma): Promise<Map<string, { receivable: Decimal; payable: Decimal }>> {
+  const ids = await accountIdsByCode([SYSTEM_ACCOUNT_CODES.ACCOUNTS_RECEIVABLE, SYSTEM_ACCOUNT_CODES.ACCOUNTS_PAYABLE], db);
+  const ar = ids.get(SYSTEM_ACCOUNT_CODES.ACCOUNTS_RECEIVABLE);
+  const ap = ids.get(SYSTEM_ACCOUNT_CODES.ACCOUNTS_PAYABLE);
+  const accountIds = [ar, ap].filter((x): x is string => !!x);
+  const out = new Map<string, { receivable: Decimal; payable: Decimal }>();
+  if (accountIds.length === 0) return out;
+  const grouped = await db.journalEntry.groupBy({
+    by: ["partyId", "accountId"],
+    where: { accountId: { in: accountIds }, partyId: { not: null } },
+    _sum: { debit: true, credit: true },
+  });
+  for (const row of grouped) {
+    const partyId = row.partyId as string;
+    const sides = out.get(partyId) ?? { receivable: ZERO, payable: ZERO };
+    const net = new Decimal(row._sum.debit ?? 0).minus(row._sum.credit ?? 0);
+    if (row.accountId === ar) sides.receivable = round2(sides.receivable.plus(net));
+    else sides.payable = round2(sides.payable.minus(net));
+    out.set(partyId, sides);
   }
-  return { receivable: round2(receivable), payable: round2(payable) };
+  return out;
 }
 
 /**
- * The advances inside those totals, so they are never mistaken for an
- * ordinary receivable/payable (classifyPartyBalance):
- * - advancesPaid: part of `receivable` — Suppliers/Karigars/Manufacturers/
- *   Brokers we paid more than they billed;
- * - customerCredit: part of `payable` — Customers whose money we hold (an
- *   advance, or gold-purchase credit not yet used).
- * Labels only: the totals above do not depend on it.
+ * Dashboard / Receivable & Payable totals — the two control accounts kept
+ * apart per party (see src/lib/accounting/receivablePayable.ts):
+ *   receivable     = Σ positive 1100 sides      customerCredit = Σ negative 1100 sides
+ *   payable        = Σ positive 2000 sides      advancesPaid   = Σ negative 2000 sides
+ * so receivable − customerCredit = the 1100 balance and payable − advancesPaid
+ * = −(the 2000 balance), exactly. A party's type never changes any figure.
  */
-export type AdvanceBreakdown = { advancesPaid: Decimal; customerCredit: Decimal };
+export type ReceivablePayableSummary = {
+  receivable: Decimal;
+  payable: Decimal;
+  /** Paid to a Supplier/Karigar/other beyond what they billed (Dr balance on 2000). */
+  advancesPaid: Decimal;
+  /** Received beyond what was billed (Cr balance on 1100). */
+  customerCredit: Decimal;
+};
 
-export async function getAdvanceBreakdown(): Promise<AdvanceBreakdown> {
-  const net = await partyNetBalances();
-  const parties = net.size
-    ? await prisma.party.findMany({ where: { id: { in: [...net.keys()] } }, select: { id: true, type: true } })
-    : [];
+export async function getReceivablePayableSummary(db: Db = prisma): Promise<ReceivablePayableSummary> {
+  let receivable = ZERO;
+  let payable = ZERO;
   let advancesPaid = ZERO;
   let customerCredit = ZERO;
-  for (const party of parties) {
-    const balance = net.get(party.id) ?? ZERO;
-    const kind = classifyPartyBalance(party.type, balance.toFixed(2)).kind;
-    if (kind === "ADVANCE_PAID") advancesPaid = advancesPaid.plus(balance);
-    else if (kind === "CUSTOMER_CREDIT") customerCredit = customerCredit.plus(balance.abs());
+  for (const side of (await partySideBalances(db)).values()) {
+    if (side.receivable.greaterThan(0)) receivable = receivable.plus(side.receivable);
+    else if (side.receivable.lessThan(0)) customerCredit = customerCredit.plus(side.receivable.abs());
+    if (side.payable.greaterThan(0)) payable = payable.plus(side.payable);
+    else if (side.payable.lessThan(0)) advancesPaid = advancesPaid.plus(side.payable.abs());
   }
-  return { advancesPaid: round2(advancesPaid), customerCredit: round2(customerCredit) };
+  return { receivable: round2(receivable), payable: round2(payable), advancesPaid: round2(advancesPaid), customerCredit: round2(customerCredit) };
 }
 
 export type PartyBalanceRow = {

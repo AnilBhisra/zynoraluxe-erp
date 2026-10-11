@@ -5,15 +5,16 @@ import { prisma } from "@/lib/db/prisma";
 import { getCompanyFySettings } from "@/lib/accounting/company";
 import { indiaToday } from "@/lib/accounting/financialYear";
 import { ZERO } from "@/lib/accounting/money";
+import { getCashBookPage } from "@/lib/accounting/cashBankBook";
+import { defaultCashBookDates, parseCashBookFilters } from "@/lib/accounting/cashBankBookFilters";
+import { getReceivablePayableBook } from "@/lib/accounting/receivablePayable";
 import {
-  getAdvanceBreakdown,
   getCashBankSummary,
   getGstSummary,
   getPartyBalances,
   getPartyLedger,
   getPaymentAccountBalances,
   getProfitAndLoss,
-  getReceivablePayableSummary,
   listManualSalesWithoutLinkedCogs,
   listVouchers,
   partyNetBalances,
@@ -29,11 +30,13 @@ import { PartyList } from "@/components/accounting/PartyList";
 import { TransactionsTab } from "@/components/accounting/TransactionsTab";
 import { AccountingSettingsPanel } from "@/components/accounting/AccountingSettingsPanel";
 import { LedgerPartyPicker, LedgerTable } from "@/components/accounting/LedgerView";
+import { CashBankBookView } from "@/components/accounting/CashBankBookView";
+import { PartySummaryPanel } from "@/components/accounting/PartySummaryPanel";
+import { ReceivablePayableView } from "@/components/accounting/ReceivablePayableView";
 import {
   CashBankReportView,
   FinishedSalesReportView,
   GstSummaryView,
-  OutstandingReportView,
   ProfitAndLossView,
   ReportsNav,
   VoucherReportView,
@@ -44,7 +47,7 @@ export const metadata: Metadata = {
   title: "Accounting · ZYNORALUXE",
 };
 
-type SearchParams = {
+type SearchParams = Record<string, string | string[] | undefined> & {
   tab?: string;
   partySearch?: string;
   editPartyId?: string;
@@ -55,7 +58,7 @@ type SearchParams = {
   new?: string;
 };
 
-const TABS = ["transactions", "parties", "ledger", "reports"] as const;
+const TABS = ["transactions", "parties", "ledger", "cash-bank", "receivables", "reports"] as const;
 type Tab = (typeof TABS)[number];
 
 function TabLink({ tab, label, active }: { tab: Tab; label: string; active: boolean }) {
@@ -118,25 +121,36 @@ export default async function AccountingPage({
         <TabLink tab="transactions" label="Transactions" active={tab === "transactions"} />
         <TabLink tab="parties" label="Parties" active={tab === "parties"} />
         <TabLink tab="ledger" label="Ledger" active={tab === "ledger"} />
+        {user.role === "OWNER" ? <TabLink tab="cash-bank" label="Cash & Bank Book" active={tab === "cash-bank"} /> : null}
+        <TabLink tab="receivables" label="લેવાનું / આપવાનું" active={tab === "receivables"} />
         <TabLink tab="reports" label="Reports" active={tab === "reports"} />
       </nav>
 
       {tab === "transactions" ? (
-        <TransactionsTabContent userRole={user.role} initialOpen={mapNewParam(params.new)} />
+        <TransactionsTabContent userRole={user.role} initialOpen={mapNewParam(typeof params.new === "string" ? params.new : undefined)} />
       ) : null}
       {tab === "parties" ? (
         <PartiesTabContent
-          search={params.partySearch ?? ""}
-          editPartyId={params.editPartyId ?? ""}
+          search={typeof params.partySearch === "string" ? params.partySearch : ""}
+          editPartyId={typeof params.editPartyId === "string" ? params.editPartyId : ""}
           userRole={user.role}
         />
       ) : null}
-      {tab === "ledger" ? <LedgerTabContent partyId={params.partyId ?? ""} /> : null}
+      {tab === "ledger" ? <LedgerTabContent partyId={typeof params.partyId === "string" ? params.partyId : ""} userRole={user.role} /> : null}
+      {tab === "cash-bank" ? (
+        // Owner only, decided on the server before any Cash/Bank row is read.
+        user.role === "OWNER" ? (
+          <CashBankBookTabContent params={params} />
+        ) : (
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">Owner only.</p>
+        )
+      ) : null}
+      {tab === "receivables" ? <ReceivablesTabContent isOwner={user.role === "OWNER"} /> : null}
       {tab === "reports" ? (
         <ReportsTabContent
           report={(params.report as ReportKey) ?? "purchases"}
-          dateFrom={params.dateFrom ?? startOfMonth()}
-          dateTo={params.dateTo ?? today()}
+          dateFrom={typeof params.dateFrom === "string" ? params.dateFrom : startOfMonth()}
+          dateTo={typeof params.dateTo === "string" ? params.dateTo : today()}
           canSeeOwnerReports={user.role === "OWNER"}
           viewerRole={user.role}
         />
@@ -309,26 +323,56 @@ async function PartiesTabContent({
   );
 }
 
-async function LedgerTabContent({ partyId }: { partyId: string }) {
+async function LedgerTabContent({ partyId, userRole }: { partyId: string; userRole: "OWNER" | "STAFF" }) {
   const parties = await prisma.party.findMany({
     where: { isActive: true },
     orderBy: { name: "asc" },
     select: { id: true, name: true },
   });
 
-  const [rows, party] = partyId
-    ? await Promise.all([getPartyLedger(partyId), prisma.party.findUnique({ where: { id: partyId }, select: { type: true } })])
-    : [[], null];
+  const [rows, party, book, recentVouchers] = partyId
+    ? await Promise.all([
+        getPartyLedger(partyId),
+        prisma.party.findUnique({ where: { id: partyId }, select: { id: true, name: true, type: true } }),
+        getReceivablePayableBook({ partyId }),
+        // The same visibility as the Transactions list: Staff never load internal costing vouchers.
+        listVouchers({ partyId, viewerRole: userRole, take: 30 }),
+      ])
+    : [[], null, null, []];
 
   return (
     <div className="flex flex-col gap-6">
       <LedgerPartyPicker parties={parties} selectedPartyId={partyId} />
       {partyId && party ? (
-        <LedgerTable rows={rows} partyType={party.type} />
+        <>
+          <PartySummaryPanel party={party} position={book?.parties[0] ?? null} recentVouchers={recentVouchers} isOwner={userRole === "OWNER"} />
+          <LedgerTable rows={rows} partyType={party.type} />
+        </>
       ) : (
         <p className="text-sm text-zinc-500 dark:text-zinc-400">Choose a party to see their ledger.</p>
       )}
     </div>
+  );
+}
+
+/** Owner only — the caller checks the role before rendering this. */
+async function CashBankBookTabContent({ params }: { params: SearchParams }) {
+  const filters = parseCashBookFilters(params, defaultCashBookDates(await getCompanyFySettings()));
+  const data = await getCashBookPage(filters);
+  return <CashBankBookView filters={filters} data={data} />;
+}
+
+async function ReceivablesTabContent({ isOwner }: { isOwner: boolean }) {
+  const [book, paymentAccounts] = await Promise.all([
+    getReceivablePayableBook(),
+    isOwner ? prisma.paymentAccount.findMany({ where: { isActive: true }, orderBy: { name: "asc" } }) : Promise.resolve([]),
+  ]);
+  return (
+    <ReceivablePayableView
+      book={book}
+      isOwner={isOwner}
+      paymentAccounts={paymentAccounts.map((p) => ({ id: p.id, name: p.name, method: p.method }))}
+    />
   );
 }
 
@@ -396,25 +440,8 @@ async function ReportBody({
     return <CashBankReportView cash={cash} bank={bank} accounts={accounts} />;
   }
   if (report === "outstanding") {
-    // Every party with a balance, archived ones too: their money is still owed,
-    // and the totals must equal the Dashboard and the ledger.
-    const [parties, summary, advances] = await Promise.all([
-      getPartyBalances({ includeInactive: true }),
-      getReceivablePayableSummary(),
-      getAdvanceBreakdown(),
-    ]);
-    const paymentAccounts = canSeeOwnerReports
-      ? await prisma.paymentAccount.findMany({ where: { isActive: true }, orderBy: { name: "asc" } })
-      : [];
-    return (
-      <OutstandingReportView
-        parties={parties}
-        summary={summary}
-        advances={advances}
-        isOwner={canSeeOwnerReports}
-        paymentAccounts={paymentAccounts.map((p) => ({ id: p.id, name: p.name, method: p.method }))}
-      />
-    );
+    // The same party-level Receivable & Payable view as its own tab (one source of figures).
+    return <ReceivablesTabContent isOwner={canSeeOwnerReports} />;
   }
   if (report === "gst") {
     if (!canSeeOwnerReports) {

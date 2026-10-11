@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 
 import { requireUser } from "@/lib/auth/dal";
-import { getAdvanceBreakdown, getCashBankSummary, getReceivablePayableSummary } from "@/lib/accounting/reports";
+import { getCashBankSummary, getReceivablePayableSummary } from "@/lib/accounting/reports";
 import { getDashboardDiamondSummary } from "@/lib/diamond/reports";
 import { getFinishedJewelleryStockSummary, getPendingJewelleryJobsCount } from "@/lib/jewellery/reports";
 import { isUnavailable } from "@/lib/jewellery/carryingCost";
@@ -28,11 +28,10 @@ function carat(value: { toFixed: (n: number) => string }) {
 export default async function DashboardPage() {
   const user = await requireUser();
   const isOwner = user.role === "OWNER";
-  const [cashBank, receivablePayable, advances, diamondSummary, pendingJewelleryJobs, draftCostingsCount, finishedStock] =
+  const [cashBank, receivablePayable, diamondSummary, pendingJewelleryJobs, draftCostingsCount, finishedStock] =
     await Promise.all([
       getCashBankSummary(),
       getReceivablePayableSummary(),
-      getAdvanceBreakdown(),
       getDashboardDiamondSummary(),
       getPendingJewelleryJobsCount(),
       // Costing figures are Owner-only — Staff must never receive even a
@@ -56,14 +55,14 @@ export default async function DashboardPage() {
         <SummaryCard label="Cash balance" value={money(cashBank.cash)} />
         <SummaryCard label="Bank balance" value={money(cashBank.bank)} />
         <SummaryCard
-          label="Receivable"
+          label="લેવાનું / Receivable"
           value={money(receivablePayable.receivable)}
-          detail={advances.advancesPaid.isZero() ? undefined : `incl. ${money(advances.advancesPaid)} advance paid to suppliers/karigars`}
+          detail={receivablePayable.advancesPaid.isZero() ? undefined : `Advance paid (separate): ${money(receivablePayable.advancesPaid)}`}
         />
         <SummaryCard
-          label="Payable"
+          label="આપવાનું / Payable"
           value={money(receivablePayable.payable)}
-          detail={advances.customerCredit.isZero() ? undefined : `incl. ${money(advances.customerCredit)} customer credit (advances we hold)`}
+          detail={receivablePayable.customerCredit.isZero() ? undefined : `Customer credit (separate): ${money(receivablePayable.customerCredit)}`}
         />
         <SummaryCard label="Rough stock" value={carat(diamondSummary.roughStockCarat)} unit="carat" />
         <SummaryCard label="Polished stock" value={carat(diamondSummary.polishedStockCarat)} unit="carat" />

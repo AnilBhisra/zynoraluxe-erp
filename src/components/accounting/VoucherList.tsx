@@ -1,6 +1,7 @@
 import { EmptyState } from "@/components/ui/EmptyState";
 import { CancelVoucherForm } from "@/components/accounting/CancelVoucherForm";
 import type { VoucherListRow } from "@/lib/accounting/reports";
+import { VOUCHER_TYPE_LABELS as TYPE_LABELS } from "@/lib/accounting/voucherTypeLabels";
 
 /**
  * Prisma's `Decimal` instances cannot cross the Server->Client Component
@@ -11,27 +12,6 @@ import type { VoucherListRow } from "@/lib/accounting/reports";
  * values get converted before being handed to <TransactionsTab>.
  */
 export type SerializedVoucherRow = Omit<VoucherListRow, "amount"> & { amount: string };
-
-const TYPE_LABELS: Record<VoucherListRow["voucherType"], string> = {
-  PURCHASE: "Purchase",
-  SALE: "Sale",
-  PAYMENT_GIVEN: "Payment Given",
-  PAYMENT_RECEIVED: "Payment Received",
-  EXPENSE: "Expense",
-  OPENING: "Opening Balance",
-  REVERSAL: "Reversal",
-  DIAMOND_ISSUE: "Diamond Issue",
-  DIAMOND_RECEIPT: "Diamond Receipt",
-  JEWELLERY_ISSUE: "Jewellery Issue",
-  JEWELLERY_RECEIPT: "Jewellery Receipt",
-  SALE_RETURN: "Sale Return",
-  CUSTOMER_REFUND: "Customer Refund",
-  STOCK_ADJUSTMENT: "Stock Adjustment",
-  OPENING_STOCK: "Opening Stock",
-  CORRECTION: "Correction",
-  CUSTOMER_JEWELLERY_BILL: "Customer Jewellery Bill",
-  CUSTOMER_JEWELLERY_DELIVERY: "Customer Jewellery Delivery",
-};
 
 function formatMoney(value: string) {
   return `₹${Number(value).toLocaleString("en-IN", {

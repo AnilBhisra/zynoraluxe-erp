@@ -82,8 +82,9 @@ describe("party type change never affects financial totals", () => {
   });
 
   it("getReceivablePayableSummary never queries Party at all — it cannot depend on `type`", async () => {
+    // Grouped by party AND control account: the receivable and payable sides stay apart.
     mocks.journalEntryGroupBy.mockResolvedValue([
-      { partyId: "party-1", _sum: { debit: "5000.00", credit: "0.00" } },
+      { partyId: "party-1", accountId: AR_ACCOUNT_ID, _sum: { debit: "5000.00", credit: "0.00" } },
     ]);
 
     const result = await getReceivablePayableSummary();
@@ -93,8 +94,20 @@ describe("party type change never affects financial totals", () => {
     expect(mocks.partyFindMany).not.toHaveBeenCalled();
   });
 
+  it("keeps a party's receivable and payable sides apart and names advances and credits separately", async () => {
+    mocks.journalEntryGroupBy.mockResolvedValue([
+      { partyId: "both", accountId: AR_ACCOUNT_ID, _sum: { debit: "10000.00", credit: "6000.00" } }, // owes us 4,000
+      { partyId: "both", accountId: AP_ACCOUNT_ID, _sum: { debit: "0.00", credit: "4000.00" } }, // we owe 4,000
+      { partyId: "over", accountId: AP_ACCOUNT_ID, _sum: { debit: "6500.00", credit: "6000.00" } }, // advance 500
+      { partyId: "cust", accountId: AR_ACCOUNT_ID, _sum: { debit: "8150.00", credit: "9000.00" } }, // credit 850
+    ]);
+    const r = await getReceivablePayableSummary();
+    expect([r.receivable, r.payable, r.advancesPaid, r.customerCredit].map((d) => d.toFixed(2))).toEqual(["4000.00", "4000.00", "500.00", "850.00"]);
+    expect(mocks.partyFindMany).not.toHaveBeenCalled();
+  });
+
   it("keeps receivable/payable totals identical across a simulated type change", async () => {
-    const sameJournalData = [{ partyId: "party-1", _sum: { debit: "5000.00", credit: "0.00" } }];
+    const sameJournalData = [{ partyId: "party-1", accountId: AR_ACCOUNT_ID, _sum: { debit: "5000.00", credit: "0.00" } }];
 
     mocks.journalEntryGroupBy.mockResolvedValue(sameJournalData);
     const before = await getReceivablePayableSummary();
