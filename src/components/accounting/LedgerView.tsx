@@ -1,5 +1,7 @@
 import { EmptyState } from "@/components/ui/EmptyState";
+import { classifyPartyBalance } from "@/lib/accounting/partyBalance";
 import type { PartyLedgerRow } from "@/lib/accounting/reports";
+import type { PartyTypeValue } from "@/lib/parties/types";
 import { useFieldId } from "@/lib/utils/useFieldId";
 
 function formatMoney(value: { toFixed: (n: number) => string }) {
@@ -48,7 +50,8 @@ export function LedgerPartyPicker({
   );
 }
 
-export function LedgerTable({ rows }: { rows: PartyLedgerRow[] }) {
+/** `partyType` decides how a balance reads: a Customer normally owes us, everyone else is normally owed. */
+export function LedgerTable({ rows, partyType }: { rows: PartyLedgerRow[]; partyType: PartyTypeValue }) {
   if (rows.length === 0) {
     return <EmptyState title="No ledger entries" description="This party has no postings yet." />;
   }
@@ -75,14 +78,16 @@ export function LedgerTable({ rows }: { rows: PartyLedgerRow[] }) {
                 {row.voucherNumber} — {row.description}
               </td>
               <td className="px-4 py-3 text-right text-zinc-700 dark:text-zinc-300">
-                {row.debit.toNumber() > 0 ? formatMoney(row.debit) : "—"}
+                {row.debit.greaterThan(0) ? formatMoney(row.debit) : "—"}
               </td>
               <td className="px-4 py-3 text-right text-zinc-700 dark:text-zinc-300">
-                {row.credit.toNumber() > 0 ? formatMoney(row.credit) : "—"}
+                {row.credit.greaterThan(0) ? formatMoney(row.credit) : "—"}
               </td>
-              <td className="px-4 py-3 text-right font-medium text-zinc-900 dark:text-zinc-50">
-                {formatMoney(row.runningBalance)}
-                {row.runningBalance.toNumber() < 0 ? " (we owe)" : ""}
+              <td className="px-4 py-3 text-right font-medium text-zinc-900 dark:text-zinc-50" data-testid="ledger-running-balance">
+                {formatMoney(row.runningBalance.abs())}
+                <span className="block text-xs font-normal text-zinc-500 dark:text-zinc-400">
+                  {classifyPartyBalance(partyType, row.runningBalance.toFixed(2)).direction.toLowerCase()}
+                </span>
               </td>
             </tr>
           ))}

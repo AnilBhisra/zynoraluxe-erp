@@ -2,8 +2,8 @@ import { Card, CardHeader } from "@/components/ui/Card";
 import { PhaseBadge } from "@/components/ui/PhaseNotice";
 
 type SummaryCardProps =
-  | { label: string; unit?: string; phase: number; value?: undefined }
-  | { label: string; unit?: string; phase?: undefined; value: string };
+  | { label: string; unit?: string; phase: number; value?: undefined; detail?: undefined }
+  | { label: string; unit?: string; phase?: undefined; value: string; /** A second line, e.g. an advance kept apart from the main figure. */ detail?: string };
 
 export function SummaryCard(props: SummaryCardProps) {
   const { label, unit } = props;
@@ -25,6 +25,7 @@ export function SummaryCard(props: SummaryCardProps) {
           </span>
           {unit ? <span className="text-xs text-zinc-400 dark:text-zinc-600">{unit}</span> : null}
         </p>
+        {props.detail ? <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{props.detail}</p> : null}
         <div className="mt-3">
           {isLive ? (
             <span className="inline-flex items-center rounded-full border border-emerald-300 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300">

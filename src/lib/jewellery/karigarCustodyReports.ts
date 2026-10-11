@@ -3,6 +3,7 @@ import "server-only";
 import type { KarigarMetalCustodyKind, MetalType } from "@/generated/prisma/enums";
 import { SYSTEM_ACCOUNT_CODES } from "@/lib/accounting/accounts";
 import { Decimal, round2, ZERO } from "@/lib/accounting/money";
+import { getPartyNetBalance } from "@/lib/accounting/reports";
 import { purityIdsWithActiveRevaluation, replayPuritiesOnce } from "@/lib/corrections/jobCostReplay";
 import type { Tx } from "@/lib/corrections/types";
 import { prisma } from "@/lib/db/prisma";
@@ -234,10 +235,9 @@ export async function getKarigarMetalAccount(karigarId: string, options: { inclu
   let payableBalance: string | null = null;
   if (options.includeCost) {
     labourCharged = money(receipts.reduce((s, r) => s.plus(r.labourCharge).plus(r.makingCharge).plus(r.settingCharge).plus(r.platingCharge).plus(r.otherExpense), ZERO));
-    const accounts = await tx.account.findMany({ where: { code: { in: [SYSTEM_ACCOUNT_CODES.ACCOUNTS_PAYABLE, SYSTEM_ACCOUNT_CODES.ACCOUNTS_RECEIVABLE] } } });
-    const agg = await tx.journalEntry.aggregate({ where: { partyId: karigarId, accountId: { in: accounts.map((a) => a.id) } }, _sum: { debit: true, credit: true } });
-    // Positive = we owe the Karigar.
-    payableBalance = money(new Decimal(agg._sum.credit ?? 0).minus(agg._sum.debit ?? 0));
+    // The same party balance every Accounting screen shows, flipped so that
+    // positive = we owe the Karigar (negative = an advance paid to them).
+    payableBalance = money((await getPartyNetBalance(karigarId, tx)).negated());
   }
 
   // Reversal blocks (Owner only). custodyReversalBlock's first rule — a later

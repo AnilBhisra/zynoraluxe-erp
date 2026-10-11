@@ -75,6 +75,7 @@ function tabData(isOwner: boolean): CustomerGoldTabData {
       bills: isOwner ? [] : null,
       deliveries: [],
       credit: isOwner ? { granted: "0.00", applied: "0.00", available: "0.00" } : null,
+      accountBalance: isOwner ? "0.00" : null,
     },
     purities: [{ id: "p24", metalType: "GOLD", displayName: "24K", finenessPercent: "99.900" }],
     karigars: [{ id: "k1", name: "Test Karigar" }],

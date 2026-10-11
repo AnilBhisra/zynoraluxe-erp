@@ -1,14 +1,74 @@
 import "server-only";
 
+import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { SYSTEM_ACCOUNT_CODES } from "@/lib/accounting/accounts";
 import { Decimal, round2, ZERO } from "@/lib/accounting/money";
+import { classifyPartyBalance } from "@/lib/accounting/partyBalance";
 import { voucherVisibilityWhere } from "@/lib/accounting/voucherVisibility";
-import type { PartyType, UserRole, VoucherStatus, VoucherType } from "@/generated/prisma/enums";
+import type { PartyType, PaymentMethod, UserRole, VoucherStatus, VoucherType } from "@/generated/prisma/enums";
 
-async function accountIdsByCode(codes: string[]): Promise<Map<string, string>> {
-  const accounts = await prisma.account.findMany({ where: { code: { in: codes } } });
+type Db = Prisma.TransactionClient;
+
+async function accountIdsByCode(codes: string[], db: Db = prisma): Promise<Map<string, string>> {
+  const accounts = await db.account.findMany({ where: { code: { in: codes } } });
   return new Map(accounts.map((a) => [a.code, a.id]));
+}
+
+/**
+ * THE party balance: Debit − Credit of the party's journal lines on Accounts
+ * Receivable and Accounts Payable together (positive = they owe us, negative =
+ * we owe them). Every screen that shows what a party owes reads it through
+ * here; classifyPartyBalance() then labels it (receivable, payable, advance
+ * paid, customer credit). One grouped query, whatever the number of parties.
+ * `partyIds` omitted = every party that has a line.
+ */
+export async function partyNetBalances(partyIds?: string[], db: Db = prisma): Promise<Map<string, Decimal>> {
+  if (partyIds && partyIds.length === 0) return new Map();
+  const ids = await accountIdsByCode([SYSTEM_ACCOUNT_CODES.ACCOUNTS_RECEIVABLE, SYSTEM_ACCOUNT_CODES.ACCOUNTS_PAYABLE], db);
+  const accountIds = [...ids.values()];
+  if (accountIds.length === 0) return new Map();
+  const grouped = await db.journalEntry.groupBy({
+    by: ["partyId"],
+    where: { accountId: { in: accountIds }, partyId: partyIds ? { in: partyIds } : { not: null } },
+    _sum: { debit: true, credit: true },
+  });
+  return new Map(
+    grouped.map((row) => [row.partyId as string, round2(new Decimal(row._sum.debit ?? 0).minus(row._sum.credit ?? 0))])
+  );
+}
+
+export async function getPartyNetBalance(partyId: string, db: Db = prisma): Promise<Decimal> {
+  return (await partyNetBalances([partyId], db)).get(partyId) ?? ZERO;
+}
+
+export type PaymentAccountBalanceRow = {
+  id: string;
+  name: string;
+  method: PaymentMethod;
+  isActive: boolean;
+  /** Debit − Credit of the payment account's own ledger account. */
+  balance: Decimal;
+};
+
+/** Every payment account (archived ones too — their money is still real) with its ledger balance, in one grouped query. */
+export async function getPaymentAccountBalances(): Promise<PaymentAccountBalanceRow[]> {
+  const paymentAccounts = await prisma.paymentAccount.findMany({ orderBy: { name: "asc" } });
+  const grouped = paymentAccounts.length
+    ? await prisma.journalEntry.groupBy({
+        by: ["accountId"],
+        where: { accountId: { in: paymentAccounts.map((pa) => pa.accountId) } },
+        _sum: { debit: true, credit: true },
+      })
+    : [];
+  const net = new Map(grouped.map((g) => [g.accountId, new Decimal(g._sum.debit ?? 0).minus(g._sum.credit ?? 0)]));
+  return paymentAccounts.map((pa) => ({
+    id: pa.id,
+    name: pa.name,
+    method: pa.method,
+    isActive: pa.isActive,
+    balance: round2(net.get(pa.accountId) ?? ZERO),
+  }));
 }
 
 /**
@@ -36,47 +96,62 @@ export type CashBankSummary = { cash: Decimal; bank: Decimal };
 
 /** "Bank balance" on the Dashboard folds BANK + UPI + OTHER payment
  * accounts together — the master plan's Dashboard only has two cards
- * (Cash, Bank), and UPI settles into a bank account in real life. */
+ * (Cash, Bank), and UPI settles into a bank account in real life. An
+ * archived payment account still counts while it holds money, so the cards
+ * always equal the sum of the payment accounts' own ledgers. */
 export async function getCashBankSummary(): Promise<CashBankSummary> {
-  const paymentAccounts = await prisma.paymentAccount.findMany({
-    where: { isActive: true },
-    include: { account: true },
-  });
-
   let cash = ZERO;
   let bank = ZERO;
-  for (const pa of paymentAccounts) {
-    const { net } = await sumDebitCredit({ accountId: pa.accountId });
-    if (pa.method === "CASH") cash = cash.plus(net);
-    else bank = bank.plus(net);
+  for (const pa of await getPaymentAccountBalances()) {
+    if (pa.method === "CASH") cash = cash.plus(pa.balance);
+    else bank = bank.plus(pa.balance);
   }
   return { cash: round2(cash), bank: round2(bank) };
 }
 
+/**
+ * Totals of every party balance, by sign only: receivable = what parties owe
+ * us (sum of positive balances), payable = what we owe parties (sum of
+ * negative balances). A party's type never changes these totals — editing a
+ * party from Customer to Supplier must leave every figure identical.
+ */
 export type ReceivablePayableSummary = { receivable: Decimal; payable: Decimal };
 
 export async function getReceivablePayableSummary(): Promise<ReceivablePayableSummary> {
-  const ids = await accountIdsByCode([
-    SYSTEM_ACCOUNT_CODES.ACCOUNTS_RECEIVABLE,
-    SYSTEM_ACCOUNT_CODES.ACCOUNTS_PAYABLE,
-  ]);
-  const accountIds = [...ids.values()];
-  if (accountIds.length === 0) return { receivable: ZERO, payable: ZERO };
-
-  const grouped = await prisma.journalEntry.groupBy({
-    by: ["partyId"],
-    where: { accountId: { in: accountIds }, partyId: { not: null } },
-    _sum: { debit: true, credit: true },
-  });
-
   let receivable = ZERO;
   let payable = ZERO;
-  for (const row of grouped) {
-    const net = new Decimal(row._sum.debit ?? 0).minus(row._sum.credit ?? 0);
+  for (const net of (await partyNetBalances()).values()) {
     if (net.greaterThan(0)) receivable = receivable.plus(net);
     else if (net.lessThan(0)) payable = payable.plus(net.abs());
   }
   return { receivable: round2(receivable), payable: round2(payable) };
+}
+
+/**
+ * The advances inside those totals, so they are never mistaken for an
+ * ordinary receivable/payable (classifyPartyBalance):
+ * - advancesPaid: part of `receivable` — Suppliers/Karigars/Manufacturers/
+ *   Brokers we paid more than they billed;
+ * - customerCredit: part of `payable` — Customers whose money we hold (an
+ *   advance, or gold-purchase credit not yet used).
+ * Labels only: the totals above do not depend on it.
+ */
+export type AdvanceBreakdown = { advancesPaid: Decimal; customerCredit: Decimal };
+
+export async function getAdvanceBreakdown(): Promise<AdvanceBreakdown> {
+  const net = await partyNetBalances();
+  const parties = net.size
+    ? await prisma.party.findMany({ where: { id: { in: [...net.keys()] } }, select: { id: true, type: true } })
+    : [];
+  let advancesPaid = ZERO;
+  let customerCredit = ZERO;
+  for (const party of parties) {
+    const balance = net.get(party.id) ?? ZERO;
+    const kind = classifyPartyBalance(party.type, balance.toFixed(2)).kind;
+    if (kind === "ADVANCE_PAID") advancesPaid = advancesPaid.plus(balance);
+    else if (kind === "CUSTOMER_CREDIT") customerCredit = customerCredit.plus(balance.abs());
+  }
+  return { advancesPaid: round2(advancesPaid), customerCredit: round2(customerCredit) };
 }
 
 export type PartyBalanceRow = {
@@ -95,12 +170,6 @@ export async function getPartyBalances(options?: {
   search?: string;
   includeInactive?: boolean;
 }): Promise<PartyBalanceRow[]> {
-  const ids = await accountIdsByCode([
-    SYSTEM_ACCOUNT_CODES.ACCOUNTS_RECEIVABLE,
-    SYSTEM_ACCOUNT_CODES.ACCOUNTS_PAYABLE,
-  ]);
-  const accountIds = [...ids.values()];
-
   const parties = await prisma.party.findMany({
     where: {
       type: options?.type,
@@ -112,20 +181,7 @@ export async function getPartyBalances(options?: {
     orderBy: { name: "asc" },
   });
 
-  const grouped =
-    accountIds.length > 0
-      ? await prisma.journalEntry.groupBy({
-          by: ["partyId"],
-          where: { accountId: { in: accountIds }, partyId: { in: parties.map((p) => p.id) } },
-          _sum: { debit: true, credit: true },
-        })
-      : [];
-  const balanceByParty = new Map(
-    grouped.map((row) => [
-      row.partyId as string,
-      round2(new Decimal(row._sum.debit ?? 0).minus(row._sum.credit ?? 0)),
-    ])
-  );
+  const balanceByParty = await partyNetBalances(parties.map((p) => p.id));
 
   return parties.map((party) => ({
     partyId: party.id,
@@ -170,10 +226,16 @@ export async function getPartyLedger(
       },
     },
     include: { voucher: true },
-    orderBy: [{ voucher: { date: "asc" } }, { createdAt: "asc" }],
+    orderBy: [{ voucher: { date: "asc" } }, { voucher: { createdAt: "asc" } }, { createdAt: "asc" }, { id: "asc" }],
   });
 
-  let running = ZERO;
+  // A ledger that starts at dateFrom carries forward everything posted before
+  // it, so its running balance always ends at the party's real balance.
+  let running = filters?.dateFrom
+    ? (
+        await sumDebitCredit({ partyId, accountId: { in: accountIds }, voucher: { date: { lt: filters.dateFrom } } })
+      ).net
+    : ZERO;
   return entries.map((entry) => {
     const debit = new Decimal(entry.debit);
     const credit = new Decimal(entry.credit);

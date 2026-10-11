@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 
 import {
   createExpense,
@@ -11,7 +11,7 @@ import {
   createSale,
 } from "@/app/actions/vouchers";
 import { InvoiceVoucherForm } from "@/components/accounting/InvoiceVoucherForm";
-import { CashVoucherForm } from "@/components/accounting/CashVoucherForm";
+import { CashVoucherForm, type PaymentAccountOption } from "@/components/accounting/CashVoucherForm";
 import { FinishedJewellerySaleForm } from "@/components/accounting/FinishedJewellerySaleForm";
 import { VoucherList, type SerializedVoucherRow } from "@/components/accounting/VoucherList";
 import { Button } from "@/components/ui/Button";
@@ -52,7 +52,8 @@ export function TransactionsTab({
   availableFinishedItems,
 }: {
   parties: PartyOption[];
-  paymentAccounts: { id: string; name: string; method: string }[];
+  /** `balance` present for the Owner only. */
+  paymentAccounts: PaymentAccountOption[];
   gstRates: { id: string; label: string; ratePercent: string }[];
   companyStateCode: string | null;
   vouchers: SerializedVoucherRow[];
@@ -74,9 +75,11 @@ export function TransactionsTab({
   // user has a chance to read it. The list below still refreshes with the
   // new entry; the user closes the form themselves (click the same button
   // again) when they're done reading the confirmation.
-  function handleSaved() {
+  // Stable, so a form's "saved" effect never re-fires on the re-render the
+  // refresh itself causes.
+  const handleSaved = useCallback(() => {
     router.refresh();
-  }
+  }, [router]);
 
   return (
     <div className="flex flex-col gap-5">

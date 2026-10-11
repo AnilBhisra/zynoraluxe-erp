@@ -2,11 +2,12 @@
 
 import { revalidatePath } from "next/cache";
 
+import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import { isIdempotencyConflict } from "@/lib/db/uniqueConflict";
 import { requireOwner, requireUser } from "@/lib/auth/dal";
 import { getCompanyFySettings } from "@/lib/accounting/company";
 import { checkVoucherDateAllowed, parseDateOnly } from "@/lib/accounting/financialYear";
+import { postVoucherOnce, type VoucherRequestFingerprint } from "@/lib/accounting/idempotentPosting";
 import * as posting from "@/lib/accounting/posting";
 import {
   cancelVoucherSchema,
@@ -18,34 +19,45 @@ import {
 } from "@/lib/validation/accounting";
 
 export type VoucherFormState =
-  | { error?: string; success?: boolean; voucherNumber?: string }
+  | {
+      error?: string;
+      success?: boolean;
+      voucherNumber?: string;
+      /** True when this submission had already been saved (double-click, retry): nothing new was posted. */
+      replayed?: boolean;
+    }
   | undefined;
 
-async function findExistingByIdempotencyKey(idempotencyKey: string | undefined) {
-  if (!idempotencyKey) return null;
-  return prisma.voucher.findUnique({ where: { idempotencyKey } });
+/**
+ * Every page that shows a balance moved by an Accounting voucher: party
+ * payable/receivable, Cash/Bank, Karigar payable (Jewellery Jobs), Customer
+ * Gold bills and credit, Manufacturer payable (Diamond).
+ */
+function revalidateAccountingViews() {
+  for (const path of ["/accounting", "/dashboard", "/jewellery-jobs", "/customer-gold", "/diamond"]) {
+    revalidatePath(path);
+  }
 }
 
 async function withVoucherPosting(
   idempotencyKey: string | undefined,
-  post: () => Promise<{ voucherNumber: string }>
+  request: VoucherRequestFingerprint,
+  post: (tx: Prisma.TransactionClient) => Promise<{ voucherNumber: string }>
 ): Promise<VoucherFormState> {
   try {
-    const existing = await findExistingByIdempotencyKey(idempotencyKey);
-    if (existing) return { success: true, voucherNumber: existing.voucherNumber };
-
-    const voucher = await post();
-    return { success: true, voucherNumber: voucher.voucherNumber };
-  } catch (error) {
-    if (isIdempotencyConflict(error)) {
-      const existing = await findExistingByIdempotencyKey(idempotencyKey);
-      if (existing) return { success: true, voucherNumber: existing.voucherNumber };
+    const result = await postVoucherOnce(idempotencyKey, request, post);
+    if (result.status === "KEY_REUSED") {
+      return {
+        error: `Nothing was saved: this form had already saved ${result.voucherNumber}. Close the form and open it again to enter another one.`,
+      };
     }
+    return { success: true, voucherNumber: result.voucherNumber, replayed: result.status === "REPLAYED" };
+  } catch (error) {
     if (error instanceof posting.PostingError) {
       return { error: error.message };
     }
     console.error("Voucher posting failed:", error);
-    return { error: "Could not save this entry. Please try again." };
+    return { error: "Could not save this entry. Nothing was saved — please try again." };
   }
 }
 
@@ -116,8 +128,29 @@ export async function createPurchase(
     }
   }
 
-  const result = await withVoucherPosting(data.idempotencyKey, () =>
-    prisma.$transaction((tx) =>
+  const lines = data.lines.map((l) => ({
+    description: l.description,
+    hsnSac: l.hsnSac || null,
+    quantity: l.quantity,
+    unit: l.unit,
+    rate: l.rate,
+    discount: l.discount,
+    gstRateId: l.gstRateId,
+    gstRatePercent: gstRateMap.get(l.gstRateId)!.ratePercent.toString(),
+    taxType: l.taxType,
+  }));
+
+  const result = await withVoucherPosting(
+    data.idempotencyKey,
+    {
+      voucherType: "PURCHASE",
+      partyId: data.partyId,
+      paymentAccountId: data.paymentAccountId || null,
+      amount: posting.computeLineTotalsForAll(lines).totalAmount,
+      date,
+      createdByUserId: user.id,
+    },
+    (tx) =>
       posting.postPurchase(tx, {
         date,
         fyStartMonth: fy.fyStartMonth,
@@ -131,23 +164,11 @@ export async function createPurchase(
         partyId: data.partyId,
         paymentAccountId: data.paymentAccountId || null,
         gstTreatment: data.gstTreatment,
-        lines: data.lines.map((l) => ({
-          description: l.description,
-          hsnSac: l.hsnSac || null,
-          quantity: l.quantity,
-          unit: l.unit,
-          rate: l.rate,
-          discount: l.discount,
-          gstRateId: l.gstRateId,
-          gstRatePercent: gstRateMap.get(l.gstRateId)!.ratePercent.toString(),
-          taxType: l.taxType,
-        })),
+        lines,
       })
-    )
   );
 
-  revalidatePath("/accounting");
-  revalidatePath("/dashboard");
+  revalidateAccountingViews();
   return result;
 }
 
@@ -196,8 +217,29 @@ export async function createSale(
     }
   }
 
-  const result = await withVoucherPosting(data.idempotencyKey, () =>
-    prisma.$transaction((tx) =>
+  const lines = data.lines.map((l) => ({
+    description: l.description,
+    hsnSac: l.hsnSac || null,
+    quantity: l.quantity,
+    unit: l.unit,
+    rate: l.rate,
+    discount: l.discount,
+    gstRateId: l.gstRateId,
+    gstRatePercent: gstRateMap.get(l.gstRateId)!.ratePercent.toString(),
+    taxType: l.taxType,
+  }));
+
+  const result = await withVoucherPosting(
+    data.idempotencyKey,
+    {
+      voucherType: "SALE",
+      partyId: data.partyId,
+      paymentAccountId: data.paymentAccountId || null,
+      amount: posting.computeLineTotalsForAll(lines).totalAmount,
+      date,
+      createdByUserId: user.id,
+    },
+    (tx) =>
       posting.postSale(tx, {
         date,
         fyStartMonth: fy.fyStartMonth,
@@ -211,23 +253,11 @@ export async function createSale(
         partyId: data.partyId,
         paymentAccountId: data.paymentAccountId || null,
         gstTreatment: data.gstTreatment,
-        lines: data.lines.map((l) => ({
-          description: l.description,
-          hsnSac: l.hsnSac || null,
-          quantity: l.quantity,
-          unit: l.unit,
-          rate: l.rate,
-          discount: l.discount,
-          gstRateId: l.gstRateId,
-          gstRatePercent: gstRateMap.get(l.gstRateId)!.ratePercent.toString(),
-          taxType: l.taxType,
-        })),
+        lines,
       })
-    )
   );
 
-  revalidatePath("/accounting");
-  revalidatePath("/dashboard");
+  revalidateAccountingViews();
   return result;
 }
 
@@ -270,8 +300,17 @@ export async function createPaymentGiven(
   );
   if (!dateCheck.ok) return { error: dateCheck.message };
 
-  const result = await withVoucherPosting(data.idempotencyKey, () =>
-    prisma.$transaction((tx) =>
+  const result = await withVoucherPosting(
+    data.idempotencyKey,
+    {
+      voucherType: "PAYMENT_GIVEN",
+      partyId: data.partyId,
+      paymentAccountId: data.paymentAccountId,
+      amount: data.amount,
+      date,
+      createdByUserId: user.id,
+    },
+    (tx) =>
       posting.postPaymentGiven(tx, {
         date,
         fyStartMonth: fy.fyStartMonth,
@@ -286,11 +325,9 @@ export async function createPaymentGiven(
         paymentAccountId: data.paymentAccountId,
         amount: data.amount,
       })
-    )
   );
 
-  revalidatePath("/accounting");
-  revalidatePath("/dashboard");
+  revalidateAccountingViews();
   return result;
 }
 
@@ -329,8 +366,17 @@ export async function createPaymentReceived(
   );
   if (!dateCheck.ok) return { error: dateCheck.message };
 
-  const result = await withVoucherPosting(data.idempotencyKey, () =>
-    prisma.$transaction((tx) =>
+  const result = await withVoucherPosting(
+    data.idempotencyKey,
+    {
+      voucherType: "PAYMENT_RECEIVED",
+      partyId: data.partyId,
+      paymentAccountId: data.paymentAccountId,
+      amount: data.amount,
+      date,
+      createdByUserId: user.id,
+    },
+    (tx) =>
       posting.postPaymentReceived(tx, {
         date,
         fyStartMonth: fy.fyStartMonth,
@@ -345,11 +391,9 @@ export async function createPaymentReceived(
         paymentAccountId: data.paymentAccountId,
         amount: data.amount,
       })
-    )
   );
 
-  revalidatePath("/accounting");
-  revalidatePath("/dashboard");
+  revalidateAccountingViews();
   return result;
 }
 
@@ -388,8 +432,17 @@ export async function createExpense(
   );
   if (!dateCheck.ok) return { error: dateCheck.message };
 
-  const result = await withVoucherPosting(data.idempotencyKey, () =>
-    prisma.$transaction((tx) =>
+  const result = await withVoucherPosting(
+    data.idempotencyKey,
+    {
+      voucherType: "EXPENSE",
+      partyId: data.partyId || null,
+      paymentAccountId: data.paymentAccountId,
+      amount: data.amount,
+      date,
+      createdByUserId: user.id,
+    },
+    (tx) =>
       posting.postExpense(tx, {
         date,
         fyStartMonth: fy.fyStartMonth,
@@ -404,11 +457,9 @@ export async function createExpense(
         paymentAccountId: data.paymentAccountId,
         amount: data.amount,
       })
-    )
   );
 
-  revalidatePath("/accounting");
-  revalidatePath("/dashboard");
+  revalidateAccountingViews();
   return result;
 }
 
@@ -483,6 +534,33 @@ export async function cancelVoucherAction(
         error: "This voucher belongs to a Manufacturer labour correction — reverse it from the receipt on the Diamond Manufacturer job page instead, so the polished stock cost and Manufacturer payable stay in sync.",
       };
     }
+    // Every other correction (metal adjustment, entry corrections, ...) is
+    // undone through its own audited reversal, which also restores the stock
+    // or document it changed.
+    const anyCorrection = await prisma.correction.findFirst({
+      where: { correctionVoucherId: parsed.data.voucherId },
+      select: { id: true },
+    });
+    if (anyCorrection) {
+      return { error: "This voucher belongs to an audited correction — reverse it from the Corrections page instead, so what it corrected stays in sync." };
+    }
+  }
+  // Customer Gold bills and deliveries, finished-jewellery sale returns and
+  // opening stock each own a document (bill status and gold-purchase credit,
+  // delivered pieces, returned stock, opening metal) that this generic
+  // reversal would leave behind. They are reversed from their own page, which
+  // reverses the voucher and the document together.
+  if (target?.voucherType === "CUSTOMER_JEWELLERY_BILL") {
+    return { error: "Reverse this bill from the Customer Gold bill on the Jewellery Jobs page instead, so the bill and the Customer's gold-purchase credit stay in sync." };
+  }
+  if (target?.voucherType === "CUSTOMER_JEWELLERY_DELIVERY") {
+    return { error: "Reverse this delivery from the Customer Gold tab on the Jewellery Jobs page instead, so the delivered pieces stay in sync." };
+  }
+  if (target?.voucherType === "SALE_RETURN") {
+    return { error: "A sale return is linked to returned Finished Jewellery stock and cannot be cancelled here." };
+  }
+  if (target?.voucherType === "OPENING_STOCK") {
+    return { error: "Opening stock is corrected with an Owner stock adjustment on the Jewellery Jobs Metal Stock tab, so metal stock stays in sync." };
   }
   // A Rough Purchase or Metal Purchase also posts as a plain "PURCHASE"
   // voucher (there is no dedicated voucher type for either) — without this
@@ -543,7 +621,18 @@ export async function cancelVoucherAction(
     // issued): once ANY metal of this purity has been issued/consumed at
     // any point after this purchase was posted, the purchase can no
     // longer be safely reversed.
-    const metalPurchase = await prisma.metalPurchase.findUnique({ where: { voucherId: parsed.data.voucherId } });
+    const metalPurchase = await prisma.metalPurchase.findUnique({
+      where: { voucherId: parsed.data.voucherId },
+      include: { customerGoldPurchase: { select: { purchaseCode: true } } },
+    });
+    // Gold bought from a Customer (Customer Gold purchase / Old Gold exchange)
+    // also carries the Customer's credit and gold ledger; only its own audited
+    // reversal undoes all of that together.
+    if (metalPurchase?.customerGoldPurchase) {
+      return {
+        error: `This is Customer gold purchase ${metalPurchase.customerGoldPurchase.purchaseCode} — reverse it from the Customer Gold tab instead, so the Customer's credit and gold ledger stay in sync.`,
+      };
+    }
     if (metalPurchase) {
       const purchaseMovement = await prisma.metalStockMovement.findFirst({
         where: {
@@ -568,24 +657,25 @@ export async function cancelVoucherAction(
   }
 
   try {
-    await prisma.$transaction((tx) =>
-      posting.cancelVoucher(tx, {
-        voucherId: parsed.data.voucherId,
-        cancelledByUserId: user.id,
-        cancellationReason: parsed.data.cancellationReason,
-        fyStartMonth: fy.fyStartMonth,
-        fyStartDay: fy.fyStartDay,
-      })
+    await prisma.$transaction(
+      (tx) =>
+        posting.cancelVoucher(tx, {
+          voucherId: parsed.data.voucherId,
+          cancelledByUserId: user.id,
+          cancellationReason: parsed.data.cancellationReason,
+          fyStartMonth: fy.fyStartMonth,
+          fyStartDay: fy.fyStartDay,
+        }),
+      posting.VOUCHER_TRANSACTION_OPTIONS
     );
   } catch (error) {
     if (error instanceof posting.PostingError) {
       return { error: error.message };
     }
     console.error("cancelVoucherAction failed:", error);
-    return { error: "Could not cancel this voucher. Please try again." };
+    return { error: "Could not cancel this voucher. Nothing was changed — please try again." };
   }
 
-  revalidatePath("/accounting");
-  revalidatePath("/dashboard");
+  revalidateAccountingViews();
   return { success: true };
 }

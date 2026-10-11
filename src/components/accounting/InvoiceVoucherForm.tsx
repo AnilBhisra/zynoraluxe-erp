@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useMemo, useState } from "react";
+import { useActionState, useEffect, useMemo, useRef, useState } from "react";
 
 import type { VoucherFormState } from "@/app/actions/vouchers";
 import { Field } from "@/components/ui/Field";
@@ -65,13 +65,25 @@ export function InvoiceVoucherForm({
   const [gstTreatment, setGstTreatment] = useState<GstTreatment | "NONE">("NONE");
   const [confirmOutsideFy, setConfirmOutsideFy] = useState(false);
   const [showMore, setShowMore] = useState(false);
-  const [idempotencyKey] = useState(() => crypto.randomUUID());
+  // A new key once an entry is saved, so the next purchase/sale typed into
+  // this still-open form posts as its own voucher instead of being answered
+  // as a repeat of the previous one. Each saved result is handled once.
+  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
   const paymentAccountId = useFieldId();
   const gstTreatmentSelectId = useFieldId();
 
+  const onDoneRef = useRef(onDone);
   useEffect(() => {
-    if (state?.success) onDone?.();
-  }, [state?.success, onDone]);
+    onDoneRef.current = onDone;
+  });
+  const handled = useRef<VoucherFormState>(undefined);
+  useEffect(() => {
+    if (!state?.success || handled.current === state) return;
+    handled.current = state;
+    setIdempotencyKey(crypto.randomUUID());
+    setLines([emptyLine(defaultGstRateId)]);
+    onDoneRef.current?.();
+  }, [state, defaultGstRateId]);
 
   const selectedParty = parties.find((p) => p.id === partyId) ?? null;
   const suggestion = suggestGstTreatment(companyStateCode, selectedParty?.stateCode ?? null);

@@ -139,6 +139,12 @@ describe("idempotent duplicate submission", () => {
     mocks.voucherFindUnique.mockResolvedValue({
       id: "existing-1",
       voucherNumber: "PMT-OUT/2026-27/0001",
+      voucherType: "PAYMENT_GIVEN",
+      partyId: "party-1",
+      paymentAccountId: "pa-1",
+      amount: "500.00",
+      date: new Date("2026-06-15T00:00:00.000Z"),
+      createdByUserId: "u1",
     });
 
     const result = await createPaymentGiven(
@@ -171,7 +177,16 @@ describe("idempotent duplicate submission", () => {
       })
     );
     // Pre-check misses (the winner has not committed yet); recovery lookup finds it.
-    mocks.voucherFindUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: "existing-1", voucherNumber: "PMT-OUT/2026-27/0001" });
+    mocks.voucherFindUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({
+      id: "existing-1",
+      voucherNumber: "PMT-OUT/2026-27/0001",
+      voucherType: "PAYMENT_GIVEN",
+      partyId: "party-1",
+      paymentAccountId: "pa-1",
+      amount: "500.00",
+      date: new Date("2026-06-15T00:00:00.000Z"),
+      createdByUserId: "u1",
+    });
 
     const result = await createPaymentGiven(
       undefined,
@@ -192,6 +207,12 @@ describe("idempotent duplicate submission", () => {
     mocks.voucherFindUnique.mockResolvedValue({
       id: "existing-1",
       voucherNumber: "PMT-OUT/2026-27/0001",
+      voucherType: "PAYMENT_GIVEN",
+      partyId: "party-1",
+      paymentAccountId: "pa-1",
+      amount: "500.00",
+      date: new Date("2026-06-15T00:00:00.000Z"),
+      createdByUserId: "u1",
     });
 
     const result = await createPaymentGiven(
@@ -206,6 +227,35 @@ describe("idempotent duplicate submission", () => {
     );
 
     expect(result?.success).toBe(true);
+    expect(result?.replayed).toBe(true);
+    expect(mocks.transaction).not.toHaveBeenCalled();
+  });
+
+  it("refuses — never reports 'saved' — when the key already saved a DIFFERENT payment (a second entry in a still-open form)", async () => {
+    mocks.voucherFindUnique.mockResolvedValue({
+      id: "existing-1",
+      voucherNumber: "PMT-OUT/2026-27/0001",
+      voucherType: "PAYMENT_GIVEN",
+      partyId: "party-1",
+      paymentAccountId: "pa-1",
+      amount: "500.00",
+      date: new Date("2026-06-15T00:00:00.000Z"),
+      createdByUserId: "u1",
+    });
+
+    const result = await createPaymentGiven(
+      undefined,
+      formData({
+        date: "2026-06-15",
+        partyId: "party-1",
+        paymentAccountId: "pa-1",
+        amount: "750",
+        idempotencyKey: "already-posted-key",
+      })
+    );
+
+    expect(result?.success).toBeUndefined();
+    expect(result?.error).toMatch(/Nothing was saved.*PMT-OUT\/2026-27\/0001/);
     expect(mocks.transaction).not.toHaveBeenCalled();
   });
 });

@@ -200,7 +200,7 @@ function BillSection({ data, onDone }: { data: SerializedJobCustomerGold; onDone
       <ul className="mt-1 flex flex-col gap-1 text-xs">
         {(data.bills ?? []).map((b) => (
           <li key={b.id}>
-            {b.billCode} · {new Date(b.date).toLocaleDateString("en-IN")} · taxable ₹{b.taxableValue} + GST ₹{b.taxAmount} = ₹{b.grandTotal} · gold credit ₹{b.creditApplied} · due ₹
+            {b.billCode} · {new Date(b.date).toLocaleDateString("en-IN")} · taxable ₹{b.taxableValue} + GST ₹{b.taxAmount} = ₹{b.grandTotal} · gold credit ₹{b.creditApplied} · billed after credit ₹
             {b.amountDue} · {b.status === "POSTED" ? "Posted" : "Reversed"}
             {b.status === "POSTED" ? <ReverseButton kind="bill" id={b.id} onDone={onDone} /> : null}
           </li>

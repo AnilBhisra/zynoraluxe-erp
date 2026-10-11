@@ -5,10 +5,14 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { CsvDownloadButton } from "@/components/accounting/CsvDownloadButton";
 import { CustomerRefundForm } from "@/components/accounting/CustomerRefundForm";
 import { useFieldId } from "@/lib/utils/useFieldId";
+import { classifyPartyBalance } from "@/lib/accounting/partyBalance";
 import type {
+  AdvanceBreakdown,
   GstSummary,
   PartyBalanceRow,
+  PaymentAccountBalanceRow,
   ProfitAndLoss,
+  ReceivablePayableSummary,
   VoucherListRow,
 } from "@/lib/accounting/reports";
 import type { FinishedJewellerySaleLineReportRow } from "@/lib/jewellery/reports";
@@ -175,45 +179,90 @@ export function VoucherReportView({
 export function CashBankReportView({
   cash,
   bank,
+  accounts,
 }: {
   cash: { toFixed: (n: number) => string };
   bank: { toFixed: (n: number) => string };
+  /** Owner only: each payment account's own ledger balance. */
+  accounts?: PaymentAccountBalanceRow[];
 }) {
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-      <Card>
-        <CardHeader>
-          <CardTitle>Cash balance</CardTitle>
-          <p className="mt-2 text-2xl font-semibold text-zinc-900 dark:text-zinc-50">{money(cash)}</p>
-        </CardHeader>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>Bank balance</CardTitle>
-          <p className="mt-2 text-2xl font-semibold text-zinc-900 dark:text-zinc-50">{money(bank)}</p>
-          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Includes Bank, UPI and Other accounts.</p>
-        </CardHeader>
-      </Card>
+    <div className="flex flex-col gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Cash balance</CardTitle>
+            <p className="mt-2 text-2xl font-semibold text-zinc-900 dark:text-zinc-50" data-testid="report-cash-balance">
+              {money(cash)}
+            </p>
+            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">As of today — every posted entry, whatever the dates above.</p>
+          </CardHeader>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Bank balance</CardTitle>
+            <p className="mt-2 text-2xl font-semibold text-zinc-900 dark:text-zinc-50" data-testid="report-bank-balance">
+              {money(bank)}
+            </p>
+            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Includes Bank, UPI and Other accounts.</p>
+          </CardHeader>
+        </Card>
+      </div>
+      {accounts && accounts.length > 0 ? (
+        <div className="overflow-x-auto rounded-xl border border-[var(--border)]">
+          <table className="w-full text-sm">
+            <thead className="bg-[var(--surface-muted)] text-left text-xs font-medium text-zinc-500 dark:text-zinc-400">
+              <tr>
+                <th className="px-4 py-3">Payment account</th>
+                <th className="px-4 py-3 text-right">Balance</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[var(--border)] bg-[var(--surface)]">
+              {accounts.map((a) => (
+                <tr key={a.id} data-testid="report-payment-account">
+                  <td className="px-4 py-3 text-zinc-700 dark:text-zinc-300">
+                    {a.name}{" "}
+                    <span className="text-xs text-zinc-500">
+                      ({a.method}
+                      {a.isActive ? "" : ", archived"})
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-right font-medium text-zinc-900 dark:text-zinc-50">
+                    {money(a.balance)}
+                    {a.balance.isNegative() ? (
+                      <span className="block text-xs font-normal text-amber-700 dark:text-amber-300">
+                        More paid out than recorded in — record the opening balance or the money put in
+                      </span>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
     </div>
   );
 }
 
 export function OutstandingReportView({
   parties,
+  summary,
+  advances,
   isOwner,
   paymentAccounts,
 }: {
   parties: PartyBalanceRow[];
+  /** Server-side Decimal totals (getReceivablePayableSummary) — the same figures as the Dashboard. */
+  summary: ReceivablePayableSummary;
+  /** The advances inside those totals (getAdvanceBreakdown). */
+  advances: AdvanceBreakdown;
   isOwner?: boolean;
   paymentAccounts?: { id: string; name: string; method: string }[];
 }) {
-  const withBalance = parties.filter((p) => p.balance.toNumber() !== 0);
-  const totalReceivable = withBalance
-    .filter((p) => p.balance.toNumber() > 0)
-    .reduce((sum, p) => sum + p.balance.toNumber(), 0);
-  const totalPayable = withBalance
-    .filter((p) => p.balance.toNumber() < 0)
-    .reduce((sum, p) => sum + Math.abs(p.balance.toNumber()), 0);
+  const withBalance = parties
+    .filter((p) => !p.balance.isZero())
+    .map((p) => ({ ...p, classified: classifyPartyBalance(p.type, p.balance.toFixed(2)) }));
 
   if (withBalance.length === 0) {
     return <EmptyState title="Nothing outstanding" description="Every party is settled." />;
@@ -221,24 +270,42 @@ export function OutstandingReportView({
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-zinc-600 dark:text-zinc-400">
-          Total receivable {money({ toFixed: (n) => totalReceivable.toFixed(n) })} · Total payable{" "}
-          {money({ toFixed: (n) => totalPayable.toFixed(n) })}
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <dl className="grid grid-cols-[1fr_auto] gap-x-6 gap-y-1 text-sm text-zinc-600 dark:text-zinc-400" data-testid="outstanding-totals">
+          <dt>Total receivable (owed to us)</dt>
+          <dd className="text-right font-medium text-zinc-900 dark:text-zinc-50" data-testid="outstanding-receivable">
+            {money(summary.receivable)}
+          </dd>
+          {!advances.advancesPaid.isZero() ? (
+            <>
+              <dt className="pl-3 text-xs">of which advance paid to suppliers/karigars</dt>
+              <dd className="text-right text-xs" data-testid="outstanding-advances-paid">
+                {money(advances.advancesPaid)}
+              </dd>
+            </>
+          ) : null}
+          <dt>Total payable (we owe)</dt>
+          <dd className="text-right font-medium text-zinc-900 dark:text-zinc-50" data-testid="outstanding-payable">
+            {money(summary.payable)}
+          </dd>
+          {!advances.customerCredit.isZero() ? (
+            <>
+              <dt className="pl-3 text-xs">of which customer credit (advances we hold)</dt>
+              <dd className="text-right text-xs" data-testid="outstanding-customer-credit">
+                {money(advances.customerCredit)}
+              </dd>
+            </>
+          ) : null}
+        </dl>
         <CsvDownloadButton
           filename="outstanding.csv"
           headers={["Party", "Type", "Balance", "Direction"]}
-          rows={withBalance.map((p) => [
-            p.name,
-            p.type,
-            Math.abs(p.balance.toNumber()).toFixed(2),
-            p.balance.toNumber() > 0 ? "Receivable" : "Payable",
-          ])}
+          rows={withBalance.map((p) => [p.name, p.type, p.classified.amount, p.classified.direction])}
         />
       </div>
+      <p className="text-xs text-zinc-500 dark:text-zinc-400">As of today — every posted entry, whatever the dates above.</p>
       <div className="overflow-x-auto rounded-xl border border-[var(--border)]">
-        <table className="w-full min-w-[420px] text-sm">
+        <table className="w-full text-sm">
           <thead className="bg-[var(--surface-muted)] text-left text-xs font-medium text-zinc-500 dark:text-zinc-400">
             <tr>
               <th className="px-4 py-3">Party</th>
@@ -248,19 +315,19 @@ export function OutstandingReportView({
           </thead>
           <tbody className="divide-y divide-[var(--border)] bg-[var(--surface)]">
             {withBalance.map((p) => (
-              <tr key={p.partyId}>
-                <td className="px-4 py-3 text-zinc-700 dark:text-zinc-300">{p.name}</td>
+              <tr key={p.partyId} data-testid="outstanding-row">
+                <td className="break-words px-4 py-3 text-zinc-700 dark:text-zinc-300">{p.name}</td>
                 <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">{p.type}</td>
                 <td className="px-4 py-3 text-right font-medium text-zinc-900 dark:text-zinc-50">
-                  {money({ toFixed: (n) => Math.abs(p.balance.toNumber()).toFixed(n) })}{" "}
-                  <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                    ({p.balance.toNumber() > 0 ? "owes us" : "we owe"})
+                  {money(p.balance.abs())}{" "}
+                  <span className="block text-xs font-normal text-zinc-500 dark:text-zinc-400 sm:inline">
+                    ({p.classified.direction.toLowerCase()})
                   </span>
-                  {isOwner && p.type === "CUSTOMER" && p.balance.toNumber() < 0 ? (
+                  {isOwner && p.classified.kind === "CUSTOMER_CREDIT" ? (
                     <div className="mt-1">
                       <CustomerRefundForm
                         partyId={p.partyId}
-                        availableCredit={Math.abs(p.balance.toNumber())}
+                        availableCredit={Number(p.classified.amount)}
                         paymentAccounts={paymentAccounts ?? []}
                       />
                     </div>

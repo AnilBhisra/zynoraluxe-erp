@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   voucherFindUnique: vi.fn(),
   accountFindMany: vi.fn(),
   journalEntryAggregate: vi.fn(),
+  journalEntryGroupBy: vi.fn(),
+  queryRawUnsafe: vi.fn(),
   revalidatePath: vi.fn(),
   getCompanyFySettings: vi.fn(),
   postFinishedJewellerySale: vi.fn(),
@@ -34,7 +36,7 @@ vi.mock("@/lib/db/prisma", () => ({
     finishedJewelleryReturn: { findUnique: mocks.finishedJewelleryReturnFindUnique },
     voucher: { findUnique: mocks.voucherFindUnique },
     account: { findMany: mocks.accountFindMany },
-    journalEntry: { aggregate: mocks.journalEntryAggregate },
+    journalEntry: { aggregate: mocks.journalEntryAggregate, groupBy: mocks.journalEntryGroupBy },
   },
 }));
 
@@ -106,7 +108,13 @@ beforeEach(() => {
     stateCode: null,
     defaultCurrency: "INR",
   });
-  mocks.transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => fn({}));
+  mocks.transaction.mockImplementation(async (fn: (tx: unknown) => unknown) =>
+    fn({
+      $queryRawUnsafe: mocks.queryRawUnsafe,
+      account: { findMany: mocks.accountFindMany },
+      journalEntry: { groupBy: mocks.journalEntryGroupBy },
+    })
+  );
   mocks.gstRateFindMany.mockResolvedValue([]);
   mocks.finishedJewellerySaleFindUnique.mockResolvedValue(null);
   mocks.finishedJewelleryReturnFindUnique.mockResolvedValue(null);
@@ -115,7 +123,8 @@ beforeEach(() => {
     { id: "acct-ar", code: "1100" },
     { id: "acct-ap", code: "2100" },
   ]);
-  mocks.journalEntryAggregate.mockResolvedValue({ _sum: { debit: 0, credit: 0 } });
+  mocks.journalEntryGroupBy.mockResolvedValue([]);
+  mocks.queryRawUnsafe.mockResolvedValue([]);
   mocks.postFinishedJewellerySale.mockResolvedValue({ sale: { saleCode: "ZL-FJS-2026-000001" } });
   mocks.cancelFinishedJewellerySale.mockResolvedValue({});
   mocks.returnFinishedJewelleryItems.mockResolvedValue({ return: { returnCode: "ZL-FJR-2026-000001" } });
@@ -254,7 +263,7 @@ describe("returnFinishedJewelleryItemsAction idempotency", () => {
 
 describe("createCustomerRefundAction credit-limit enforcement", () => {
   it("rejects a refund when the customer has no credit balance (AR is zero or positive)", async () => {
-    mocks.journalEntryAggregate.mockResolvedValue({ _sum: { debit: 5000, credit: 1000 } }); // net +4000 = they owe US
+    mocks.journalEntryGroupBy.mockResolvedValue([{ partyId: "customer-1", _sum: { debit: 5000, credit: 1000 } }]); // net +4000 = they owe US
     const result = await createCustomerRefundAction(
       undefined,
       formData({ partyId: "customer-1", paymentAccountId: "pay-1", amount: "500", date: todayDateOnly() })
@@ -264,7 +273,7 @@ describe("createCustomerRefundAction credit-limit enforcement", () => {
   });
 
   it("rejects a refund amount greater than the available customer credit", async () => {
-    mocks.journalEntryAggregate.mockResolvedValue({ _sum: { debit: 1000, credit: 6000 } }); // net -5000 = 5000 credit
+    mocks.journalEntryGroupBy.mockResolvedValue([{ partyId: "customer-1", _sum: { debit: 1000, credit: 6000 } }]); // net -5000 = 5000 credit
     const result = await createCustomerRefundAction(
       undefined,
       formData({ partyId: "customer-1", paymentAccountId: "pay-1", amount: "6000", date: todayDateOnly() })
@@ -275,7 +284,7 @@ describe("createCustomerRefundAction credit-limit enforcement", () => {
   });
 
   it("allows a refund within the available customer credit", async () => {
-    mocks.journalEntryAggregate.mockResolvedValue({ _sum: { debit: 1000, credit: 6000 } }); // 5000 credit
+    mocks.journalEntryGroupBy.mockResolvedValue([{ partyId: "customer-1", _sum: { debit: 1000, credit: 6000 } }]); // 5000 credit
     const result = await createCustomerRefundAction(
       undefined,
       formData({ partyId: "customer-1", paymentAccountId: "pay-1", amount: "5000", date: todayDateOnly() })

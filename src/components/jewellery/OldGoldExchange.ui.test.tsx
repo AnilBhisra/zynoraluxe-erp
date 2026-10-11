@@ -83,6 +83,7 @@ function data(isOwner: boolean): CustomerGoldTabData {
       bills: isOwner ? [] : null,
       deliveries: [],
       credit: isOwner ? { granted: "59968.61", applied: "10000.00", available: "49968.61" } : null,
+      accountBalance: isOwner ? "-49968.61" : null,
     },
     purities: [{ id: "p22", metalType: "GOLD", displayName: "22K", finenessPercent: "91.600" }],
     karigars: [],

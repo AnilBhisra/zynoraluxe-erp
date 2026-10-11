@@ -8,6 +8,7 @@ import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import type { KarigarMetalAccount, KarigarStatementRow } from "@/lib/jewellery/karigarCustodyReports";
+import { classifyPartyBalance } from "@/lib/accounting/partyBalance";
 
 export type CustodyKind = "ISSUE_TO_KARIGAR" | "RETURN_TO_STOCK" | "ALLOCATE_TO_JOB" | "RELEASE_FROM_JOB";
 export type IssuePurityOption = { id: string; label: string; stockGross: string };
@@ -103,7 +104,13 @@ export function KarigarMetalAccountView({
           <Figure label="Confirmed loss (normal)" value={`${account.outcomes.confirmedNormalLossFine}g fine`} />
           <Figure label="Confirmed loss (abnormal)" value={`${account.outcomes.confirmedAbnormalLossFine}g fine`} />
           {isOwner && account.labourCharged !== null ? <Figure label="Labour / charges on receipts" value={money(account.labourCharged)} /> : null}
-          {isOwner && account.payableBalance !== null ? <Figure label="Payable to Karigar (ledger)" value={money(account.payableBalance)} /> : null}
+          {isOwner && account.payableBalance !== null ? (
+            <Figure
+              label="Karigar balance (ledger)"
+              // payableBalance is positive when we owe the Karigar; the shared label reads Debit − Credit.
+              value={classifyPartyBalance("KARIGAR", account.payableBalance.startsWith("-") ? account.payableBalance.slice(1) : `-${account.payableBalance}`).label}
+            />
+          ) : null}
         </dl>
       </div>
 

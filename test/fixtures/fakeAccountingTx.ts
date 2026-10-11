@@ -56,6 +56,10 @@ export function createFakeAccountingTx() {
       findUnique: async ({ where }: { where: { id: string } }) =>
         paymentAccounts.get(where.id) ?? null,
     },
+    // Payments check their party exists and is active; every party is, here.
+    party: {
+      findUnique: async ({ where }: { where: { id: string } }) => ({ id: where.id, isActive: true }),
+    },
     voucherSequence: {
       upsert: async ({
         where,

@@ -10,7 +10,7 @@ import type {
 } from "@/generated/prisma/enums";
 
 import { SYSTEM_ACCOUNT_CODES } from "@/lib/accounting/accounts";
-import { getFinancialYearLabel } from "@/lib/accounting/financialYear";
+import { getFinancialYearLabel, indiaBusinessDate } from "@/lib/accounting/financialYear";
 import { computeInvoiceLineTotals, splitGstAmount } from "@/lib/accounting/gst";
 import { Decimal, type DecimalInput, round2, ZERO } from "@/lib/accounting/money";
 import { nextVoucherNumber } from "@/lib/accounting/numbering";
@@ -18,6 +18,32 @@ import { nextVoucherNumber } from "@/lib/accounting/numbering";
 export class PostingError extends Error {}
 
 type Tx = Prisma.TransactionClient;
+
+/**
+ * Explicit limits for every Accounting voucher transaction. Prisma's default
+ * (5 s) is too short over the remote pooled production connection, where a
+ * timed-out transaction surfaces as a generic failure. The whole voucher —
+ * sequence number, header, journal lines — commits or rolls back together.
+ */
+export const VOUCHER_TRANSACTION_OPTIONS = { timeout: 30_000, maxWait: 15_000 } as const;
+
+/** The payment account a settlement posts to: it must exist and be in use. */
+async function resolvePaymentAccountCode(tx: Tx, paymentAccountId: string): Promise<string> {
+  const paymentAccount = await tx.paymentAccount.findUnique({
+    where: { id: paymentAccountId },
+    select: { isActive: true, account: { select: { code: true } } },
+  });
+  if (!paymentAccount) throw new PostingError("Payment account not found.");
+  if (paymentAccount.isActive === false) throw new PostingError("That payment account is archived. Choose another account.");
+  return paymentAccount.account.code;
+}
+
+/** The party a payment settles: it must exist and be active. */
+async function assertPaymentParty(tx: Tx, partyId: string): Promise<void> {
+  const party = await tx.party.findUnique({ where: { id: partyId }, select: { isActive: true } });
+  if (!party) throw new PostingError("Party not found.");
+  if (party.isActive === false) throw new PostingError("That party is archived. Reactivate it before recording a payment.");
+}
 
 export type JournalLineInput = {
   accountCode: string;
@@ -432,11 +458,8 @@ export async function postPaymentGiven(
   const amount = round2(input.amount);
   if (!amount.greaterThan(0)) throw new PostingError("Amount must be greater than zero.");
 
-  const paymentAccount = await tx.paymentAccount.findUnique({
-    where: { id: input.paymentAccountId },
-    select: { account: { select: { code: true } } },
-  });
-  if (!paymentAccount) throw new PostingError("Payment account not found.");
+  await assertPaymentParty(tx, input.partyId);
+  const paymentAccountCode = await resolvePaymentAccountCode(tx, input.paymentAccountId);
 
   const voucher = await createVoucherHeader(tx, input, "PAYMENT_GIVEN", {
     amount,
@@ -444,6 +467,9 @@ export async function postPaymentGiven(
     paymentAccountId: input.paymentAccountId,
   });
 
+  // Dr the party's payable (Supplier/Karigar/Manufacturer/Broker payable all
+  // live on Accounts Payable by partyId) / Cr the chosen Cash/Bank account.
+  // Never an expense or inventory line: that was posted by the bill itself.
   await insertBalancedJournalLines(tx, voucher.id, [
     {
       accountCode: SYSTEM_ACCOUNT_CODES.ACCOUNTS_PAYABLE,
@@ -451,7 +477,7 @@ export async function postPaymentGiven(
       debit: amount,
       description: "Payment given",
     },
-    { accountCode: paymentAccount.account.code, credit: amount, description: "Payment given" },
+    { accountCode: paymentAccountCode, credit: amount, description: "Payment given" },
   ]);
 
   return voucher;
@@ -468,11 +494,8 @@ export async function postPaymentReceived(
   const amount = round2(input.amount);
   if (!amount.greaterThan(0)) throw new PostingError("Amount must be greater than zero.");
 
-  const paymentAccount = await tx.paymentAccount.findUnique({
-    where: { id: input.paymentAccountId },
-    select: { account: { select: { code: true } } },
-  });
-  if (!paymentAccount) throw new PostingError("Payment account not found.");
+  await assertPaymentParty(tx, input.partyId);
+  const paymentAccountCode = await resolvePaymentAccountCode(tx, input.paymentAccountId);
 
   const voucher = await createVoucherHeader(tx, input, "PAYMENT_RECEIVED", {
     amount,
@@ -480,8 +503,10 @@ export async function postPaymentReceived(
     paymentAccountId: input.paymentAccountId,
   });
 
+  // Dr the chosen Cash/Bank account / Cr the party's receivable. Never a
+  // sales or income line: the sale or bill already recognised the revenue.
   await insertBalancedJournalLines(tx, voucher.id, [
-    { accountCode: paymentAccount.account.code, debit: amount, description: "Payment received" },
+    { accountCode: paymentAccountCode, debit: amount, description: "Payment received" },
     {
       accountCode: SYSTEM_ACCOUNT_CODES.ACCOUNTS_RECEIVABLE,
       partyId: input.partyId,
@@ -522,11 +547,7 @@ export async function postCustomerRefund(
   const amount = round2(input.amount);
   if (!amount.greaterThan(0)) throw new PostingError("Amount must be greater than zero.");
 
-  const paymentAccount = await tx.paymentAccount.findUnique({
-    where: { id: input.paymentAccountId },
-    select: { account: { select: { code: true } } },
-  });
-  if (!paymentAccount) throw new PostingError("Payment account not found.");
+  const paymentAccountCode = await resolvePaymentAccountCode(tx, input.paymentAccountId);
 
   const voucher = await createVoucherHeader(tx, input, "CUSTOMER_REFUND", {
     amount,
@@ -541,7 +562,7 @@ export async function postCustomerRefund(
       debit: amount,
       description: "Customer refund",
     },
-    { accountCode: paymentAccount.account.code, credit: amount, description: "Customer refund" },
+    { accountCode: paymentAccountCode, credit: amount, description: "Customer refund" },
   ]);
 
   return voucher;
@@ -603,16 +624,44 @@ export async function cancelVoucher(
   if (original.voucherType === "REVERSAL") {
     throw new PostingError("A reversal voucher cannot itself be cancelled.");
   }
+  if (original.journalEntries.length === 0) {
+    throw new PostingError("Original voucher has no journal entries to reverse.");
+  }
 
   const now = new Date();
-  const financialYearLabel = getFinancialYearLabel(now, input.fyStartMonth, input.fyStartDay);
+  // Claim the cancellation first, only while the voucher is still POSTED. A
+  // second, simultaneous cancel blocks on this row and then finds nothing to
+  // claim, so a voucher is reversed exactly once (the unique
+  // reversalOfVoucherId below is the backstop).
+  try {
+    await tx.voucher.update({
+      where: { id: original.id, status: "POSTED" },
+      data: {
+        status: "CANCELLED",
+        cancelledAt: now,
+        cancelledByUserId: input.cancelledByUserId,
+        cancellationReason: input.cancellationReason,
+      },
+    });
+  } catch (error) {
+    if ((error as { code?: string } | null)?.code === "P2025") {
+      throw new PostingError("This voucher has already been cancelled.");
+    }
+    throw error;
+  }
+
+  // A reversal is dated with the Indian calendar date it was posted on (a pure
+  // date, like every other voucher), never before the voucher it reverses.
+  const today = indiaBusinessDate(now);
+  const reversalDate = original.date && new Date(original.date).getTime() > today.getTime() ? new Date(original.date) : today;
+  const financialYearLabel = getFinancialYearLabel(reversalDate, input.fyStartMonth, input.fyStartDay);
   const voucherNumber = await nextVoucherNumber(tx, "REVERSAL", financialYearLabel);
 
   const reversal = await tx.voucher.create({
     data: {
       voucherNumber,
       voucherType: "REVERSAL",
-      date: now,
+      date: reversalDate,
       financialYearLabel,
       partyId: original.partyId,
       paymentAccountId: original.paymentAccountId,
@@ -625,10 +674,6 @@ export async function cancelVoucher(
     },
   });
 
-  if (original.journalEntries.length === 0) {
-    throw new PostingError("Original voucher has no journal entries to reverse.");
-  }
-
   await tx.journalEntry.createMany({
     data: original.journalEntries.map((entry) => ({
       voucherId: reversal.id,
@@ -638,16 +683,6 @@ export async function cancelVoucher(
       credit: entry.debit,
       description: `Reversal: ${entry.description ?? ""}`.trim(),
     })),
-  });
-
-  await tx.voucher.update({
-    where: { id: original.id },
-    data: {
-      status: "CANCELLED",
-      cancelledAt: now,
-      cancelledByUserId: input.cancelledByUserId,
-      cancellationReason: input.cancellationReason,
-    },
   });
 
   return reversal;

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import { requireUser } from "@/lib/auth/dal";
+import { classifyPartyBalance } from "@/lib/accounting/partyBalance";
 import { prisma } from "@/lib/db/prisma";
 import { customerGoldStatement } from "@/lib/jewellery/customerGoldReports";
 import { CustomerGoldPrintShell } from "@/components/jewellery/CustomerGoldPrint";
@@ -131,10 +132,13 @@ export default async function CustomerGoldStatementPage({ params }: { params: Pr
       {isOwner && statement.bills && statement.bills.length ? (
         <>
           <h2 className="mt-5 text-sm font-semibold">Bills</h2>
+          {statement.accountBalance !== null ? (
+            <p className="mt-1 text-xs">Account balance now: {classifyPartyBalance("CUSTOMER", statement.accountBalance).label} (after payments received)</p>
+          ) : null}
           <ul className="mt-1 text-xs">
             {statement.bills.map((b) => (
               <li key={b.billCode}>
-                {b.billCode} · {date(b.date)} · {b.jobCode} · ₹{b.grandTotal} · credit ₹{b.creditApplied} · due ₹{b.amountDue} · {b.status}
+                {b.billCode} · {date(b.date)} · {b.jobCode} · ₹{b.grandTotal} · credit ₹{b.creditApplied} · billed after credit ₹{b.amountDue} · {b.status}
               </li>
             ))}
           </ul>

@@ -2,6 +2,7 @@ import "server-only";
 
 import type { CustomerGoldEntryKind, CustomerGoldLocation } from "@/generated/prisma/enums";
 import { Decimal, ZERO } from "@/lib/accounting/money";
+import { getPartyNetBalance } from "@/lib/accounting/reports";
 import type { Tx } from "@/lib/corrections/types";
 import { round3 } from "@/lib/diamond/allocation";
 import { customerCreditSummaryInTx } from "@/lib/jewellery/oldGoldExchange";
@@ -176,6 +177,13 @@ export type CustomerGoldStatement = {
   }[];
   /** Owner only: gold-purchase credit granted, applied by bills, still usable. */
   credit: { granted: string; applied: string; available: string } | null;
+  /**
+   * Owner only: the Customer's live account balance (Debit − Credit across
+   * Accounts Receivable and Payable — bills, payments received, refunds, gold
+   * purchase credit). A bill's own amountDue is what was due ON the bill;
+   * payments are not allocated to bills, so this is what is owed now.
+   */
+  accountBalance: string | null;
   pieces: { id: string; finishedCode: string; jobCode: string; status: string; netMetalWeight: string; fineMetalWeight: string; customerGoldFineWeight: string; companyCost: string | null }[];
   bills: { billCode: string; date: string; jobCode: string; status: string; taxableValue: string; taxAmount: string; grandTotal: string; creditApplied: string; amountDue: string }[] | null;
   deliveries: { deliveryCode: string; date: string; jobCode: string; status: string; receivedByName: string; deliveredBy: string; reference: string | null; customerGoldFine: string; pieces: string[] }[];
@@ -198,6 +206,7 @@ export async function customerGoldStatement(tx: Tx, customerId: string, opts: { 
     tx.customerJewelleryDelivery.findMany({ where: { customerId }, include: { job: true, deliveredBy: true, items: { include: { finishedJewellery: true } } }, orderBy: { createdAt: "asc" } }),
     opts.includeValues ? customerCreditSummaryInTx(tx, customerId) : Promise.resolve(null),
   ]);
+  const accountBalance = opts.includeValues ? (await getPartyNetBalance(customerId, tx)).toFixed(2) : null;
   const place = (loc: CustomerGoldLocation, e: (typeof entries)[number]) => {
     const s = scopeOf(loc, e);
     const suffix = loc === "KARIGAR" && e.karigar ? ` (${e.karigar.name})` : loc === "JOB" && e.job ? ` (${e.job.jobCode})` : loc === "FINISHED" && e.finishedJewellery ? ` (${e.finishedJewellery.finishedCode})` : "";
@@ -285,6 +294,7 @@ export async function customerGoldStatement(tx: Tx, customerId: string, opts: { 
       customerGoldFineWeight: new Decimal(p.customerGoldFineWeight).toFixed(3),
       companyCost: opts.includeValues ? new Decimal(p.metalCost).plus(p.diamondCost).plus(p.labourAllocated).toFixed(2) : null,
     })),
+    accountBalance,
     bills: bills
       ? bills.map((b) => ({
           billCode: b.billCode,

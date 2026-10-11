@@ -5,11 +5,11 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db/prisma";
 import { isIdempotencyConflict } from "@/lib/db/uniqueConflict";
 import { requireOwner, requireUser } from "@/lib/auth/dal";
-import { SYSTEM_ACCOUNT_CODES } from "@/lib/accounting/accounts";
 import { getCompanyFySettings } from "@/lib/accounting/company";
 import { checkVoucherDateAllowed, parseDateOnly } from "@/lib/accounting/financialYear";
 import { Decimal } from "@/lib/accounting/money";
 import * as posting from "@/lib/accounting/posting";
+import { getPartyNetBalance } from "@/lib/accounting/reports";
 import * as finishedSalesPosting from "@/lib/jewellery/finishedSalesPosting";
 import { getPhase5VsPhase6Comparison, getSuggestedSalePrice } from "@/lib/costing/sourcing";
 import { formatCarryingAmount } from "@/lib/jewellery/carryingCost";
@@ -352,18 +352,14 @@ export async function createCustomerRefundAction(
 
   const fy = await getCompanyFySettings();
 
-  // A refund can never exceed the customer's actual available credit —
-  // computed here from the SAME AR/AP grouping getPartyBalances uses
-  // (positive = they owe us, negative = we owe them), never trusted
-  // purely from a client-submitted figure.
-  const balance = await getPartyNetBalance(data.partyId);
-  if (balance.greaterThanOrEqualTo(0)) {
-    return { error: "This customer has no credit balance to refund." };
-  }
-  const availableCredit = balance.abs();
-  if (data.amount > Number(availableCredit.toFixed(2))) {
-    return { error: `Refund cannot exceed the available customer credit of ₹${availableCredit.toFixed(2)}.` };
-  }
+  // A refund can never exceed the customer's actual available credit — the
+  // SAME party balance every screen shows (getPartyNetBalance: positive =
+  // they owe us, negative = we owe them), never a client-submitted figure.
+  // Checked once up front for a quick answer, then again inside the
+  // transaction with the party row locked, so two simultaneous refunds can
+  // never both spend the same credit.
+  const creditError = refundCreditError(await getPartyNetBalance(data.partyId), data.amount);
+  if (creditError) return { error: creditError };
 
   if (data.idempotencyKey) {
     const existing = await prisma.voucher.findUnique({ where: { idempotencyKey: data.idempotencyKey } });
@@ -371,8 +367,11 @@ export async function createCustomerRefundAction(
   }
 
   try {
-    const voucher = await prisma.$transaction((tx) =>
-      posting.postCustomerRefund(tx, {
+    const voucher = await prisma.$transaction(async (tx) => {
+      await tx.$queryRawUnsafe(`SELECT id FROM "parties" WHERE id = $1 FOR UPDATE`, data.partyId);
+      const lockedError = refundCreditError(await getPartyNetBalance(data.partyId, tx), data.amount);
+      if (lockedError) throw new posting.PostingError(lockedError);
+      return posting.postCustomerRefund(tx, {
         date,
         fyStartMonth: fy.fyStartMonth,
         fyStartDay: fy.fyStartDay,
@@ -384,8 +383,8 @@ export async function createCustomerRefundAction(
         partyId: data.partyId,
         paymentAccountId: data.paymentAccountId,
         amount: data.amount,
-      })
-    );
+      });
+    }, posting.VOUCHER_TRANSACTION_OPTIONS);
     revalidateFinishedSales();
     return { success: true, code: voucher.voucherNumber };
   } catch (error) {
@@ -399,15 +398,14 @@ export async function createCustomerRefundAction(
   }
 }
 
-async function getPartyNetBalance(partyId: string) {
-  const accounts = await prisma.account.findMany({
-    where: { code: { in: [SYSTEM_ACCOUNT_CODES.ACCOUNTS_RECEIVABLE, SYSTEM_ACCOUNT_CODES.ACCOUNTS_PAYABLE] } },
-  });
-  const agg = await prisma.journalEntry.aggregate({
-    where: { partyId, accountId: { in: accounts.map((a) => a.id) } },
-    _sum: { debit: true, credit: true },
-  });
-  return new Decimal(agg._sum.debit ?? 0).minus(agg._sum.credit ?? 0);
+/** Why a refund of `amount` is not allowed against this balance, or null when it is. */
+function refundCreditError(balance: Decimal, amount: number): string | null {
+  if (balance.greaterThanOrEqualTo(0)) return "This customer has no credit balance to refund.";
+  const availableCredit = balance.abs();
+  if (new Decimal(amount).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).greaterThan(availableCredit)) {
+    return `Refund cannot exceed the available customer credit of ₹${availableCredit.toFixed(2)}.`;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

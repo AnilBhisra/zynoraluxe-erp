@@ -29,6 +29,26 @@ export function formatDateOnly(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
+/** India Standard Time is a fixed UTC+05:30 (no daylight saving). */
+const IST_OFFSET_MS = 330 * 60 * 1000;
+
+/**
+ * Today's calendar date in India, as the same UTC-midnight Date a "YYYY-MM-DD"
+ * form value parses to. The business runs on Indian dates: between 00:00 and
+ * 05:30 IST the UTC date is still yesterday, so `new Date().toISOString()`
+ * would default a form, date a reversal, or pick the financial year one day
+ * early (on 1 April, the previous year).
+ */
+export function indiaBusinessDate(now: Date = new Date()): Date {
+  const shifted = new Date(now.getTime() + IST_OFFSET_MS);
+  return new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()));
+}
+
+/** indiaBusinessDate() as "YYYY-MM-DD", for a date input's default value. */
+export function indiaToday(now: Date = new Date()): string {
+  return formatDateOnly(indiaBusinessDate(now));
+}
+
 /** Returns a label like "2026-27" for the financial year containing `date`. */
 export function getFinancialYearLabel(
   date: Date,
@@ -69,7 +89,7 @@ export function isWithinFinancialYear(
   date: Date,
   fyStartMonth: number,
   fyStartDay: number,
-  referenceDate: Date = new Date()
+  referenceDate: Date = indiaBusinessDate()
 ): boolean {
   const { start, end } = getFinancialYearBounds(referenceDate, fyStartMonth, fyStartDay);
   return date.getTime() >= start.getTime() && date.getTime() <= end.getTime();
@@ -87,7 +107,7 @@ export function checkVoucherDateAllowed(
   confirmedOutsideFy: boolean,
   fyStartMonth: number,
   fyStartDay: number,
-  referenceDate: Date = new Date()
+  referenceDate: Date = indiaBusinessDate()
 ): { ok: true } | { ok: false; message: string } {
   if (isWithinFinancialYear(date, fyStartMonth, fyStartDay, referenceDate)) {
     return { ok: true };

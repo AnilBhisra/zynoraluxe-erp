@@ -23,6 +23,7 @@ import { Field } from "@/components/ui/Field";
 import { JewelleryPhotoUploadField } from "@/components/jewellery/PhotoUploadField";
 import type { CustomerGoldPoolRow, CustomerGoldStatement } from "@/lib/jewellery/customerGoldReports";
 import { stickerHref } from "@/lib/jewellery/stickerLinks";
+import { classifyPartyBalance } from "@/lib/accounting/partyBalance";
 
 /**
  * Customer Gold (CUSTOMER_GOLD_DESIGN.md). A Customer's own gold, held for
@@ -1102,11 +1103,17 @@ function StatementView({ statement, isOwner, onDone }: { statement: CustomerGold
       {statement.bills ? (
         <div className={cardCls}>
           <p className="text-sm font-semibold">Bills</p>
+          {statement.accountBalance !== null ? (
+            <p className="mt-1 text-xs" data-testid="customer-account-balance">
+              Customer account now: <strong>{classifyPartyBalance("CUSTOMER", statement.accountBalance).label}</strong>
+              <span className="text-zinc-500"> — after every bill, payment received, refund and gold credit.</span>
+            </p>
+          ) : null}
           {statement.bills.length === 0 ? <p className="mt-1 text-xs text-zinc-500">None yet (billed from the job page).</p> : null}
           <ul className="mt-2 flex flex-col gap-1 text-xs">
             {statement.bills.map((b) => (
               <li key={b.billCode}>
-                {b.billCode} · {b.jobCode} · {b.status} · taxable ₹{b.taxableValue} + GST ₹{b.taxAmount} = ₹{b.grandTotal} · credit ₹{b.creditApplied} · due ₹{b.amountDue}
+                {b.billCode} · {b.jobCode} · {b.status} · taxable ₹{b.taxableValue} + GST ₹{b.taxAmount} = ₹{b.grandTotal} · credit ₹{b.creditApplied} · billed after credit ₹{b.amountDue}
               </li>
             ))}
           </ul>

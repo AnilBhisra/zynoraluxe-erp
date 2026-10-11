@@ -9,6 +9,8 @@ export type PartyOption = {
   name: string;
   type: PartyTypeValue;
   stateCode: string | null;
+  /** Current AR+AP balance (Debit − Credit, two decimals) — see classifyPartyBalance. Optional. */
+  balance?: string;
 };
 
 /** A searchable party picker. Renders a real <select> (name={name}) so it

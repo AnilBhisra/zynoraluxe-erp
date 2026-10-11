@@ -3,14 +3,20 @@ import type { Metadata } from "next";
 import { requireUser } from "@/lib/auth/dal";
 import { prisma } from "@/lib/db/prisma";
 import { getCompanyFySettings } from "@/lib/accounting/company";
+import { indiaToday } from "@/lib/accounting/financialYear";
+import { ZERO } from "@/lib/accounting/money";
 import {
+  getAdvanceBreakdown,
   getCashBankSummary,
   getGstSummary,
   getPartyBalances,
   getPartyLedger,
+  getPaymentAccountBalances,
   getProfitAndLoss,
+  getReceivablePayableSummary,
   listManualSalesWithoutLinkedCogs,
   listVouchers,
+  partyNetBalances,
 } from "@/lib/accounting/reports";
 import { listAvailableFinishedJewelleryForSale, listFinishedJewellerySaleLines } from "@/lib/jewellery/reports";
 import { resolveJewelleryAssetUrl } from "@/lib/storage/jewelleryMedia";
@@ -83,12 +89,12 @@ function mapNewParam(
   return NEW_PARAM_MAP[value];
 }
 
+// Indian calendar dates: before 05:30 IST the UTC date is still yesterday.
 function startOfMonth(): string {
-  const now = new Date();
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString().slice(0, 10);
+  return `${indiaToday().slice(0, 7)}-01`;
 }
 function today(): string {
-  return new Date().toISOString().slice(0, 10);
+  return indiaToday();
 }
 
 export default async function AccountingPage({
@@ -146,9 +152,15 @@ async function TransactionsTabContent({
   userRole: "OWNER" | "STAFF";
   initialOpen?: "PURCHASE" | "SALE" | "PAYMENT_GIVEN" | "PAYMENT_RECEIVED" | "EXPENSE";
 }) {
-  const [parties, paymentAccounts, gstRates, fy, vouchers, availableFinishedRows] = await Promise.all([
+  const isOwner = userRole === "OWNER";
+  const [parties, partyBalances, paymentAccounts, gstRates, fy, vouchers, availableFinishedRows] = await Promise.all([
     prisma.party.findMany({ where: { isActive: true }, orderBy: { name: "asc" } }),
-    prisma.paymentAccount.findMany({ where: { isActive: true }, orderBy: { name: "asc" } }),
+    // The same party balances the Parties tab already shows both roles.
+    partyNetBalances(),
+    // Per-account money stays Owner-only: Staff get the account list without balances.
+    isOwner
+      ? getPaymentAccountBalances().then((rows) => rows.filter((r) => r.isActive))
+      : prisma.paymentAccount.findMany({ where: { isActive: true }, orderBy: { name: "asc" } }),
     prisma.gstRate.findMany({ where: { isActive: true }, orderBy: { ratePercent: "asc" } }),
     getCompanyFySettings(),
     listVouchers({ take: 50, viewerRole: userRole }),
@@ -181,8 +193,19 @@ async function TransactionsTabContent({
   return (
     <div className="flex flex-col gap-6">
       <TransactionsTab
-        parties={parties.map((p) => ({ id: p.id, name: p.name, type: p.type, stateCode: p.stateCode }))}
-        paymentAccounts={paymentAccounts.map((p) => ({ id: p.id, name: p.name, method: p.method }))}
+        parties={parties.map((p) => ({
+          id: p.id,
+          name: p.name,
+          type: p.type,
+          stateCode: p.stateCode,
+          balance: (partyBalances.get(p.id) ?? ZERO).toFixed(2),
+        }))}
+        paymentAccounts={paymentAccounts.map((p) => ({
+          id: p.id,
+          name: p.name,
+          method: p.method,
+          balance: isOwner && "balance" in p ? p.balance.toFixed(2) : null,
+        }))}
         gstRates={gstRates.map((g) => ({ id: g.id, label: g.label, ratePercent: g.ratePercent.toString() }))}
         companyStateCode={fy.stateCode}
         vouchers={vouchers.map((v) => ({ ...v, amount: v.amount.toFixed(2) }))}
@@ -293,13 +316,15 @@ async function LedgerTabContent({ partyId }: { partyId: string }) {
     select: { id: true, name: true },
   });
 
-  const rows = partyId ? await getPartyLedger(partyId) : [];
+  const [rows, party] = partyId
+    ? await Promise.all([getPartyLedger(partyId), prisma.party.findUnique({ where: { id: partyId }, select: { type: true } })])
+    : [[], null];
 
   return (
     <div className="flex flex-col gap-6">
       <LedgerPartyPicker parties={parties} selectedPartyId={partyId} />
-      {partyId ? (
-        <LedgerTable rows={rows} />
+      {partyId && party ? (
+        <LedgerTable rows={rows} partyType={party.type} />
       ) : (
         <p className="text-sm text-zinc-500 dark:text-zinc-400">Choose a party to see their ledger.</p>
       )}
@@ -363,17 +388,29 @@ async function ReportBody({
     return <VoucherReportView vouchers={vouchers} label="Expenses" filename="expenses.csv" />;
   }
   if (report === "cashbank") {
-    const { cash, bank } = await getCashBankSummary();
-    return <CashBankReportView cash={cash} bank={bank} />;
+    const [{ cash, bank }, accounts] = await Promise.all([
+      getCashBankSummary(),
+      // Per-account balances are Owner-only (Staff keep the two totals they always had).
+      canSeeOwnerReports ? getPaymentAccountBalances() : Promise.resolve(undefined),
+    ]);
+    return <CashBankReportView cash={cash} bank={bank} accounts={accounts} />;
   }
   if (report === "outstanding") {
-    const parties = await getPartyBalances({ includeInactive: false });
+    // Every party with a balance, archived ones too: their money is still owed,
+    // and the totals must equal the Dashboard and the ledger.
+    const [parties, summary, advances] = await Promise.all([
+      getPartyBalances({ includeInactive: true }),
+      getReceivablePayableSummary(),
+      getAdvanceBreakdown(),
+    ]);
     const paymentAccounts = canSeeOwnerReports
       ? await prisma.paymentAccount.findMany({ where: { isActive: true }, orderBy: { name: "asc" } })
       : [];
     return (
       <OutstandingReportView
         parties={parties}
+        summary={summary}
+        advances={advances}
         isOwner={canSeeOwnerReports}
         paymentAccounts={paymentAccounts.map((p) => ({ id: p.id, name: p.name, method: p.method }))}
       />

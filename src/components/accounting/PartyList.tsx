@@ -3,34 +3,26 @@ import Link from "next/link";
 import { setPartyActive } from "@/app/actions/parties";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { classifyPartyBalance, type PartyBalanceKind } from "@/lib/accounting/partyBalance";
 import type { PartyBalanceRow } from "@/lib/accounting/reports";
 
-function formatMoney(value: { toFixed: (n: number) => string }) {
-  return `₹${Number(value.toFixed(2)).toLocaleString("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
+const BADGE_TONE: Record<PartyBalanceKind, string> = {
+  SETTLED: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400",
+  RECEIVABLE: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300",
+  PAYABLE: "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300",
+  ADVANCE_PAID: "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300",
+  CUSTOMER_CREDIT: "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300",
+};
 
-function BalanceBadge({ balance }: { balance: PartyBalanceRow["balance"] }) {
-  const n = Number(balance.toFixed(2));
-  if (n === 0) {
-    return (
-      <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
-        Settled
-      </span>
-    );
-  }
-  if (n > 0) {
-    return (
-      <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
-        Owes us {formatMoney(balance)}
-      </span>
-    );
-  }
+function BalanceBadge({ type, balance }: { type: PartyBalanceRow["type"]; balance: PartyBalanceRow["balance"] }) {
+  const classified = classifyPartyBalance(type, balance.toFixed(2));
   return (
-    <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
-      We owe {formatMoney(balance.abs())}
+    <span
+      className={`rounded-full px-2.5 py-1 text-xs font-medium ${BADGE_TONE[classified.kind]}`}
+      title={classified.explanation}
+      data-testid="party-balance-badge"
+    >
+      {classified.label}
     </span>
   );
 }
@@ -80,7 +72,7 @@ export function PartyList({
               ) : null}
             </div>
             <div className="mt-1">
-              <BalanceBadge balance={party.balance} />
+              <BalanceBadge type={party.type} balance={party.balance} />
             </div>
           </div>
           <div className="flex items-center gap-2">
