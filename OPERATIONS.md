@@ -15,7 +15,8 @@ Living document for whoever releases, checks or supports the system. Older
 | Phase 8B / 8C (Old Gold Exchange, migration 29), stickers, performance, Help | ≤ `1a10aec` | live (2026-10-02) |
 | Processed-rough batch return (4P / Laser) | `dd477b5` | live (2026-10-05) |
 | Owner "Correct entry" framework (+ migration 30) — see `CORRECTIONS_MATRIX.md` | `1ea7c27`…`4b71cab` | live (2026-10-06) — **production = `4b71cab`, 30 migrations** |
-| Payment balances: a second payment in an open form, refresh loop, advance labels, IST dates — see `PAYMENT_BALANCE_AUDIT.md` | branch `fix/payment-balance-refresh` | **not deployed** (code only, no migration) |
+| Payment balances: a second payment in an open form, refresh loop, advance labels, IST dates — see `PAYMENT_BALANCE_AUDIT.md` | `f3f9238`, `d7b1a75` | live (2026-10-11) — **production = `d7b1a75`, 30 migrations** |
+| Cash & Bank Book, Receivable & Payable (લેવાનું / આપવાનું), party summary, voucher page — see `CASH_BANK_BOOK.md` | branch `feature/cash-bank-book` | **not deployed** (code only, no migration) |
 
 ## 2. Migrations
 
@@ -136,8 +137,8 @@ unless the Owner explicitly asks.
 
 ## 8. Known limitations
 
-* Payments are not allocated to individual bills or invoices: a party has one
-  running balance (Debit − Credit of Accounts Receivable + Payable). A bill's
+* Payments are not allocated to individual bills or invoices: balances are
+  party-level, with the receivable (1100) and payable (2000) sides kept apart. A bill's
   "billed after credit" is what was due on the bill date; what is owed now is the
   party balance. An overpayment stays as an **Advance paid** (Supplier/Karigar)
   or **Customer credit** — it is never forced to zero.
