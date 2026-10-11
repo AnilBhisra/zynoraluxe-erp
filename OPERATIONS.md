@@ -13,13 +13,14 @@ Living document for whoever releases, checks or supports the system. Older
 | Karigar Metal custody, receipt-time allocation, Staff receipt against Karigar balance | `8f7fbc5`, `1aaee32`, `9e742f3` | live |
 | Job manufacturing total, Customer Gold, receipt-charge persistence | `adba980`, `027a8a2`, `9a2eff7` | live |
 | Phase 8B / 8C (Old Gold Exchange, migration 29), stickers, performance, Help | ≤ `1a10aec` | live (2026-10-02) |
-| Processed-rough batch return (4P / Laser) | `dd477b5` | live (2026-10-05) — **production = `dd477b5`, 29 migrations** |
-| Owner "Correct entry" framework (+ migration 30) — see `CORRECTIONS_MATRIX.md` | `1ea7c27`…(branch `feature/correct-entry-framework`) | **not deployed** |
+| Processed-rough batch return (4P / Laser) | `dd477b5` | live (2026-10-05) |
+| Owner "Correct entry" framework (+ migration 30) — see `CORRECTIONS_MATRIX.md` | `1ea7c27`…`4b71cab` | live (2026-10-06) — **production = `4b71cab`, 30 migrations** |
+| Payment balances: a second payment in an open form, refresh loop, advance labels, IST dates — see `PAYMENT_BALANCE_AUDIT.md` | branch `fix/payment-balance-refresh` | **not deployed** (code only, no migration) |
 
 ## 2. Migrations
 
-30 in `prisma/migrations/` on the Correct-entry branch; production has 29. The
-30th, `20261008090000_entry_corrections`, only adds 8 enum values
+30 in `prisma/migrations/`; production has all 30. The payment-balance fix adds
+none. The 30th, `20261008090000_entry_corrections`, only adds 8 enum values
 (`StockMovementType`: ROUGH_COUNT_CORRECTION_IN / _OUT, ROUGH_RETURN_REVERSAL_OUT,
 ROUGH_CONSUMED_REVERSAL_IN; `JewellerySequenceType`: ENTRY_CORRECTION;
 `CorrectionMode`: ENTRY_METADATA, ENTRY_QUANTITY; `CorrectionImpactKind`: RECORD).
@@ -78,7 +79,12 @@ Also check: no voucher with Σdebit ≠ Σcredit; Customer Gold tab "Difference"
 * **Stickers**: `/stickers` prints saved pieces only, never cost, and writes
   nothing.
 
-## 5. Release order for the Correct-entry release (not executed)
+## 5. Release order
+
+The payment-balance fix (code only) follows `PAYMENT_BALANCE_AUDIT.md` section 5.
+The Correct-entry release below was executed on 2026-10-06 and is kept for reference.
+
+### 5a. Correct-entry release (executed 2026-10-06)
 
 1. Verify `origin/main` and the live Vercel deployment are still `dd477b5`, and the
    branch is a fast-forward of it.
@@ -130,6 +136,11 @@ unless the Owner explicitly asks.
 
 ## 8. Known limitations
 
+* Payments are not allocated to individual bills or invoices: a party has one
+  running balance (Debit − Credit of Accounts Receivable + Payable). A bill's
+  "billed after credit" is what was due on the bill date; what is owed now is the
+  party balance. An overpayment stays as an **Advance paid** (Supplier/Karigar)
+  or **Customer credit** — it is never forced to zero.
 * Finished Stock lists up to 500 pieces without paging (its summary and CSV use
   the whole list).
 * Sticker reprints are not audit-logged (there is no general audit table).
