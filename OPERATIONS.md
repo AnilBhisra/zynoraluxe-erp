@@ -16,12 +16,22 @@ Living document for whoever releases, checks or supports the system. Older
 | Processed-rough batch return (4P / Laser) | `dd477b5` | live (2026-10-05) |
 | Owner "Correct entry" framework (+ migration 30) — see `CORRECTIONS_MATRIX.md` | `1ea7c27`…`4b71cab` | live (2026-10-06) — **production = `4b71cab`, 30 migrations** |
 | Payment balances: a second payment in an open form, refresh loop, advance labels, IST dates — see `PAYMENT_BALANCE_AUDIT.md` | `f3f9238`, `d7b1a75` | live (2026-10-11) — **production = `d7b1a75`, 30 migrations** |
-| Cash & Bank Book, Receivable & Payable (લેવાનું / આપવાનું), party summary, voucher page — see `CASH_BANK_BOOK.md` | branch `feature/cash-bank-book` | **not deployed** (code only, no migration) |
+| Cash & Bank Book, Receivable & Payable (લેવાનું / આપવાનું), party summary, voucher page — see `CASH_BANK_BOOK.md` | `b4aca43`, `366e5ce` | live (2026-10-11) — **production = `366e5ce`, 30 migrations** |
+| Clearing settlement (marketplace / provider payouts, reserve, FX, reclassification) — see `CLEARING_SETTLEMENT_DESIGN.md` | branch `feature/clearing-settlement` | **not deployed** — needs migration 31 |
 
 ## 2. Migrations
 
-30 in `prisma/migrations/`; production has all 30. The payment-balance fix adds
-none. The 30th, `20261008090000_entry_corrections`, only adds 8 enum values
+31 in `prisma/migrations/` on the clearing branch; production has 30. The 31st,
+`20261012090000_clearing_settlement` (checksum
+`f494ab452d2fa869ca59720a62bc7823ffdaf0aff28287ad8d9002a05567676d`, LF), is additive:
+a guard that refuses any conflicting account code, 7 new enums, 3 VoucherType values
+(`ADD VALUE IF NOT EXISTS`), `parties."clearingEnabled"` (default false), 5 new tables,
+11 system accounts (1150, 1160, 1170, 1180, 4300, 5600–5650) and 13 default line
+mappings. Rehearsed on a restore of the 2026-10-11 production backup: 67 of 69 tables
+byte-identical, `accounts` +11 rows (the 30 existing rows identical), `_prisma_migrations`
++1, no drift, second deploy a no-op. Apply it **before** the code.
+
+The 30th, `20261008090000_entry_corrections`, only adds 8 enum values
 (`StockMovementType`: ROUGH_COUNT_CORRECTION_IN / _OUT, ROUGH_RETURN_REVERSAL_OUT,
 ROUGH_CONSUMED_REVERSAL_IN; `JewellerySequenceType`: ENTRY_CORRECTION;
 `CorrectionMode`: ENTRY_METADATA, ENTRY_QUANTITY; `CorrectionImpactKind`: RECORD).
@@ -82,7 +92,25 @@ Also check: no voucher with Σdebit ≠ Σcredit; Customer Gold tab "Difference"
 
 ## 5. Release order
 
-The payment-balance fix (code only) follows `PAYMENT_BALANCE_AUDIT.md` section 5.
+The clearing-settlement release (migration 31, then code):
+
+1. Verify `origin/main` and Vercel Production are still `366e5ce` and the branch
+   fast-forwards it. Read-only checks: identity, 30 migrations, no unbalanced voucher,
+   reconciliation (section 3).
+2. Maintenance on (Vercel Firewall rule `MAINTENANCE`, operator); fresh `pg_dump`;
+   restore-test it on the scratch cluster; fingerprint every table.
+3. Print `DATABASE_URL` / `DIRECT_URL` (Prisma CLI reads `DIRECT_URL`) and confirm the
+   production project; `prisma migrate deploy` (31st only); check its checksum.
+4. Re-fingerprint: every pre-existing table identical except `accounts` (+11) and
+   `_prisma_migrations` (+1); every party `clearingEnabled = false`.
+5. Fast-forward push; wait for Vercel Production Ready at the new SHA.
+6. Read-only smoke: Dashboard Receivable / Payable unchanged; Cash & Bank Book Bank
+   ₹12,599; Settlements tab shows no provider (nothing is marked clearing). **Post
+   nothing** — marking ETSY clearing and reclassifying `SAL/2026-27/0003` are the
+   Owner's decisions afterwards.
+7. Reconciliation again; maintenance off.
+
+The payment-balance fix (code only) followed `PAYMENT_BALANCE_AUDIT.md` section 5.
 The Correct-entry release below was executed on 2026-10-06 and is kept for reference.
 
 ### 5a. Correct-entry release (executed 2026-10-06)
@@ -107,6 +135,10 @@ The Correct-entry release below was executed on 2026-10-06 and is kept for refer
    names the correctable receipt).
 
 ## 6. Rollback limits
+
+* Clearing release: code rollback to `366e5ce` is safe only until the first clearing
+  posting (party flag, settlement, reserve move, reclassification). Never roll the
+  migration back.
 
 * Never roll the schema back: enum values cannot be dropped safely and the
   migrations are additive.
