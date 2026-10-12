@@ -56,6 +56,21 @@ export const SYSTEM_ACCOUNT_CODES = {
   // (which stays reserved for opening balances and opening-stock corrections).
   INVENTORY_ADJUSTMENT_GAIN: "4200",
   INVENTORY_ADJUSTMENT_LOSS: "5500",
+  // Clearing settlement (CLEARING_SETTLEMENT_DESIGN.md). A marketplace /
+  // provider sale debits 1150 instead of 1100; its reserve sits in 1160. The
+  // others are the default accounts for settlement lines (Owner-editable
+  // mapping, clearing_account_mappings) — CA to confirm.
+  MARKETPLACE_CLEARING: "1150",
+  MARKETPLACE_RESERVE: "1160",
+  TAX_WITHHELD_RECEIVABLE: "1170",
+  SETTLEMENT_SUSPENSE: "1180",
+  FX_GAIN: "4300",
+  MARKETPLACE_FEES: "5600",
+  ADVERTISING: "5610",
+  PROCESSING_FEES: "5620",
+  SHIPPING_CHARGES: "5630",
+  SUBSCRIPTION_FEES: "5640",
+  FX_LOSS: "5650",
 } as const;
 
 /**

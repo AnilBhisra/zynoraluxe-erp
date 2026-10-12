@@ -90,6 +90,17 @@ const SYSTEM_ACCOUNTS: AccountSeed[] = [
     name: "Inventory Adjustment Loss",
     type: "EXPENSE",
   },
+  { code: SYSTEM_ACCOUNT_CODES.MARKETPLACE_CLEARING, name: "Marketplace Clearing Receivable", type: "ASSET" },
+  { code: SYSTEM_ACCOUNT_CODES.MARKETPLACE_RESERVE, name: "Marketplace Reserve / Held Funds", type: "ASSET" },
+  { code: SYSTEM_ACCOUNT_CODES.TAX_WITHHELD_RECEIVABLE, name: "TDS / TCS Withheld by Marketplace (Receivable)", type: "ASSET" },
+  { code: SYSTEM_ACCOUNT_CODES.SETTLEMENT_SUSPENSE, name: "Settlement Suspense (To Classify)", type: "ASSET" },
+  { code: SYSTEM_ACCOUNT_CODES.FX_GAIN, name: "Foreign Exchange Gain", type: "INCOME" },
+  { code: SYSTEM_ACCOUNT_CODES.MARKETPLACE_FEES, name: "Marketplace Commission & Platform Fees", type: "EXPENSE" },
+  { code: SYSTEM_ACCOUNT_CODES.ADVERTISING, name: "Advertising & Marketing", type: "EXPENSE" },
+  { code: SYSTEM_ACCOUNT_CODES.PROCESSING_FEES, name: "Payment Processing Fees", type: "EXPENSE" },
+  { code: SYSTEM_ACCOUNT_CODES.SHIPPING_CHARGES, name: "Shipping & Courier Charges", type: "EXPENSE" },
+  { code: SYSTEM_ACCOUNT_CODES.SUBSCRIPTION_FEES, name: "Subscription & Listing Fees", type: "EXPENSE" },
+  { code: SYSTEM_ACCOUNT_CODES.FX_LOSS, name: "Foreign Exchange Loss", type: "EXPENSE" },
 ];
 
 // Starter Metal/Purity master — standard, widely-known fineness

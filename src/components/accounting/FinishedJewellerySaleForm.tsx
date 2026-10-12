@@ -7,6 +7,7 @@ import { Field } from "@/components/ui/Field";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 import { PartySelect, type PartyOption } from "@/components/accounting/PartySelect";
+import { ClearingSaleFields } from "@/components/accounting/ClearingSaleFields";
 import { previewLineTotals, suggestGstTreatment, type GstTreatment } from "@/lib/accounting/previewMath";
 import { useFieldId } from "@/lib/utils/useFieldId";
 import { jewelleryTypeLabel } from "@/lib/jewellery/types";
@@ -187,12 +188,13 @@ export function FinishedJewellerySaleForm({
           >
             <option value="">Credit (pay later)</option>
             {paymentAccounts.map((pa) => (
-              <option key={pa.id} value={pa.id}>
+              <option key={pa.id} value={pa.id} disabled={selectedParty?.clearingEnabled === true}>
                 Paid now — {pa.name}
               </option>
             ))}
           </select>
         </div>
+        <ClearingSaleFields party={selectedParty} />
         <div className="flex flex-col gap-1.5">
           <label htmlFor={gstTreatmentSelectId} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
             GST

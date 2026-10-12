@@ -1211,6 +1211,55 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
     });
 
     sections.push({
+      id: "marketplace-settlements",
+      title: "Marketplace Settlements — Etsy, Amazon, PayPal, COD (ફક્ત Owner)",
+      ownerOnly: true,
+      keywords: ["settlement", "clearing", "etsy", "amazon", "paypal", "payout", "marketplace", "reserve", "fx", "tds", "tcs", "સેટલમેન્ટ"],
+      body: (
+        <div className="flex flex-col gap-4">
+          <BadgeRow>
+            <OwnerOnlyBadge />
+          </BadgeRow>
+          <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+            Etsy, Amazon, PayPal, courier COD કે dealer જેવા party ઘણા sales ના પૈસા ભેગા કરીને પછી એક સાથે (fees કાપીને) Bank માં મોકલે છે. આવા party ને <strong>Marketplace / clearing party</strong> તરીકે mark કરો — પછી દરેક sale એ party ના <strong>clearing balance</strong> (1150) માં જાય છે, Bank માં નહીં.
+          </p>
+          <SubHeading>1. Party ને marketplace બનાવો</SubHeading>
+          <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+            Accounting → <Btn>Settlements</Btn> → Settings → <Btn>Mark as marketplace / clearing</Btn>. પછીના નવા sales આપોઆપ clearing માં જશે. Sale વખતે <strong>&ldquo;Paid now&rdquo; ન પસંદ કરો</strong> — marketplace નો payout પછી settlement થી આવે છે. Dollar માં વેચાણ હોય તો Marketplace currency (USD) અને USD રકમ લખો.
+          </p>
+          <SubHeading>2. Payout આવે ત્યારે Settlement</SubHeading>
+          <ul className="list-disc space-y-1.5 pl-5 text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+            <li>Provider, currency, તારીખ, કયા Bank માં આવ્યા અને <strong>ખરેખર કેટલા આવ્યા</strong> (INR) લખો.</li>
+            <li>Marketplace એ કાપેલી દરેક રકમ જુદી લાઈન તરીકે ઉમેરો: commission, ads, processing fee, shipping, TDS/TCS, reserve, refund…</li>
+            <li><Btn>Preview</Btn> — પહેલાં/પછીનો clearing balance, દરેક ખાતું, FX ફરક અને આખું voucher દેખાશે. પછી જ <Btn>Confirm and save</Btn>.</li>
+            <li>કયા order ના પૈસા આવ્યા એ ખબર ન હોય તો કંઈ ન પસંદ કરો — એ <strong>Unallocated pooled settlement</strong> બને છે: ફક્ત provider નો કુલ balance ઘટે છે, કોઈ sale &ldquo;paid&rdquo; બનતું નથી. Statement પછી મળે તો <Btn>Allocate</Btn> થી નોંધી શકાય (પૈસા ફરીથી post થતા નથી).</li>
+          </ul>
+          <SubHeading>ઉદાહરણ</SubHeading>
+          <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+            25 piece ના ₹500 વેચાયા. Etsy એ ₹200 settle કર્યા: Bank માં ₹150 અને fee ₹50. Voucher: Dr Bank 150, Dr Marketplace fees 50, Cr Etsy clearing 200. બાકી લેવાના ₹300. Cash &amp; Bank Book માં ફક્ત ₹150 દેખાય છે.
+          </p>
+          <SubHeading>Reserve, FX, TDS/TCS</SubHeading>
+          <ul className="list-disc space-y-1.5 pl-5 text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+            <li><strong>Reserve / hold</strong> એ કંપનીના જ પૈસા છે (1160) — expense નથી. Release થાય ત્યારે પાછા clearing માં આવે છે.</li>
+            <li><strong>FX</strong>: sale નો INR value ક્યારેય બદલાતો નથી; payout નો rate જુદો હોય તો ફરક એક જ વાર FX gain (4300) / loss (5650) માં જાય છે.</li>
+            <li><strong>TDS/TCS</strong> 1170 (પાછું મળી શકે એવી asset) માં જાય છે, expense માં નહીં. કયું ખાતું વાપરવું એ CA સાથે નક્કી કરો (Settings → Account mapping).</li>
+          </ul>
+          <SubHeading>ભૂલ થઈ હોય તો</SubHeading>
+          <BadgeRow>
+            <CautionBadge />
+          </BadgeRow>
+          <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+            Settlement કદી edit/delete થતું નથી. <Btn>Reverse</Btn> (કારણ ઓછામાં ઓછા 10 અક્ષર) mirror voucher બનાવે છે — Bank, fees, reserve, FX, allocations બધું બરાબર પાછું. સૌથી નવું પહેલાં reverse કરવું પડે. Transactions list નું સામાન્ય <Btn>Cancel</Btn> settlement માટે ચાલતું નથી.
+          </p>
+          <SubHeading>જૂનું &ldquo;Paid now&rdquo; marketplace sale (દા.ત. ETSY ₹12,599)</SubHeading>
+          <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+            Settlements → &ldquo;Marketplace sales recorded as paid straight into Cash / Bank&rdquo; માં <Btn>Preview reclassification</Btn> → <Btn>Confirm</Btn>. ફક્ત receipt ખસે છે (Dr clearing / Cr Bank); sale, GST, revenue, COGS, stock બદલાતા નથી. પછી સાચો payout settlement તરીકે નોંધો.
+          </p>
+        </div>
+      ),
+    });
+
+    sections.push({
       id: "settings",
       title: "Settings (ફક્ત Owner)",
       ownerOnly: true,

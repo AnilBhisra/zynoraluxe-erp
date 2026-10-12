@@ -28,6 +28,10 @@ const EXPECTED_STAFF_VISIBLE: Record<VoucherType, boolean | "follows reversed vo
   // Company's cost moved to COGS: both Owner-only.
   CUSTOMER_JEWELLERY_BILL: false,
   CUSTOMER_JEWELLERY_DELIVERY: false,
+  // Clearing settlements carry fees, FX and provider balances: Owner only.
+  CLEARING_SETTLEMENT: false,
+  CLEARING_RESERVE: false,
+  CLEARING_RECLASS: false,
 };
 
 type Where = Record<string, unknown>;

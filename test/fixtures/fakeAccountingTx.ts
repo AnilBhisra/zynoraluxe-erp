@@ -114,6 +114,17 @@ export function createFakeAccountingTx() {
         for (const d of data) journalEntries.push({ id: nextId("je"), ...d });
         return { count: data.length };
       },
+      findMany: async ({ where }: { where?: Row } = {}) =>
+        journalEntries.filter((e) => Object.entries(where ?? {}).every(([k, v]) => e[k] === v)),
+    },
+    // Marketplace clearing (no clearing party exists in these fixtures, so the
+    // sub-ledger stays empty; the real behaviour is covered by clearing.db.test.ts).
+    clearingDocument: {
+      findFirst: async () => null,
+    },
+    clearingEntry: {
+      findMany: async () => [],
+      createMany: async ({ data }: { data: Row[] }) => ({ count: data.length }),
     },
     invoiceLine: {
       createMany: async ({ data }: { data: Row[] }) => {

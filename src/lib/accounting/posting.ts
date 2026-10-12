@@ -14,6 +14,7 @@ import { getFinancialYearLabel, indiaBusinessDate } from "@/lib/accounting/finan
 import { computeInvoiceLineTotals, splitGstAmount } from "@/lib/accounting/gst";
 import { Decimal, type DecimalInput, round2, ZERO } from "@/lib/accounting/money";
 import { nextVoucherNumber } from "@/lib/accounting/numbering";
+import { clearingAccountIds, mirrorClearingEntries, recordClearingEntry } from "@/lib/accounting/clearingLedger";
 
 export class PostingError extends Error {}
 
@@ -378,6 +379,13 @@ export async function postSale(
      * caller (plain accounting-only Sale) omits this and behaves exactly
      * as before. */
     additionalLines?: JournalLineInput[];
+    /**
+     * Clearing sale (to a marketplace / provider party): the currency the
+     * marketplace shows the sale in and the amount in it. Optional for INR
+     * (the INR total is used); required for any other currency. Ignored for
+     * ordinary parties — whose sales stay exactly as before.
+     */
+    clearing?: { currencyCode: string; foreignAmount?: DecimalInput | null } | null;
   }
 ) {
   if (input.lines.length === 0) {
@@ -390,7 +398,42 @@ export async function postSale(
     throw new PostingError("Sale total must be greater than zero.");
   }
 
-  const voucher = await createVoucherHeader(tx, input, "SALE", {
+  // A clearing-enabled party (Etsy, Amazon, PayPal, COD courier …) collects
+  // for us and pays out in batches: its sale debits 1150 Marketplace Clearing,
+  // never Cash/Bank and never Accounts Receivable. See CLEARING_SETTLEMENT_DESIGN.md.
+  const party = await tx.party.findUnique({ where: { id: input.partyId }, select: { clearingEnabled: true, name: true } });
+  const isClearing = party?.clearingEnabled === true;
+  let clearingCurrency = "INR";
+  let clearingFc = totalAmount;
+  if (isClearing) {
+    if (input.paymentAccountId) {
+      throw new PostingError(
+        `${party?.name ?? "This party"} is a marketplace / clearing party: its sales are paid through a settlement (Accounting → Settlements), not "Paid now".`
+      );
+    }
+    clearingCurrency = (input.clearing?.currencyCode || "INR").trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(clearingCurrency)) throw new PostingError("Choose a 3-letter currency code for the marketplace amount.");
+    const fcRaw = input.clearing?.foreignAmount;
+    if (clearingCurrency === "INR") {
+      if (fcRaw !== null && fcRaw !== undefined && String(fcRaw).trim() !== "" && !new Decimal(String(fcRaw)).equals(totalAmount)) {
+        throw new PostingError("For an INR marketplace sale the marketplace amount is the sale total.");
+      }
+    } else {
+      if (fcRaw === null || fcRaw === undefined || String(fcRaw).trim() === "" || !new Decimal(String(fcRaw)).greaterThan(0)) {
+        throw new PostingError(`Enter the sale amount in ${clearingCurrency} as the marketplace shows it.`);
+      }
+      clearingFc = new Decimal(String(fcRaw)).toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
+    }
+  } else if (input.clearing && (input.clearing.currencyCode || "INR").toUpperCase() !== "INR") {
+    throw new PostingError("Only a marketplace / clearing party's sale records a foreign-currency amount.");
+  }
+  const receivableCode = isClearing ? SYSTEM_ACCOUNT_CODES.MARKETPLACE_CLEARING : SYSTEM_ACCOUNT_CODES.ACCOUNTS_RECEIVABLE;
+  const header =
+    isClearing && clearingCurrency !== "INR"
+      ? { ...input, currencyCode: clearingCurrency, exchangeRate: totalAmount.dividedBy(clearingFc).toDecimalPlaces(4, Decimal.ROUND_HALF_UP) }
+      : input;
+
+  const voucher = await createVoucherHeader(tx, header, "SALE", {
     amount: totalAmount,
     partyId: input.partyId,
     paymentAccountId: input.paymentAccountId,
@@ -403,10 +446,10 @@ export async function postSale(
 
   const lines: JournalLineInput[] = [
     {
-      accountCode: SYSTEM_ACCOUNT_CODES.ACCOUNTS_RECEIVABLE,
+      accountCode: receivableCode,
       partyId: input.partyId,
       debit: totalAmount,
-      description: "Sale",
+      description: isClearing ? `Sale (marketplace clearing, ${clearingCurrency} ${clearingFc.toFixed(2)})` : "Sale",
     },
     { accountCode: SYSTEM_ACCOUNT_CODES.SALES_INCOME, credit: totalTaxable, description: "Sale" },
     { accountCode: SYSTEM_ACCOUNT_CODES.OUTPUT_CGST, credit: cgst, description: "Output CGST" },
@@ -440,6 +483,9 @@ export async function postSale(
   }
 
   await insertBalancedJournalLines(tx, voucher.id, lines);
+  if (isClearing) {
+    await recordClearingEntry(tx, { partyId: input.partyId, currencyCode: clearingCurrency, kind: "SALE", fc: clearingFc, inr: totalAmount, voucherId: voucher.id });
+  }
   return voucher;
 }
 
@@ -627,6 +673,18 @@ export async function cancelVoucher(
   if (original.journalEntries.length === 0) {
     throw new PostingError("Original voucher has no journal entries to reverse.");
   }
+  const clearing = await clearingAccountIds(tx);
+  // A sale whose Cash/Bank receipt was reclassified to clearing cannot be
+  // reversed on its own: that would take the receipt out of Cash/Bank twice.
+  if (original.voucherType === "SALE" && clearing.available) {
+    const reclass = await tx.clearingDocument.findFirst({
+      where: { sourceVoucherId: original.id, status: "POSTED" },
+      include: { voucher: { select: { voucherNumber: true } } },
+    });
+    if (reclass) {
+      throw new PostingError(`Reverse the reclassification ${reclass.voucher.voucherNumber} (Accounting → Settlements) before cancelling this sale.`);
+    }
+  }
 
   const now = new Date();
   // Claim the cancellation first, only while the voucher is still POSTED. A
@@ -684,6 +742,13 @@ export async function cancelVoucher(
       description: `Reversal: ${entry.description ?? ""}`.trim(),
     })),
   });
+
+  // A voucher that moved marketplace clearing (1150 / 1160) also moved the
+  // clearing sub-ledger: mirror those entries too, once, so it stays equal to
+  // the ledger.
+  if (original.journalEntries.some((e) => e.accountId === clearing.available || e.accountId === clearing.reserve)) {
+    await mirrorClearingEntries(tx, original.id, reversal.id);
+  }
 
   return reversal;
 }

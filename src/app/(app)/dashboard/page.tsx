@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 
 import { requireUser } from "@/lib/auth/dal";
 import { getCashBankSummary, getReceivablePayableSummary } from "@/lib/accounting/reports";
+import { getProviderBalances } from "@/lib/accounting/clearingReports";
+import { ZERO } from "@/lib/accounting/money";
 import { getDashboardDiamondSummary } from "@/lib/diamond/reports";
 import { getFinishedJewelleryStockSummary, getPendingJewelleryJobsCount } from "@/lib/jewellery/reports";
 import { isUnavailable } from "@/lib/jewellery/carryingCost";
@@ -28,6 +30,10 @@ function carat(value: { toFixed: (n: number) => string }) {
 export default async function DashboardPage() {
   const user = await requireUser();
   const isOwner = user.role === "OWNER";
+  // Marketplace clearing is Owner-only money: never queried for Staff.
+  const clearing = isOwner ? await getProviderBalances() : null;
+  const clearingTotal = clearing ? clearing.reduce((sum, p) => sum.plus(p.totalInr), ZERO) : null;
+  const clearingReserve = clearing ? clearing.reduce((sum, p) => sum.plus(p.reserveInr), ZERO) : null;
   const [cashBank, receivablePayable, diamondSummary, pendingJewelleryJobs, draftCostingsCount, finishedStock] =
     await Promise.all([
       getCashBankSummary(),
@@ -64,6 +70,13 @@ export default async function DashboardPage() {
           value={money(receivablePayable.payable)}
           detail={receivablePayable.customerCredit.isZero() ? undefined : `Customer credit (separate): ${money(receivablePayable.customerCredit)}`}
         />
+        {isOwner && clearing && clearing.length > 0 && clearingTotal ? (
+          <SummaryCard
+            label="Marketplace clearing (to receive)"
+            value={money(clearingTotal)}
+            detail={clearingReserve && !clearingReserve.isZero() ? `incl. reserve / held ${money(clearingReserve)} · separate from Receivable` : "Separate from Receivable"}
+          />
+        ) : null}
         <SummaryCard label="Rough stock" value={carat(diamondSummary.roughStockCarat)} unit="carat" />
         <SummaryCard label="Polished stock" value={carat(diamondSummary.polishedStockCarat)} unit="carat" />
         <SummaryCard label="Material with Karigar" value={carat(diamondSummary.materialWithKarigarCarat)} unit="carat" />

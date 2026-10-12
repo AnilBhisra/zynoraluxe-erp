@@ -8,6 +8,12 @@ import { ZERO } from "@/lib/accounting/money";
 import { getCashBookPage } from "@/lib/accounting/cashBankBook";
 import { defaultCashBookDates, parseCashBookFilters } from "@/lib/accounting/cashBankBookFilters";
 import { getReceivablePayableBook } from "@/lib/accounting/receivablePayable";
+import { formatRupees } from "@/lib/accounting/partyBalance";
+import { CLEARING_LINE_LABELS, reclassifyBlock } from "@/lib/accounting/clearing";
+import { parseClearingReportFilters } from "@/lib/accounting/clearingReportFilters";
+import { allocatableSales, getClearingReport, getProviderBalances, listClearingDocuments, reclassifyCandidates } from "@/lib/accounting/clearingReports";
+import { ClearingReportView } from "@/components/accounting/ClearingReportView";
+import { ClearingSettings, ReclassifyPanel, ReserveForm, SettlementForm, SettlementList, type SaleOption } from "@/components/accounting/SettlementsTab";
 import {
   getCashBankSummary,
   getGstSummary,
@@ -58,7 +64,7 @@ type SearchParams = Record<string, string | string[] | undefined> & {
   new?: string;
 };
 
-const TABS = ["transactions", "parties", "ledger", "cash-bank", "receivables", "reports"] as const;
+const TABS = ["transactions", "parties", "ledger", "cash-bank", "receivables", "settlements", "reports"] as const;
 type Tab = (typeof TABS)[number];
 
 function TabLink({ tab, label, active }: { tab: Tab; label: string; active: boolean }) {
@@ -123,6 +129,7 @@ export default async function AccountingPage({
         <TabLink tab="ledger" label="Ledger" active={tab === "ledger"} />
         {user.role === "OWNER" ? <TabLink tab="cash-bank" label="Cash & Bank Book" active={tab === "cash-bank"} /> : null}
         <TabLink tab="receivables" label="લેવાનું / આપવાનું" active={tab === "receivables"} />
+        {user.role === "OWNER" ? <TabLink tab="settlements" label="Settlements" active={tab === "settlements"} /> : null}
         <TabLink tab="reports" label="Reports" active={tab === "reports"} />
       </nav>
 
@@ -146,6 +153,14 @@ export default async function AccountingPage({
         )
       ) : null}
       {tab === "receivables" ? <ReceivablesTabContent isOwner={user.role === "OWNER"} /> : null}
+      {tab === "settlements" ? (
+        // Owner only, decided on the server before any clearing figure is read.
+        user.role === "OWNER" ? (
+          <SettlementsTabContent params={params} />
+        ) : (
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">Owner only.</p>
+        )
+      ) : null}
       {tab === "reports" ? (
         <ReportsTabContent
           report={(params.report as ReportKey) ?? "purchases"}
@@ -213,6 +228,7 @@ async function TransactionsTabContent({
           type: p.type,
           stateCode: p.stateCode,
           balance: (partyBalances.get(p.id) ?? ZERO).toFixed(2),
+          clearingEnabled: p.clearingEnabled,
         }))}
         paymentAccounts={paymentAccounts.map((p) => ({
           id: p.id,
@@ -360,6 +376,149 @@ async function CashBankBookTabContent({ params }: { params: SearchParams }) {
   const filters = parseCashBookFilters(params, defaultCashBookDates(await getCompanyFySettings()));
   const data = await getCashBookPage(filters);
   return <CashBankBookView filters={filters} data={data} />;
+}
+
+/** Owner only — the caller checks the role before rendering this. */
+async function SettlementsTabContent({ params }: { params: SearchParams }) {
+  const view = params.view === "report" ? "report" : "work";
+  const providerParties = await prisma.party.findMany({ where: { clearingEnabled: true }, orderBy: { name: "asc" }, select: { id: true, name: true, isActive: true } });
+  const subNav = (
+    <nav aria-label="Settlements" className="flex flex-wrap gap-2 text-sm">
+      <a href="/accounting?tab=settlements" className={view === "work" ? "font-semibold underline" : "underline"}>Post &amp; manage</a>
+      <a href="/accounting?tab=settlements&view=report" className={view === "report" ? "font-semibold underline" : "underline"}>Clearing Settlements report</a>
+    </nav>
+  );
+  if (view === "report") {
+    const filters = parseClearingReportFilters(params, defaultCashBookDates(await getCompanyFySettings()));
+    const [rows, docs] = await Promise.all([getClearingReport(filters), listClearingDocuments({ ...filters, take: 500 })]);
+    return (
+      <div className="flex min-w-0 flex-col gap-4">
+        {subNav}
+        <ClearingReportView filters={filters} rows={rows} docs={docs} providers={providerParties} />
+      </div>
+    );
+  }
+  const [providers, docs, paymentAccounts, otherParties, mappings, accounts, candidates] = await Promise.all([
+    getProviderBalances(),
+    listClearingDocuments({ take: 100 }),
+    prisma.paymentAccount.findMany({ where: { isActive: true }, orderBy: { name: "asc" }, select: { id: true, name: true } }),
+    prisma.party.findMany({ where: { clearingEnabled: false, isActive: true }, orderBy: { name: "asc" }, select: { id: true, name: true } }),
+    prisma.clearingAccountMapping.findMany({ include: { account: { select: { code: true, name: true } } } }),
+    prisma.account.findMany({
+      where: { isActive: true, type: { in: ["ASSET", "LIABILITY", "INCOME", "EXPENSE"] }, paymentAccount: null, code: { notIn: ["1150", "1160", "1100", "2000"] } },
+      orderBy: { code: "asc" },
+      select: { id: true, code: true, name: true },
+    }),
+    reclassifyCandidates(),
+  ]);
+  const blocks = await Promise.all(candidates.map((c) => prisma.$transaction((tx) => reclassifyBlock(tx, c.voucher_id))));
+  // Optional allocation choices, per provider and currency with a posted settlement still unallocated.
+  const keys = [...new Set(docs.filter((d) => d.kind === "SETTLEMENT" && d.status === "POSTED").map((d) => `${d.partyId}|${d.currencyCode}`))];
+  const salesByKey: Record<string, SaleOption[]> = {};
+  for (const k of keys) {
+    const [partyId, currencyCode] = k.split("|");
+    salesByKey[k] = (await allocatableSales(partyId, currencyCode)).map((s) => ({
+      voucherId: s.voucher_id,
+      voucherNumber: s.voucher_number,
+      date: new Date(s.bdate).toISOString().slice(0, 10),
+      openFc: Number(s.open_fc).toFixed(2),
+    }));
+  }
+  const t = (d: { toFixed: (n: number) => string }) => d.toFixed(2);
+  return (
+    <div className="flex min-w-0 flex-col gap-5" data-testid="settlements-tab">
+      {subNav}
+      <section className="min-w-0 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4" data-testid="provider-balances">
+        <h3 className="mb-2 text-sm font-semibold">Marketplace / provider clearing balances</h3>
+        {providers.length === 0 ? (
+          <p className="text-xs text-zinc-500">No clearing party yet — mark one under Settings below.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[640px] text-xs">
+              <thead className="text-left text-zinc-500">
+                <tr className="[&>th]:px-2 [&>th]:py-1"><th>Provider</th><th>Cur.</th><th className="text-right">Available</th><th className="text-right">Reserve / held</th><th className="text-right">Total (INR)</th><th className="text-right">Unallocated settled</th><th>Next availability</th></tr>
+              </thead>
+              <tbody>
+                {providers.map((p) => (
+                  <tr key={`${p.partyId}|${p.currencyCode}`} className="border-t border-[var(--border)] [&>td]:px-2 [&>td]:py-1.5" data-testid="provider-row">
+                    <td>{p.partyName}</td>
+                    <td>{p.currencyCode}</td>
+                    <td className="text-right" data-testid="provider-available">{p.currencyCode === "INR" ? "" : `${p.currencyCode} ${t(p.availableFc)} · `}{formatRupees(t(p.availableInr))}</td>
+                    <td className="text-right">{p.currencyCode === "INR" ? "" : `${p.currencyCode} ${t(p.reserveFc)} · `}{formatRupees(t(p.reserveInr))}</td>
+                    <td className="text-right font-medium">{formatRupees(t(p.totalInr))}</td>
+                    <td className="text-right">{p.currencyCode} {t(p.unallocatedFc)}</td>
+                    <td>{p.nextAvailableOn ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+      <SettlementForm
+        providers={providers.map((p) => ({
+          partyId: p.partyId,
+          partyName: p.partyName,
+          currencyCode: p.currencyCode,
+          availableFc: t(p.availableFc),
+          availableInr: t(p.availableInr),
+          reserveFc: t(p.reserveFc),
+          reserveInr: t(p.reserveInr),
+          totalInr: t(p.totalInr),
+          unallocatedFc: t(p.unallocatedFc),
+          nextAvailableOn: p.nextAvailableOn,
+          lastSettlementDate: p.lastSettlementDate,
+        }))}
+        clearingParties={providerParties.filter((p) => p.isActive).map((p) => ({ id: p.id, name: p.name }))}
+        paymentAccounts={paymentAccounts}
+      />
+      <ReserveForm clearingParties={providerParties.filter((p) => p.isActive).map((p) => ({ id: p.id, name: p.name }))} />
+      <SettlementList
+        docs={docs.map((d) => ({
+          ...d,
+          receivedInr: t(d.receivedInr),
+          receivedFc: t(d.receivedFc),
+          availableFc: t(d.availableFc),
+          availableInr: t(d.availableInr),
+          reserveFc: t(d.reserveFc),
+          deductionsInr: t(d.deductionsInr),
+          fxDifferenceInr: t(d.fxDifferenceInr),
+          availableAfterFc: t(d.availableAfterFc),
+          availableAfterInr: t(d.availableAfterInr),
+          allocatedFc: t(d.allocatedFc),
+          payoutRate: undefined as never,
+          lines: d.lines.map((l) => ({ ...l, fc: t(l.fc), inr: t(l.inr) })),
+          allocations: d.allocations.map((a) => ({ ...a, fc: t(a.fc) })),
+        }))}
+        salesByKey={salesByKey}
+      />
+      <ReclassifyPanel
+        rows={candidates.map((c, i) => ({
+          voucherId: c.voucher_id,
+          voucherNumber: c.voucher_number,
+          date: new Date(c.bdate).toISOString().slice(0, 10),
+          partyName: c.party_name,
+          amount: Number(c.amount).toFixed(2),
+          accountName: c.account_name,
+          block: blocks[i],
+        }))}
+      />
+      <ClearingSettings
+        clearingParties={providerParties.map((p) => ({ id: p.id, name: p.name }))}
+        otherParties={otherParties}
+        mappings={mappings
+          .sort((a, b) => a.lineType.localeCompare(b.lineType))
+          .map((m) => ({
+            lineType: m.lineType,
+            label: CLEARING_LINE_LABELS[m.lineType],
+            accountId: m.accountId,
+            accountLabel: `${m.account.code} ${m.account.name}`,
+            fixed: m.lineType === "RESERVE_HOLD" || m.lineType === "RESERVE_RELEASE",
+          }))}
+        accounts={accounts.map((a) => ({ id: a.id, label: `${a.code} ${a.name}` }))}
+      />
+    </div>
+  );
 }
 
 async function ReceivablesTabContent({ isOwner }: { isOwner: boolean }) {

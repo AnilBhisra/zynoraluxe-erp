@@ -424,6 +424,10 @@ export type ProfitAndLoss = {
   otherExpenses: { code: string; name: string; amount: Decimal }[];
   /** Sum of otherExpenses. */
   otherExpensesTotal: Decimal;
+  /** Every INCOME account other than Sales and Sales Returns (FX gain 4300,
+   * inventory adjustment gain 4200 …), by account; non-zero only. */
+  otherIncome: { code: string; name: string; amount: Decimal }[];
+  otherIncomeTotal: Decimal;
   /** salesIncome - purchases - businessExpenses - otherExpensesTotal. Provisional: rough/metal
    * purchases posted through the generic Purchases account (non-inventory
    * misc procurement only — Metal/Rough purchases post to their own
@@ -507,7 +511,26 @@ export async function getProfitAndLoss(filters?: {
   }
   const otherExpensesTotal = round2(otherExpenses.reduce((sum, e) => sum.plus(e.amount), ZERO));
 
-  const provisionalProfit = round2(salesIncome.minus(purchases).minus(businessExpenses).minus(otherExpensesTotal));
+  // Same classification for income: anything credited to an INCOME account
+  // other than Sales / Sales Returns (FX gain, inventory gain …) adds to profit.
+  const incomeAccounts = await prisma.account.findMany({
+    where: { type: "INCOME" },
+    select: { id: true, code: true, name: true },
+    orderBy: { code: "asc" },
+  });
+  const otherIncome: ProfitAndLoss["otherIncome"] = [];
+  for (const account of incomeAccounts) {
+    if (account.code === SYSTEM_ACCOUNT_CODES.SALES_INCOME || account.code === SYSTEM_ACCOUNT_CODES.SALES_RETURNS) continue;
+    const { net } = await sumDebitCredit({
+      accountId: account.id,
+      voucher: { date: { gte: filters?.dateFrom, lte: filters?.dateTo } },
+    });
+    const amount = round2(net.negated());
+    if (!amount.isZero()) otherIncome.push({ code: account.code, name: account.name, amount });
+  }
+  const otherIncomeTotal = round2(otherIncome.reduce((sum, e) => sum.plus(e.amount), ZERO));
+
+  const provisionalProfit = round2(salesIncome.minus(purchases).minus(businessExpenses).minus(otherExpensesTotal).plus(otherIncomeTotal));
 
   // Sales Returns and the two new expense accounts are all debit-normal in
   // how they're actually posted here (Dr on return/loss) — read as-is, no
@@ -522,7 +545,7 @@ export async function getProfitAndLoss(filters?: {
     : ZERO;
   const damagedJewelleryLoss = round2(await netFor(SYSTEM_ACCOUNT_CODES.DAMAGED_JEWELLERY_LOSS));
   const netProfit = round2(
-    grossProfit.minus(damagedJewelleryLoss).minus(purchases).minus(businessExpenses).minus(otherExpensesTotal)
+    grossProfit.minus(damagedJewelleryLoss).minus(purchases).minus(businessExpenses).minus(otherExpensesTotal).plus(otherIncomeTotal)
   );
 
   const linkedSaleAgg = await prisma.finishedJewellerySale.aggregate({
@@ -549,6 +572,8 @@ export async function getProfitAndLoss(filters?: {
     businessExpenses,
     otherExpenses,
     otherExpensesTotal,
+    otherIncome,
+    otherIncomeTotal,
     provisionalProfit,
     grossSales,
     salesReturns,

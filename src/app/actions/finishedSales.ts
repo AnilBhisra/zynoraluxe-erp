@@ -42,6 +42,13 @@ function readJsonArray(formData: FormData, field: string): unknown[] {
   }
 }
 
+/** Marketplace / clearing sale fields (used only when the customer is a clearing party; see postSale). */
+function clearingFromForm(formData: FormData) {
+  const currencyCode = String(formData.get("clearingCurrency") ?? "").trim();
+  if (!currencyCode) return null;
+  return { currencyCode, foreignAmount: String(formData.get("clearingAmount") ?? "").trim() || null };
+}
+
 function revalidateFinishedSales() {
   revalidatePath("/jewellery-jobs");
   revalidatePath("/accounting");
@@ -191,6 +198,7 @@ export async function createFinishedJewellerySaleAction(
           customerId: data.customerId,
           paymentAccountId: data.paymentAccountId || null,
           gstTreatment: data.gstTreatment,
+          clearing: clearingFromForm(formData),
           items: data.items.map((i) => ({
             finishedJewelleryId: i.finishedJewelleryId,
             sellingPrice: i.sellingPrice,

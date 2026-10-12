@@ -22,6 +22,7 @@ import {
   type InvoiceLineInput,
   type JournalLineInput,
 } from "@/lib/accounting/posting";
+import { clearingAccountIds, recordClearingEntry } from "@/lib/accounting/clearingLedger";
 import { nextJewelleryCode } from "@/lib/jewellery/numbering";
 import { carryingFinishedPieceCost, carryingFinishedPieceCosts, isUnavailable, CARRYING_COST_UNAVAILABLE_MESSAGE } from "@/lib/jewellery/carryingCost";
 
@@ -131,6 +132,8 @@ export async function postFinishedJewellerySale(
       gstTreatment: GstTreatment;
       paymentAccountId?: string | null;
       items: FinishedSaleItemInput[];
+      /** A sale to a marketplace / clearing party: the marketplace's currency and amount (see postSale). */
+      clearing?: { currencyCode: string; foreignAmount?: DecimalInput | null } | null;
     }
 ) {
   if (input.items.length === 0) {
@@ -248,6 +251,7 @@ export async function postFinishedJewellerySale(
     gstTreatment: input.gstTreatment,
     lines,
     additionalLines,
+    clearing: input.clearing ?? null,
   });
 
   const saleCode = await nextJewelleryCode(tx, "FINISHED_JEWELLERY_SALE");
@@ -502,8 +506,15 @@ export async function returnFinishedJewelleryItems(
   if (igst.greaterThan(0)) {
     journalLines.push({ accountCode: SYSTEM_ACCOUNT_CODES.OUTPUT_IGST, debit: igst, description: `Return ${returnCode}` });
   }
+  // A marketplace / clearing sale debited 1150 Marketplace Clearing, so its
+  // return reduces that clearing balance (once), never Accounts Receivable.
+  const clearingIds = await clearingAccountIds(tx);
+  const saleVoucherLines = clearingIds.available
+    ? await tx.journalEntry.findMany({ where: { voucherId: sale.voucherId, accountId: clearingIds.available } })
+    : [];
+  const isClearingSale = saleVoucherLines.length > 0;
   journalLines.push({
-    accountCode: SYSTEM_ACCOUNT_CODES.ACCOUNTS_RECEIVABLE,
+    accountCode: isClearingSale ? SYSTEM_ACCOUNT_CODES.MARKETPLACE_CLEARING : SYSTEM_ACCOUNT_CODES.ACCOUNTS_RECEIVABLE,
     partyId: sale.customerId,
     credit: returnedTotal,
     description: `Return ${returnCode}`,
@@ -538,6 +549,15 @@ export async function returnFinishedJewelleryItems(
   }
 
   await insertBalancedJournalLines(tx, voucher.id, journalLines);
+  if (isClearingSale) {
+    // The return in the sale's own clearing currency, in proportion (the whole
+    // sale amount when everything comes back).
+    const saleEntry = await tx.clearingEntry.findFirstOrThrow({ where: { voucherId: sale.voucherId, kind: "SALE" } });
+    const saleInr = new Decimal(saleEntry.inrAmount);
+    const saleFc = new Decimal(saleEntry.fcAmount);
+    const fc = returnedTotal.equals(saleInr) ? saleFc : saleFc.times(returnedTotal).dividedBy(saleInr);
+    await recordClearingEntry(tx, { partyId: sale.customerId, currencyCode: saleEntry.currencyCode, kind: "SALE_RETURN", fc: fc.negated(), inr: returnedTotal.negated(), voucherId: voucher.id });
+  }
 
   const returnRow = await tx.finishedJewelleryReturn.create({
     data: {

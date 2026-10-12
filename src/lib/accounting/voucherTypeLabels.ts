@@ -20,4 +20,7 @@ export const VOUCHER_TYPE_LABELS: Record<VoucherType, string> = {
   CORRECTION: "Correction",
   CUSTOMER_JEWELLERY_BILL: "Customer Jewellery Bill",
   CUSTOMER_JEWELLERY_DELIVERY: "Customer Jewellery Delivery",
+  CLEARING_SETTLEMENT: "Clearing Settlement",
+  CLEARING_RESERVE: "Clearing Reserve Move",
+  CLEARING_RECLASS: "Receipt Reclassified to Clearing",
 };

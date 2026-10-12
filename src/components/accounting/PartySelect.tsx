@@ -11,6 +11,8 @@ export type PartyOption = {
   stateCode: string | null;
   /** Current AR+AP balance (Debit − Credit, two decimals) — see classifyPartyBalance. Optional. */
   balance?: string;
+  /** A marketplace / clearing party (its sales post to clearing, paid by settlements). */
+  clearingEnabled?: boolean;
 };
 
 /** A searchable party picker. Renders a real <select> (name={name}) so it

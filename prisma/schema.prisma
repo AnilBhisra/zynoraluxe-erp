@@ -130,6 +130,12 @@ model User {
   customerDeliveriesReversed     CustomerJewelleryDelivery[] @relation("CustomerJewelleryDeliveryReversedBy")
   customerGoldMixApprovals       JewelleryJob[]              @relation("JewelleryJobCustomerGoldMixApprovedBy")
 
+  clearingDocumentsCreated  ClearingDocument[]       @relation("ClearingDocumentCreatedBy")
+  clearingDocumentsReversed ClearingDocument[]       @relation("ClearingDocumentReversedBy")
+  clearingAllocationsMade   ClearingAllocation[]     @relation("ClearingAllocationCreatedBy")
+  clearingAllocationsUndone ClearingAllocation[]     @relation("ClearingAllocationReversedBy")
+  clearingMappingsUpdated   ClearingAccountMapping[] @relation("ClearingMappingUpdatedBy")
+
   @@map("users")
 }
 
@@ -201,6 +207,12 @@ model Party {
 
   isActive Boolean @default(true)
 
+  // A marketplace / payment provider / dealer that collects for many sales and
+  // pays out in batches (Etsy, Amazon, PayPal, courier COD …). Its sales debit
+  // 1150 Marketplace Clearing instead of 1100, and it is settled through
+  // Accounting → Settlements. See CLEARING_SETTLEMENT_DESIGN.md.
+  clearingEnabled Boolean @default(false)
+
   createdByUserId String?
   createdBy       User?   @relation("PartyCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   updatedByUserId String?
@@ -237,6 +249,8 @@ model Party {
   customerJewelleryBills      CustomerJewelleryBill[]     @relation("CustomerJewelleryBillCustomer")
   customerJewelleryDeliveries CustomerJewelleryDelivery[] @relation("CustomerJewelleryDeliveryCustomer")
   customerOwnedPieces         FinishedJewellery[]         @relation("FinishedJewelleryCustomer")
+  clearingDocuments           ClearingDocument[]          @relation("ClearingDocumentParty")
+  clearingEntries             ClearingEntry[]             @relation("ClearingEntryParty")
 
   @@index([type])
   @@index([name])
@@ -268,6 +282,9 @@ model Account {
   journalEntries JournalEntry[]
   paymentAccount PaymentAccount?
 
+  clearingMappings      ClearingAccountMapping[] @relation("ClearingMappingAccount")
+  clearingDocumentLines ClearingDocumentLine[]   @relation("ClearingLineAccount")
+
   @@map("accounts")
 }
 
@@ -295,6 +312,8 @@ model PaymentAccount {
   updatedAt DateTime @updatedAt
 
   vouchers Voucher[]
+
+  clearingDocuments ClearingDocument[] @relation("ClearingDocumentPaymentAccount")
 
   @@map("payment_accounts")
 }
@@ -361,6 +380,14 @@ enum VoucherType {
   // Company cost moved to COGS when that jewellery is delivered.
   CUSTOMER_JEWELLERY_BILL
   CUSTOMER_JEWELLERY_DELIVERY
+  // Clearing settlement (CLEARING_SETTLEMENT_DESIGN.md): a marketplace / provider
+  // payout with its deductions; a move between available clearing and the
+  // provider's reserve; an audited reclassification of a sale receipt that was
+  // wrongly debited to Cash/Bank instead of clearing. Never cancelled through
+  // the generic voucher Cancel — they are reversed from Accounting → Settlements.
+  CLEARING_SETTLEMENT
+  CLEARING_RESERVE
+  CLEARING_RECLASS
 }
 
 // Concurrency-safe voucher numbering: one row per (type, financial year),
@@ -472,6 +499,11 @@ model Voucher {
   customerGoldPurchaseReversal      CustomerGoldPurchase?      @relation("CustomerGoldPurchaseReversalVoucher")
   customerJewelleryDeliveryCogs     CustomerJewelleryDelivery? @relation("CustomerJewelleryDeliveryCogsVoucher")
   customerJewelleryDeliveryReversal CustomerJewelleryDelivery? @relation("CustomerJewelleryDeliveryReversalVoucher")
+  clearingDocument                  ClearingDocument?          @relation("ClearingDocumentVoucher")
+  clearingDocumentReversal          ClearingDocument?          @relation("ClearingDocumentReversalVoucher")
+  clearingDocumentSource            ClearingDocument?          @relation("ClearingDocumentSourceVoucher")
+  clearingEntries                   ClearingEntry[]            @relation("ClearingEntryVoucher")
+  clearingAllocations               ClearingAllocation[]       @relation("ClearingAllocationSale")
 
   @@index([voucherType])
   @@index([partyId])
@@ -3891,4 +3923,227 @@ model CustomerJewelleryDeliveryItem {
 
   @@unique([deliveryId, finishedJewelleryId])
   @@map("customer_jewellery_delivery_items")
+}
+
+// ---------------------------------------------------------------------------
+// Clearing settlement (CLEARING_SETTLEMENT_DESIGN.md)
+// ---------------------------------------------------------------------------
+
+enum ClearingLineType {
+  COMMISSION
+  PROCESSING_FEE
+  ADVERTISING
+  SHIPPING
+  REFUND
+  TAX_WITHHELD
+  TAX_REMITTED
+  RESERVE_HOLD
+  RESERVE_RELEASE
+  SUBSCRIPTION
+  OTHER
+  // Computed by the settlement, never entered: where an FX difference posts.
+  FX_GAIN
+  FX_LOSS
+}
+
+enum ClearingLineDirection {
+  // Withheld from the payout: debits its account.
+  DEDUCTION
+  // Added to the payout (reserve release, a credit from the marketplace): credits its account.
+  ADDITION
+}
+
+enum ClearingBucket {
+  AVAILABLE
+  RESERVE
+}
+
+enum ClearingEntryKind {
+  SALE
+  SALE_RETURN
+  SETTLEMENT
+  RESERVE_HOLD
+  RESERVE_RELEASE
+  RECLASSIFY
+  // The mirror of an entry whose voucher was reversed (cancelVoucher).
+  MIRROR
+}
+
+enum ClearingDocumentKind {
+  SETTLEMENT
+  RESERVE_HOLD
+  RESERVE_RELEASE
+  RECLASSIFY
+}
+
+enum ClearingDocumentStatus {
+  POSTED
+  REVERSED
+}
+
+enum ClearingAllocationStatus {
+  ACTIVE
+  REVERSED
+}
+
+/// Which ledger account each settlement line type posts to. Owner-editable;
+/// a posted line keeps the account it used (ClearingDocumentLine.accountId).
+model ClearingAccountMapping {
+  lineType  ClearingLineType @id
+  accountId String
+  account   Account          @relation("ClearingMappingAccount", fields: [accountId], references: [id])
+
+  updatedByUserId String?
+  updatedBy       User?    @relation("ClearingMappingUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  updatedAt       DateTime @updatedAt
+
+  @@map("clearing_account_mappings")
+}
+
+/// One posted clearing action (never edited; reversed by a mirror voucher).
+model ClearingDocument {
+  id   String               @id @default(cuid())
+  kind ClearingDocumentKind
+
+  partyId String
+  party   Party  @relation("ClearingDocumentParty", fields: [partyId], references: [id])
+
+  /// The clearing currency (the marketplace's currency for these sales).
+  currencyCode String
+  /// India business date (UTC midnight of the Indian calendar day).
+  documentDate DateTime
+
+  paymentAccountId String?
+  paymentAccount   PaymentAccount? @relation("ClearingDocumentPaymentAccount", fields: [paymentAccountId], references: [id])
+
+  reference String?
+  notes     String?
+
+  /// Money that actually entered the payment account, base currency (INR).
+  receivedInr Decimal @default(0) @db.Decimal(14, 2)
+  /// The same payout in the clearing currency.
+  receivedFc  Decimal @default(0) @db.Decimal(18, 4)
+  /// INR per 1 unit of the clearing currency for this payout.
+  payoutRate  Decimal @default(1) @db.Decimal(18, 8)
+
+  /// Available clearing relieved (+) or added back (−), clearing currency / INR carrying value.
+  availableFc     Decimal   @default(0) @db.Decimal(18, 4)
+  availableInr    Decimal   @default(0) @db.Decimal(14, 2)
+  /// Reserve moved in (+) or released (−).
+  reserveFc       Decimal   @default(0) @db.Decimal(18, 4)
+  reserveInr      Decimal   @default(0) @db.Decimal(14, 2)
+  /// + gain / − loss, posted to the FX account.
+  fxDifferenceInr Decimal   @default(0) @db.Decimal(14, 2)
+  /// Reserve hold: when the marketplace says it becomes available.
+  availableOn     DateTime?
+
+  /// RECLASSIFY: the sale voucher whose receipt is moved to clearing (once).
+  sourceVoucherId String?  @unique
+  sourceVoucher   Voucher? @relation("ClearingDocumentSourceVoucher", fields: [sourceVoucherId], references: [id])
+
+  /// The balances the Owner previewed; posting refuses a stale preview.
+  previewFingerprint String
+
+  voucherId String  @unique
+  voucher   Voucher @relation("ClearingDocumentVoucher", fields: [voucherId], references: [id])
+
+  status                 ClearingDocumentStatus @default(POSTED)
+  reversalVoucherId      String?                @unique
+  reversalVoucher        Voucher?               @relation("ClearingDocumentReversalVoucher", fields: [reversalVoucherId], references: [id])
+  reversedAt             DateTime?
+  reversedByUserId       String?
+  reversedBy             User?                  @relation("ClearingDocumentReversedBy", fields: [reversedByUserId], references: [id], onDelete: SetNull)
+  reversalReason         String?
+  reversalIdempotencyKey String?                @unique
+
+  idempotencyKey  String   @unique
+  createdByUserId String
+  createdBy       User     @relation("ClearingDocumentCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt       DateTime @default(now())
+
+  lines       ClearingDocumentLine[]
+  entries     ClearingEntry[]
+  allocations ClearingAllocation[]
+
+  @@index([partyId, currencyCode, createdAt])
+  @@index([status])
+  @@map("clearing_documents")
+}
+
+model ClearingDocumentLine {
+  id         String           @id @default(cuid())
+  documentId String
+  document   ClearingDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  lineType  ClearingLineType
+  direction ClearingLineDirection
+  accountId String
+  account   Account               @relation("ClearingLineAccount", fields: [accountId], references: [id])
+
+  /// Always positive; `direction` gives the side.
+  fcAmount    Decimal @db.Decimal(18, 4)
+  inrAmount   Decimal @db.Decimal(14, 2)
+  description String?
+  sortOrder   Int     @default(0)
+
+  @@index([documentId])
+  @@map("clearing_document_lines")
+}
+
+/// Clearing sub-ledger in the clearing currency: Σ inrAmount per party and
+/// bucket always equals that party's 1150 (AVAILABLE) / 1160 (RESERVE) ledger.
+model ClearingEntry {
+  id           String            @id @default(cuid())
+  partyId      String
+  party        Party             @relation("ClearingEntryParty", fields: [partyId], references: [id])
+  currencyCode String
+  bucket       ClearingBucket
+  kind         ClearingEntryKind
+  /// Signed: + increases what the provider holds for us.
+  fcAmount     Decimal           @db.Decimal(18, 4)
+  inrAmount    Decimal           @db.Decimal(14, 2)
+
+  voucherId  String
+  voucher    Voucher           @relation("ClearingEntryVoucher", fields: [voucherId], references: [id])
+  documentId String?
+  document   ClearingDocument? @relation(fields: [documentId], references: [id])
+
+  reversalOfEntryId String?        @unique
+  reversalOf        ClearingEntry? @relation("ClearingEntryMirror", fields: [reversalOfEntryId], references: [id])
+  reversedBy        ClearingEntry? @relation("ClearingEntryMirror")
+
+  createdAt DateTime @default(now())
+
+  @@index([partyId, currencyCode, bucket])
+  @@index([voucherId])
+  @@map("clearing_entries")
+}
+
+/// Optional, audited statement of which sale a settlement paid. Never moves money.
+model ClearingAllocation {
+  id         String           @id @default(cuid())
+  documentId String
+  document   ClearingDocument @relation(fields: [documentId], references: [id])
+
+  saleVoucherId String
+  saleVoucher   Voucher @relation("ClearingAllocationSale", fields: [saleVoucherId], references: [id])
+
+  /// Clearing currency.
+  fcAmount Decimal                  @db.Decimal(18, 4)
+  status   ClearingAllocationStatus @default(ACTIVE)
+  reason   String
+
+  idempotencyKey  String   @unique
+  createdByUserId String
+  createdBy       User     @relation("ClearingAllocationCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt       DateTime @default(now())
+
+  reversedAt       DateTime?
+  reversedByUserId String?
+  reversedBy       User?     @relation("ClearingAllocationReversedBy", fields: [reversedByUserId], references: [id], onDelete: SetNull)
+  reversalReason   String?
+
+  @@index([documentId])
+  @@index([saleVoucherId])
+  @@map("clearing_allocations")
 }
