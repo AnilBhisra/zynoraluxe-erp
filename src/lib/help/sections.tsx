@@ -1214,7 +1214,7 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
       id: "marketplace-settlements",
       title: "Marketplace Settlements — Etsy, Amazon, PayPal, COD (ફક્ત Owner)",
       ownerOnly: true,
-      keywords: ["settlement", "clearing", "etsy", "amazon", "paypal", "payout", "marketplace", "reserve", "fx", "tds", "tcs", "સેટલમેન્ટ"],
+      keywords: ["settlement", "clearing", "etsy", "amazon", "paypal", "payout", "marketplace", "reserve", "fx", "tds", "tcs", "gross-up", "gross up", "સેટલમેન્ટ"],
       body: (
         <div className="flex flex-col gap-4">
           <BadgeRow>
@@ -1255,6 +1255,17 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
           <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
             Settlements → &ldquo;Marketplace sales recorded as paid straight into Cash / Bank&rdquo; માં <Btn>Preview reclassification</Btn> → <Btn>Confirm</Btn>. ફક્ત receipt ખસે છે (Dr clearing / Cr Bank); sale, GST, revenue, COGS, stock બદલાતા નથી. પછી સાચો payout settlement તરીકે નોંધો.
           </p>
+          <SubHeading>Fees બાદ કરીને નોંધાયેલું sale — Gross-up (દા.ત. ETSY ₹17,590)</SubHeading>
+          <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+            Piece ₹17,590 માં વેચાયો પણ Etsy ના ₹4,991 (fees / ads) discount તરીકે નોંધાયા અને sale ₹12,599 નું બન્યું — તો revenue ઓછી અને fees અદ્રશ્ય છે. Settlements → &ldquo;Gross-up a marketplace sale recorded net of fees&rdquo; → <Btn>Gross up this sale…</Btn>:
+          </p>
+          <ul className="list-disc space-y-1.5 pl-5 text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+            <li>Marketplace નું <strong>gross</strong> વેચાણ (₹17,590) લખો.</li>
+            <li><strong>GST</strong>: CA એ જે કહ્યું તે જ પસંદ કરો (None / અંદર સમાયેલ / ઉપર ઉમેરવાનું, CGST+SGST કે IGST, rate) અને CA ની confirmation લખો — એ વગર કંઈ save થતું નથી. App જાતે tax ધારતું નથી.</li>
+            <li>&ldquo;Also settle it now&rdquo;: Bank માં આવેલા ₹12,599 અને Etsy એ કાપેલી દરેક રકમ (commission, ads…) જુદી લાઈનમાં.</li>
+            <li><Btn>Preview gross-up</Btn> ત્રણે voucher બતાવે છે: (1) ₹12,599 Bank → clearing, (2) ખૂટતા ₹4,991 revenue/clearing, (3) ₹17,590 settlement (Bank ₹12,599 + fees ₹4,991) — અને કુલ અસર: Bank ₹0, clearing ₹0, revenue +₹4,991, expense +₹4,991, profit બદલાતો નથી. પછી <Btn>Confirm and post</Btn> (બધું એક સાથે, કાં તો કંઈ નહીં).</li>
+            <li>મૂળ sale, discount, COGS, piece status અને stock બદલાતા નથી. ભૂલ હોય તો settlement → gross-up → reclassification ક્રમમાં <Btn>Reverse</Btn> કરો.</li>
+          </ul>
         </div>
       ),
     });

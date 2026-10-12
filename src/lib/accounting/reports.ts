@@ -555,7 +555,21 @@ export async function getProfitAndLoss(filters?: {
     },
     _sum: { taxableTotal: true },
   });
-  const linkedSalesAmount = round2(new Decimal(linkedSaleAgg._sum.taxableTotal ?? 0));
+  // A marketplace gross-up (CLR-GRS) adds revenue to a finished sale that already
+  // carries its stock-matched COGS, so it is linked revenue, not a manual sale.
+  const grossUpAgg = await prisma.clearingDocumentLine.aggregate({
+    where: {
+      lineType: "GROSS_UP_REVENUE",
+      document: {
+        kind: "GROSS_UP",
+        status: "POSTED",
+        voucher: { date: { gte: filters?.dateFrom, lte: filters?.dateTo } },
+        sourceVoucher: { finishedJewellerySale: { is: { status: "POSTED" } } },
+      },
+    },
+    _sum: { inrAmount: true },
+  });
+  const linkedSalesAmount = round2(new Decimal(linkedSaleAgg._sum.taxableTotal ?? 0).plus(grossUpAgg._sum.inrAmount ?? 0));
   const manualSalesAmount = round2(Decimal.max(grossSales.minus(linkedSalesAmount), ZERO));
   const manualSalesCount = await prisma.voucher.count({
     where: {

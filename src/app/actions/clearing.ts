@@ -9,15 +9,19 @@ import {
   CLEARING_USER_LINE_TYPES,
   ClearingError,
   getClearingBalance,
+  planGrossUpWorkflow,
   planReclassify,
   planReserveMove,
   planSettlement,
+  postGrossUpWorkflow,
   postReclassify,
   postReserveMove,
   postSettlement,
   reverseAllocation,
   reverseClearingDocument,
   type ClearingPlan,
+  type GrossUpWorkflowInput,
+  type GrossUpWorkflowPlan,
   type SettlementLineInput,
 } from "@/lib/accounting/clearing";
 import { parseDateOnly } from "@/lib/accounting/financialYear";
@@ -98,7 +102,7 @@ function revalidate() {
   for (const p of ["/accounting", "/dashboard"]) revalidatePath(p);
 }
 
-function settlementInput(fd: FormData) {
+function linesFrom(fd: FormData): SettlementLineInput[] {
   let raw: unknown;
   try {
     raw = JSON.parse(str(fd, "linesJson") || "[]");
@@ -106,7 +110,7 @@ function settlementInput(fd: FormData) {
     throw new ClearingError("The deduction lines could not be read. Reload the page.");
   }
   if (!Array.isArray(raw)) throw new ClearingError("The deduction lines could not be read.");
-  const lines: SettlementLineInput[] = raw
+  return raw
     .filter((l) => l && typeof l === "object" && String((l as Record<string, unknown>).amount ?? "").trim() !== "")
     .map((l) => {
       const r = l as Record<string, unknown>;
@@ -114,6 +118,10 @@ function settlementInput(fd: FormData) {
       if (!(CLEARING_USER_LINE_TYPES as readonly string[]).includes(lineType)) throw new ClearingError("Choose what each deduction is.");
       return { lineType, amount: String(r.amount).trim(), direction: (r.direction === "ADDITION" ? "ADDITION" : "DEDUCTION") as ClearingLineDirection, description: r.description ? String(r.description) : null };
     });
+}
+
+function settlementInput(fd: FormData) {
+  const lines = linesFrom(fd);
   return {
     partyId: str(fd, "partyId"),
     currencyCode: str(fd, "currencyCode") || "INR",
@@ -234,6 +242,104 @@ export async function postReclassifyAction(_p: ClearingFormState, fd: FormData):
   }
 }
 
+export type SerializedGrossUp = {
+  saleVoucherNumber: string;
+  recordedInr: string;
+  recordedRevenueInr: string;
+  grossSaleInr: string;
+  taxConfirmation: string;
+  reclass: SerializedPlan | null;
+  grossUp: SerializedPlan;
+  settlement: SerializedPlan | null;
+  effect: {
+    byAccount: { account: string; type: string; net: string }[];
+    cashBankNet: string;
+    clearingAfterInr: string;
+    revenueAdded: string;
+    taxAdded: string;
+    expenseAdded: string;
+    profitChange: string;
+  };
+  fingerprint: string;
+};
+
+export type GrossUpFormState = { error?: string; preview?: SerializedGrossUp; success?: string; replayed?: boolean } | undefined;
+
+function serializeGrossUp(w: GrossUpWorkflowPlan): SerializedGrossUp {
+  return {
+    saleVoucherNumber: w.sale.voucherNumber,
+    recordedInr: w.sale.recordedInr.toFixed(2),
+    recordedRevenueInr: w.sale.recordedRevenueInr.toFixed(2),
+    grossSaleInr: (w.grossUp.grossSaleInr ?? w.sale.recordedInr).toFixed(2),
+    taxConfirmation: w.grossUp.taxConfirmation ?? "",
+    reclass: w.reclass ? serialize(w.reclass) : null,
+    grossUp: serialize(w.grossUp),
+    settlement: w.settlement ? serialize(w.settlement) : null,
+    effect: {
+      byAccount: w.effect.byAccount.map((r) => ({ account: `${r.accountCode} ${r.accountName}`, type: r.accountType, net: r.net.toFixed(2) })),
+      cashBankNet: w.effect.cashBankNet.toFixed(2),
+      clearingAfterInr: w.effect.clearingAfterInr.toFixed(2),
+      revenueAdded: w.effect.revenueAdded.toFixed(2),
+      taxAdded: w.effect.taxAdded.toFixed(2),
+      expenseAdded: w.effect.expenseAdded.toFixed(2),
+      profitChange: w.effect.profitChange.toFixed(2),
+    },
+    fingerprint: w.fingerprint,
+  };
+}
+
+function grossUpInput(fd: FormData): GrossUpWorkflowInput {
+  const taxMode = str(fd, "taxMode");
+  const gstTreatment = str(fd, "gstTreatment");
+  const withSettlement = str(fd, "includeSettlement") === "true";
+  return {
+    saleVoucherId: str(fd, "saleVoucherId"),
+    documentDate: dateOf(fd, "documentDate"),
+    grossSaleInr: str(fd, "grossSaleInr"),
+    taxMode: taxMode === "NONE" || taxMode === "INCLUSIVE" || taxMode === "EXCLUSIVE" ? taxMode : null,
+    gstTreatment: gstTreatment === "CGST_SGST" || gstTreatment === "IGST" ? gstTreatment : null,
+    gstRatePercent: str(fd, "gstRatePercent") || null,
+    taxConfirmation: str(fd, "taxConfirmation"),
+    reference: str(fd, "reference") || null,
+    notes: str(fd, "notes") || null,
+    settlement: withSettlement
+      ? {
+          paymentAccountId: str(fd, "paymentAccountId") || null,
+          receivedInr: str(fd, "receivedInr") || "0",
+          lines: linesFrom(fd),
+          documentDate: str(fd, "settlementDate") ? dateOf(fd, "settlementDate") : null,
+          reference: str(fd, "settlementReference") || null,
+        }
+      : null,
+  };
+}
+
+export async function previewGrossUpAction(_p: GrossUpFormState, fd: FormData): Promise<GrossUpFormState> {
+  await requireOwner();
+  try {
+    return { preview: serializeGrossUp(await prisma.$transaction((tx) => planGrossUpWorkflow(tx, grossUpInput(fd)), VOUCHER_TRANSACTION_OPTIONS)) };
+  } catch (e) {
+    return { error: failure(e, "preview this gross-up") };
+  }
+}
+
+export async function postGrossUpAction(_p: GrossUpFormState, fd: FormData): Promise<GrossUpFormState> {
+  const user = await requireOwner();
+  const fy = await getCompanyFySettings();
+  const idempotencyKey = str(fd, "idempotencyKey");
+  try {
+    const r = await prisma.$transaction(
+      (tx) => postGrossUpWorkflow(tx, { ...grossUpInput(fd), idempotencyKey, expectedFingerprint: str(fd, "fingerprint"), actor: { id: user.id, role: user.role }, ...fy }),
+      VOUCHER_TRANSACTION_OPTIONS
+    );
+    revalidate();
+    return { success: r.replayed ? "Already posted" : r.voucherNumbers.join(", "), replayed: r.replayed };
+  } catch (e) {
+    if (isIdempotencyConflict(e)) return { success: "Already posted", replayed: true };
+    return { error: failure(e, "save this gross-up") };
+  }
+}
+
 export async function reverseClearingAction(_p: ClearingFormState, fd: FormData): Promise<ClearingFormState> {
   const user = await requireOwner();
   const fy = await getCompanyFySettings();
@@ -281,6 +387,7 @@ export async function updateLineMappingAction(_p: ClearingFormState, fd: FormDat
   const lineType = str(fd, "lineType") as ClearingLineType;
   try {
     if (lineType === "RESERVE_HOLD" || lineType === "RESERVE_RELEASE") throw new ClearingError("Reserve lines always post to 1160 Marketplace Reserve.");
+    if (lineType === "GROSS_UP_REVENUE" || lineType === "GROSS_UP_TAX") throw new ClearingError("A gross-up always posts to 4000 Sales and the output GST accounts.");
     const account = await prisma.account.findUnique({ where: { id: str(fd, "accountId") }, include: { paymentAccount: true } });
     if (!account || !account.isActive || !MAPPABLE_TYPES.includes(account.type)) throw new ClearingError("Choose an active account.");
     if (account.paymentAccount) throw new ClearingError("A Cash/Bank account cannot take a deduction line.");

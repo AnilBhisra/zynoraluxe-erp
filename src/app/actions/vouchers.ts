@@ -554,7 +554,7 @@ export async function cancelVoucherAction(
   // delivered pieces, returned stock, opening metal) that this generic
   // reversal would leave behind. They are reversed from their own page, which
   // reverses the voucher and the document together.
-  if (target?.voucherType === "CLEARING_SETTLEMENT" || target?.voucherType === "CLEARING_RESERVE" || target?.voucherType === "CLEARING_RECLASS") {
+  if (target?.voucherType === "CLEARING_SETTLEMENT" || target?.voucherType === "CLEARING_RESERVE" || target?.voucherType === "CLEARING_RECLASS" || target?.voucherType === "CLEARING_GROSSUP") {
     return { error: "This is a clearing settlement entry — reverse it from Accounting → Settlements, so the provider's clearing balance, reserve and allocations stay in sync." };
   }
   if (target?.voucherType === "CUSTOMER_JEWELLERY_BILL") {

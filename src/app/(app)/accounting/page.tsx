@@ -9,11 +9,11 @@ import { getCashBookPage } from "@/lib/accounting/cashBankBook";
 import { defaultCashBookDates, parseCashBookFilters } from "@/lib/accounting/cashBankBookFilters";
 import { getReceivablePayableBook } from "@/lib/accounting/receivablePayable";
 import { formatRupees } from "@/lib/accounting/partyBalance";
-import { CLEARING_LINE_LABELS, reclassifyBlock } from "@/lib/accounting/clearing";
+import { CLEARING_LINE_LABELS, grossUpBlock, reclassifyBlock } from "@/lib/accounting/clearing";
 import { parseClearingReportFilters } from "@/lib/accounting/clearingReportFilters";
-import { allocatableSales, getClearingReport, getProviderBalances, listClearingDocuments, reclassifyCandidates } from "@/lib/accounting/clearingReports";
+import { allocatableSales, getClearingReport, getProviderBalances, grossUpCandidates, listClearingDocuments, reclassifyCandidates } from "@/lib/accounting/clearingReports";
 import { ClearingReportView } from "@/components/accounting/ClearingReportView";
-import { ClearingSettings, ReclassifyPanel, ReserveForm, SettlementForm, SettlementList, type SaleOption } from "@/components/accounting/SettlementsTab";
+import { ClearingSettings, GrossUpPanel, ReclassifyPanel, ReserveForm, SettlementForm, SettlementList, type SaleOption } from "@/components/accounting/SettlementsTab";
 import {
   getCashBankSummary,
   getGstSummary,
@@ -398,7 +398,7 @@ async function SettlementsTabContent({ params }: { params: SearchParams }) {
       </div>
     );
   }
-  const [providers, docs, paymentAccounts, otherParties, mappings, accounts, candidates] = await Promise.all([
+  const [providers, docs, paymentAccounts, otherParties, mappings, accounts, candidates, grossUps] = await Promise.all([
     getProviderBalances(),
     listClearingDocuments({ take: 100 }),
     prisma.paymentAccount.findMany({ where: { isActive: true }, orderBy: { name: "asc" }, select: { id: true, name: true } }),
@@ -410,8 +410,10 @@ async function SettlementsTabContent({ params }: { params: SearchParams }) {
       select: { id: true, code: true, name: true },
     }),
     reclassifyCandidates(),
+    grossUpCandidates(),
   ]);
   const blocks = await Promise.all(candidates.map((c) => prisma.$transaction((tx) => reclassifyBlock(tx, c.voucher_id))));
+  const grossUpBlocks = await Promise.all(grossUps.map((c) => prisma.$transaction((tx) => grossUpBlock(tx, c.voucher_id))));
   // Optional allocation choices, per provider and currency with a posted settlement still unallocated.
   const keys = [...new Set(docs.filter((d) => d.kind === "SETTLEMENT" && d.status === "POSTED").map((d) => `${d.partyId}|${d.currencyCode}`))];
   const salesByKey: Record<string, SaleOption[]> = {};
@@ -501,6 +503,22 @@ async function SettlementsTabContent({ params }: { params: SearchParams }) {
           amount: Number(c.amount).toFixed(2),
           accountName: c.account_name,
           block: blocks[i],
+        }))}
+      />
+      <GrossUpPanel
+        paymentAccounts={paymentAccounts}
+        rows={grossUps.map((c, i) => ({
+          voucherId: c.voucher_id,
+          voucherNumber: c.voucher_number,
+          date: new Date(c.bdate).toISOString().slice(0, 10),
+          partyName: c.party_name,
+          amount: Number(c.amount).toFixed(2),
+          receiptIn: c.in_clearing ? "clearing" : c.account_name ?? "—",
+          accountName: c.account_name,
+          saleCode: c.sale_code,
+          subtotal: c.subtotal === null ? null : Number(c.subtotal).toFixed(2),
+          discount: c.discount_total === null ? null : Number(c.discount_total).toFixed(2),
+          block: grossUpBlocks[i],
         }))}
       />
       <ClearingSettings

@@ -23,4 +23,5 @@ export const VOUCHER_TYPE_LABELS: Record<VoucherType, string> = {
   CLEARING_SETTLEMENT: "Clearing Settlement",
   CLEARING_RESERVE: "Clearing Reserve Move",
   CLEARING_RECLASS: "Receipt Reclassified to Clearing",
+  CLEARING_GROSSUP: "Marketplace Sale Gross-up",
 };

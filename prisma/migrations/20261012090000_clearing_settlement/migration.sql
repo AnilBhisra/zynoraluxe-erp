@@ -1,5 +1,5 @@
 -- Clearing settlement (CLEARING_SETTLEMENT_DESIGN.md). Additive only:
---  * 7 new enums and 3 new VoucherType values (not used inside this migration);
+--  * 7 new enums and 4 new VoucherType values (not used inside this migration);
 --  * parties."clearingEnabled" BOOLEAN NOT NULL DEFAULT false (every existing party stays false);
 --  * 5 new tables (clearing_account_mappings, clearing_documents, clearing_document_lines,
 --    clearing_entries, clearing_allocations), all empty except the 11 default line mappings;
@@ -95,9 +95,10 @@ $guard$;
 ALTER TYPE "VoucherType" ADD VALUE IF NOT EXISTS 'CLEARING_SETTLEMENT';
 ALTER TYPE "VoucherType" ADD VALUE IF NOT EXISTS 'CLEARING_RESERVE';
 ALTER TYPE "VoucherType" ADD VALUE IF NOT EXISTS 'CLEARING_RECLASS';
+ALTER TYPE "VoucherType" ADD VALUE IF NOT EXISTS 'CLEARING_GROSSUP';
 
 -- CreateEnum
-CREATE TYPE "ClearingLineType" AS ENUM ('COMMISSION', 'PROCESSING_FEE', 'ADVERTISING', 'SHIPPING', 'REFUND', 'TAX_WITHHELD', 'TAX_REMITTED', 'RESERVE_HOLD', 'RESERVE_RELEASE', 'SUBSCRIPTION', 'OTHER', 'FX_GAIN', 'FX_LOSS');
+CREATE TYPE "ClearingLineType" AS ENUM ('COMMISSION', 'PROCESSING_FEE', 'ADVERTISING', 'SHIPPING', 'REFUND', 'TAX_WITHHELD', 'TAX_REMITTED', 'RESERVE_HOLD', 'RESERVE_RELEASE', 'SUBSCRIPTION', 'OTHER', 'FX_GAIN', 'FX_LOSS', 'GROSS_UP_REVENUE', 'GROSS_UP_TAX');
 
 -- CreateEnum
 CREATE TYPE "ClearingLineDirection" AS ENUM ('DEDUCTION', 'ADDITION');
@@ -106,10 +107,10 @@ CREATE TYPE "ClearingLineDirection" AS ENUM ('DEDUCTION', 'ADDITION');
 CREATE TYPE "ClearingBucket" AS ENUM ('AVAILABLE', 'RESERVE');
 
 -- CreateEnum
-CREATE TYPE "ClearingEntryKind" AS ENUM ('SALE', 'SALE_RETURN', 'SETTLEMENT', 'RESERVE_HOLD', 'RESERVE_RELEASE', 'RECLASSIFY', 'MIRROR');
+CREATE TYPE "ClearingEntryKind" AS ENUM ('SALE', 'SALE_RETURN', 'SETTLEMENT', 'RESERVE_HOLD', 'RESERVE_RELEASE', 'RECLASSIFY', 'GROSS_UP', 'MIRROR');
 
 -- CreateEnum
-CREATE TYPE "ClearingDocumentKind" AS ENUM ('SETTLEMENT', 'RESERVE_HOLD', 'RESERVE_RELEASE', 'RECLASSIFY');
+CREATE TYPE "ClearingDocumentKind" AS ENUM ('SETTLEMENT', 'RESERVE_HOLD', 'RESERVE_RELEASE', 'RECLASSIFY', 'GROSS_UP');
 
 -- CreateEnum
 CREATE TYPE "ClearingDocumentStatus" AS ENUM ('POSTED', 'REVERSED');
@@ -134,6 +135,7 @@ CREATE TABLE "clearing_account_mappings" (
 CREATE TABLE "clearing_documents" (
     "id" TEXT NOT NULL,
     "kind" "ClearingDocumentKind" NOT NULL,
+    "sequence" SERIAL NOT NULL,
     "partyId" TEXT NOT NULL,
     "currencyCode" TEXT NOT NULL,
     "documentDate" TIMESTAMP(3) NOT NULL,
@@ -150,6 +152,8 @@ CREATE TABLE "clearing_documents" (
     "fxDifferenceInr" DECIMAL(14,2) NOT NULL DEFAULT 0,
     "availableOn" TIMESTAMP(3),
     "sourceVoucherId" TEXT,
+    "grossSaleInr" DECIMAL(14,2),
+    "taxConfirmation" TEXT,
     "previewFingerprint" TEXT NOT NULL,
     "voucherId" TEXT NOT NULL,
     "status" "ClearingDocumentStatus" NOT NULL DEFAULT 'POSTED',
@@ -216,7 +220,7 @@ CREATE TABLE "clearing_allocations" (
 );
 
 -- CreateIndex
-CREATE UNIQUE INDEX "clearing_documents_sourceVoucherId_key" ON "clearing_documents"("sourceVoucherId");
+CREATE UNIQUE INDEX "clearing_documents_sequence_key" ON "clearing_documents"("sequence");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "clearing_documents_voucherId_key" ON "clearing_documents"("voucherId");
@@ -235,6 +239,9 @@ CREATE INDEX "clearing_documents_partyId_currencyCode_createdAt_idx" ON "clearin
 
 -- CreateIndex
 CREATE INDEX "clearing_documents_status_idx" ON "clearing_documents"("status");
+
+-- CreateIndex
+CREATE INDEX "clearing_documents_sourceVoucherId_idx" ON "clearing_documents"("sourceVoucherId");
 
 -- CreateIndex
 CREATE INDEX "clearing_document_lines_documentId_idx" ON "clearing_document_lines"("documentId");

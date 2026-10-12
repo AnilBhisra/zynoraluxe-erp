@@ -138,7 +138,7 @@ export async function listClearingDocuments(f: Partial<ClearingReportFilters> & 
       allocations: { include: { saleVoucher: { select: { voucherNumber: true } } }, orderBy: { createdAt: "asc" } },
       entries: { select: { id: true } },
     },
-    orderBy: [{ createdAt: "desc" }],
+    orderBy: [{ sequence: "desc" }],
     take: f.take ?? 500,
   });
   // Running available balance after each document's own entries (one query for all).
@@ -146,14 +146,15 @@ export async function listClearingDocuments(f: Partial<ClearingReportFilters> & 
   const running = entryIds.length
     ? await db.$queryRaw<{ document_id: string; fc: Prisma.Decimal; inr: Prisma.Decimal }[]>(Prisma.sql`
         with r as (
-          select id, "documentId" document_id, "createdAt",
-                 sum("fcAmount") over w fc, sum("inrAmount") over w inr
-          from clearing_entries where bucket = 'AVAILABLE'
-          window w as (partition by "partyId", "currencyCode" order by "createdAt", id)
+          select e.id, e."documentId" document_id, e."createdAt", d.sequence seq,
+                 sum(e."fcAmount") over w fc, sum(e."inrAmount") over w inr
+          from clearing_entries e left join clearing_documents d on d.id = e."documentId"
+          where e.bucket = 'AVAILABLE'
+          window w as (partition by e."partyId", e."currencyCode" order by e."createdAt", d.sequence nulls first, e.id)
         )
         select distinct on (document_id) document_id, fc, inr from r
         where document_id is not null
-        order by document_id, "createdAt" desc, id desc`)
+        order by document_id, "createdAt" desc, seq desc, id desc`)
     : [];
   const after = new Map(running.map((r) => [r.document_id, r]));
   return docs.map((d) => {
@@ -211,6 +212,8 @@ export type ClearingReportRow = {
   fxInr: Decimal;
   otherInr: Decimal;
   reclassifiedInr: Decimal;
+  /** Gross-ups: sale revenue (and GST) added on top of sales recorded net of fees. */
+  grossUpInr: Decimal;
   unallocatedFc: Decimal;
   closingFc: Decimal;
   closingInr: Decimal;
@@ -242,6 +245,7 @@ export async function getClearingReport(f: ClearingReportFilters, db: Db = prism
         sales_inr: Prisma.Decimal;
         returns_inr: Prisma.Decimal;
         reclass_inr: Prisma.Decimal;
+        grossup_inr: Prisma.Decimal;
         close_fc: Prisma.Decimal;
         close_inr: Prisma.Decimal;
         close_a: Prisma.Decimal;
@@ -261,6 +265,7 @@ export async function getClearingReport(f: ClearingReportFilters, db: Db = prism
              coalesce(sum("inrAmount") filter (where base_kind = 'SALE' and bdate between ${f.dateFrom}::date and ${f.dateTo}::date), 0) sales_inr,
              coalesce(-sum("inrAmount") filter (where base_kind = 'SALE_RETURN' and bdate between ${f.dateFrom}::date and ${f.dateTo}::date), 0) returns_inr,
              coalesce(sum("inrAmount") filter (where base_kind = 'RECLASSIFY' and bdate between ${f.dateFrom}::date and ${f.dateTo}::date), 0) reclass_inr,
+             coalesce(sum("inrAmount") filter (where base_kind = 'GROSS_UP' and bdate between ${f.dateFrom}::date and ${f.dateTo}::date), 0) grossup_inr,
              coalesce(sum("fcAmount") filter (where bdate <= ${f.dateTo}::date), 0) close_fc,
              coalesce(sum("inrAmount") filter (where bdate <= ${f.dateTo}::date), 0) close_inr,
              coalesce(sum("inrAmount") filter (where bdate <= ${f.dateTo}::date and bucket = 'AVAILABLE'), 0) close_a,
@@ -314,6 +319,7 @@ export async function getClearingReport(f: ClearingReportFilters, db: Db = prism
       fxInr: round2(sumOf("fx")),
       otherInr: sumLines(["OTHER"]),
       reclassifiedInr: d2(l.reclass_inr),
+      grossUpInr: d2(l.grossup_inr),
       unallocatedFc: d4(sumOf("unallocated")),
       closingFc: d4(l.close_fc),
       closingInr: d2(l.close_inr),
@@ -359,6 +365,30 @@ export async function reclassifyCandidates(db: Db = prisma) {
     select v.id voucher_id, v."voucherNumber" voucher_number, ${BDATE} bdate, p.name party_name, v.amount, pa.name account_name
     from vouchers v join parties p on p.id = v."partyId" join payment_accounts pa on pa.id = v."paymentAccountId"
     where v."voucherType" = 'SALE' and v.status = 'POSTED' and p."clearingEnabled"
-      and not exists (select 1 from clearing_documents d where d."sourceVoucherId" = v.id and d.status = 'POSTED')
+      and not exists (select 1 from clearing_documents d where d."sourceVoucherId" = v.id and d.kind = 'RECLASSIFY' and d.status = 'POSTED')
     order by v.date, v."voucherNumber"`);
+}
+
+/**
+ * Posted sales of clearing parties not yet grossed up, with where the receipt is
+ * (Cash/Bank → a reclassification comes first; clearing). The finished-sale
+ * selling total and discount are shown so the Owner can recognise a sale that
+ * was entered net of the marketplace's fees. Eligibility: grossUpBlock().
+ */
+export async function grossUpCandidates(db: Db = prisma) {
+  return db.$queryRaw<
+    { voucher_id: string; voucher_number: string; bdate: Date; party_id: string; party_name: string; amount: Prisma.Decimal; account_name: string | null; in_clearing: boolean; sale_code: string | null; subtotal: Prisma.Decimal | null; discount_total: Prisma.Decimal | null }[]
+  >(Prisma.sql`
+    select v.id voucher_id, v."voucherNumber" voucher_number, ${BDATE} bdate, p.id party_id, p.name party_name, v.amount,
+           pa.name account_name,
+           (exists (select 1 from clearing_entries e where e."voucherId" = v.id and e.kind = 'SALE')
+            or exists (select 1 from clearing_documents d where d."sourceVoucherId" = v.id and d.kind = 'RECLASSIFY' and d.status = 'POSTED')) in_clearing,
+           fs."saleCode" sale_code, fs.subtotal subtotal, fs."discountTotal" discount_total
+    from vouchers v join parties p on p.id = v."partyId"
+    left join payment_accounts pa on pa.id = v."paymentAccountId"
+    left join finished_jewellery_sales fs on fs."voucherId" = v.id
+    where v."voucherType" = 'SALE' and v.status = 'POSTED' and p."clearingEnabled"
+      and not exists (select 1 from clearing_documents d where d."sourceVoucherId" = v.id and d.kind = 'GROSS_UP' and d.status = 'POSTED')
+    order by v.date desc, v."voucherNumber" desc
+    limit 200`);
 }

@@ -6,6 +6,7 @@ import type { Prisma } from "@/generated/prisma/client";
 import type { ClearingBucket, ClearingDocumentKind, ClearingEntryKind, ClearingLineDirection, ClearingLineType, UserRole } from "@/generated/prisma/enums";
 import { SYSTEM_ACCOUNT_CODES } from "@/lib/accounting/accounts";
 import { cancelVoucher, createVoucherHeader, insertBalancedJournalLines, PostingError, type JournalLineInput } from "@/lib/accounting/posting";
+import { splitGstAmount } from "@/lib/accounting/gst";
 import { Decimal, type DecimalInput, round2, ZERO } from "@/lib/accounting/money";
 
 /**
@@ -58,6 +59,8 @@ export const CLEARING_LINE_LABELS: Record<ClearingLineType, string> = {
   OTHER: "Other adjustment",
   FX_GAIN: "FX gain",
   FX_LOSS: "FX loss",
+  GROSS_UP_REVENUE: "Gross-up: sales revenue left out of the sale",
+  GROSS_UP_TAX: "Gross-up: output GST (as confirmed by the CA)",
 };
 
 const RESERVE_LINES = new Set<ClearingLineType>(["RESERVE_HOLD", "RESERVE_RELEASE"]);
@@ -180,6 +183,9 @@ export type ClearingPlan = {
   fxDifferenceInr: Decimal;
   availableOn: Date | null;
   sourceVoucherId: string | null;
+  /** GROSS_UP only. */
+  grossSaleInr?: Decimal | null;
+  taxConfirmation?: string | null;
   before: ClearingBalance;
   after: { available: BucketBalance; reserve: BucketBalance };
   journal: PlannedJournalLine[];
@@ -232,7 +238,7 @@ export type SettlementInput = {
   lines: SettlementLineInput[];
 };
 
-export async function planSettlement(tx: Tx, input: SettlementInput): Promise<ClearingPlan> {
+export async function planSettlement(tx: Tx, input: SettlementInput, opts: { assumedBefore?: ClearingBalance } = {}): Promise<ClearingPlan> {
   const party = await clearingParty(tx, input.partyId);
   const cur = currency(input.currencyCode);
   const isInr = cur === "INR";
@@ -265,7 +271,7 @@ export async function planSettlement(tx: Tx, input: SettlementInput): Promise<Cl
   const mappings = await getLineMappings(tx);
   const reserveAccount = await accountByCode(tx, SYSTEM_ACCOUNT_CODES.MARKETPLACE_RESERVE);
   const clearingAccount = await accountByCode(tx, SYSTEM_ACCOUNT_CODES.MARKETPLACE_CLEARING);
-  const before = await getClearingBalance(tx, party.id, cur);
+  const before = opts.assumedBefore ?? (await getClearingBalance(tx, party.id, cur));
 
   if (input.lines.length > 20) throw new ClearingError("At most 20 deduction / adjustment lines.");
   const lines: PlannedLine[] = [];
@@ -404,8 +410,9 @@ export async function planSettlement(tx: Tx, input: SettlementInput): Promise<Cl
   return { ...plan, fingerprint: planFingerprint(plan) };
 }
 
-function planFingerprint(plan: Omit<ClearingPlan, "fingerprint">): string {
+function planFingerprint(plan: Omit<ClearingPlan, "fingerprint">, extra: string | null = null): string {
   return fingerprintOf({
+    x: extra,
     k: plan.kind,
     p: plan.party.id,
     c: plan.currencyCode,
@@ -506,13 +513,13 @@ export type ReclassifyInput = {
 export async function reclassifyBlock(tx: Tx, saleVoucherId: string): Promise<string | null> {
   const v = await tx.voucher.findUnique({
     where: { id: saleVoucherId },
-    include: { party: true, journalEntries: { include: { account: { select: { code: true } } } }, reversedByVoucher: { select: { voucherNumber: true } }, clearingDocumentSource: { select: { voucherId: true, status: true } } },
+    include: { party: true, journalEntries: { include: { account: { select: { code: true } } } }, reversedByVoucher: { select: { voucherNumber: true } }, clearingDocumentsSourced: { where: { kind: "RECLASSIFY", status: "POSTED" }, select: { voucherId: true } } },
   });
   if (!v) return "Sale not found.";
   if (v.voucherType !== "SALE") return `${v.voucherNumber} is not a sale.`;
   if (v.status !== "POSTED") return `${v.voucherNumber} is cancelled${v.reversedByVoucher ? ` (${v.reversedByVoucher.voucherNumber})` : ""}.`;
   if (!v.party?.clearingEnabled) return `${v.party?.name ?? "The party"} is not a clearing party. Mark it as one first.`;
-  if (v.clearingDocumentSource?.status === "POSTED") return `${v.voucherNumber} was already reclassified to clearing.`;
+  if (v.clearingDocumentsSourced.length > 0) return `${v.voucherNumber} was already reclassified to clearing.`;
   if (!v.paymentAccountId) return `${v.voucherNumber} was not paid into Cash/Bank at sale time — nothing to reclassify.`;
   const pa = await tx.paymentAccount.findUnique({ where: { id: v.paymentAccountId }, select: { accountId: true } });
   if (!v.journalEntries.some((j) => j.accountId === pa?.accountId && new Decimal(j.debit).greaterThan(0))) return `${v.voucherNumber} has no Cash/Bank receipt line to reclassify.`;
@@ -574,14 +581,305 @@ export async function planReclassify(tx: Tx, input: ReclassifyInput): Promise<Cl
 }
 
 // ---------------------------------------------------------------------------
+// Gross-up a marketplace sale that was recorded net of the marketplace's fees
+// ---------------------------------------------------------------------------
+
+export const GROSS_UP_TAX_MODES = ["NONE", "INCLUSIVE", "EXCLUSIVE"] as const;
+export type GrossUpTaxMode = (typeof GROSS_UP_TAX_MODES)[number];
+
+export type GrossUpInput = {
+  saleVoucherId: string;
+  documentDate: Date;
+  /** The gross amount the marketplace sold the order for (INR), as on its statement. */
+  grossSaleInr: DecimalInput;
+  /** GST on the gross-up amount, exactly as the CA confirmed — never defaulted. */
+  taxMode: GrossUpTaxMode | "" | null | undefined;
+  gstTreatment?: "CGST_SGST" | "IGST" | "" | null;
+  gstRatePercent?: DecimalInput | null;
+  /** The CA's confirmation in the Owner's words (who / when / what). Required. */
+  taxConfirmation: string;
+  reference?: string | null;
+  notes?: string | null;
+};
+
+export type GrossUpSettlementInput = {
+  paymentAccountId: string | null;
+  receivedInr: DecimalInput;
+  lines: SettlementLineInput[];
+  documentDate?: Date | null;
+  reference?: string | null;
+  notes?: string | null;
+};
+
+export type GrossUpWorkflowInput = GrossUpInput & { settlement?: GrossUpSettlementInput | null };
+
+type GrossUpSource = {
+  voucherNumber: string;
+  partyId: string;
+  partyName: string;
+  /** What the sale debited to its receipt (Cash/Bank or 1150) — the sale total. */
+  recordedInr: Decimal;
+  /** Sales revenue (4000) the sale itself credited. */
+  recordedRevenueInr: Decimal;
+  /** The receipt is still in Cash/Bank: a reclassification must come first. */
+  needsReclass: boolean;
+  discountInr: Decimal;
+  saleCode: string | null;
+};
+
+/** Why this sale cannot be grossed up ({ block }), or where its receipt is. Checked again inside the posting transaction. */
+async function grossUpSource(tx: Tx, saleVoucherId: string): Promise<{ block: string } | GrossUpSource> {
+  const v = await tx.voucher.findUnique({
+    where: { id: saleVoucherId },
+    include: {
+      party: true,
+      journalEntries: { include: { account: { select: { code: true } } } },
+      reversedByVoucher: { select: { voucherNumber: true } },
+      clearingDocumentsSourced: { where: { status: "POSTED" }, select: { kind: true, currencyCode: true, availableInr: true } },
+    },
+  });
+  if (!v) return { block: "Sale not found." };
+  if (v.voucherType !== "SALE") return { block: `${v.voucherNumber} is not a sale.` };
+  if (v.status !== "POSTED") return { block: `${v.voucherNumber} is cancelled${v.reversedByVoucher ? ` (${v.reversedByVoucher.voucherNumber})` : ""}.` };
+  if (!v.party?.clearingEnabled) return { block: `${v.party?.name ?? "The party"} is not a clearing party. Mark it as one first.` };
+  if (v.clearingDocumentsSourced.some((d) => d.kind === "GROSS_UP")) return { block: `${v.voucherNumber} was already grossed up.` };
+  const sale = await tx.finishedJewellerySale.findUnique({ where: { voucherId: v.id }, include: { returns: { select: { returnCode: true } }, lines: { select: { returnStatus: true } } } });
+  if (sale) {
+    if (sale.status !== "POSTED") return { block: `${sale.saleCode} is ${sale.status.toLowerCase()}.` };
+    if (sale.returns.length) return { block: `${sale.saleCode} has a sale return (${sale.returns[0].returnCode}) — it cannot be grossed up.` };
+    if (sale.lines.some((l) => l.returnStatus !== "NONE")) return { block: `${sale.saleCode} has returned lines.` };
+  }
+  const correction = await tx.correction.findFirst({ where: { OR: [{ correctionVoucherId: v.id }, { entityId: v.id }] }, select: { correctionCode: true } });
+  if (correction) return { block: `${v.voucherNumber} has correction ${correction.correctionCode}.` };
+
+  const credit = (codes: string[]) => round2(v.journalEntries.filter((j) => codes.includes(j.account.code)).reduce((s, j) => s.plus(j.credit).minus(j.debit), ZERO));
+  const recordedRevenueInr = credit([SYSTEM_ACCOUNT_CODES.SALES_INCOME]);
+  const saleTotal = round2(recordedRevenueInr.plus(credit([SYSTEM_ACCOUNT_CODES.OUTPUT_CGST, SYSTEM_ACCOUNT_CODES.OUTPUT_SGST, SYSTEM_ACCOUNT_CODES.OUTPUT_IGST])));
+
+  let recordedInr: Decimal;
+  let needsReclass = false;
+  const saleEntry = await tx.clearingEntry.findFirst({ where: { voucherId: v.id, kind: "SALE" }, select: { currencyCode: true, inrAmount: true } });
+  const reclass = v.clearingDocumentsSourced.find((d) => d.kind === "RECLASSIFY");
+  if (saleEntry) {
+    if (saleEntry.currencyCode !== "INR") return { block: `${v.voucherNumber} is a ${saleEntry.currencyCode} clearing sale — gross-up is only for INR clearing balances.` };
+    recordedInr = round2(saleEntry.inrAmount);
+  } else if (reclass) {
+    if (reclass.currencyCode !== "INR") return { block: `${v.voucherNumber} was reclassified into ${reclass.currencyCode} clearing — gross-up is only for INR clearing balances.` };
+    recordedInr = round2(new Decimal(reclass.availableInr).abs());
+  } else {
+    const block = await reclassifyBlock(tx, v.id);
+    if (block) return { block };
+    const pa = await tx.paymentAccount.findUniqueOrThrow({ where: { id: v.paymentAccountId! }, select: { accountId: true } });
+    recordedInr = round2(v.journalEntries.filter((j) => j.accountId === pa.accountId).reduce((s, j) => s.plus(j.debit).minus(j.credit), ZERO));
+    needsReclass = true;
+  }
+  if (!recordedInr.equals(saleTotal)) {
+    return { block: `${v.voucherNumber}: only ₹${recordedInr.toFixed(2)} of the ₹${saleTotal.toFixed(2)} sale is in the receipt / clearing (part on credit) — gross-up is not supported for it.` };
+  }
+  return {
+    voucherNumber: v.voucherNumber,
+    partyId: v.partyId!,
+    partyName: v.party.name,
+    recordedInr,
+    recordedRevenueInr,
+    needsReclass,
+    discountInr: round2(sale?.discountTotal ?? 0),
+    saleCode: sale?.saleCode ?? null,
+  };
+}
+
+/** Why this sale cannot be grossed up, or null. */
+export async function grossUpBlock(tx: Tx, saleVoucherId: string): Promise<string | null> {
+  const src = await grossUpSource(tx, saleVoucherId);
+  return "block" in src ? src.block : null;
+}
+
+const assumedAfter = (p: ClearingPlan): ClearingBalance => ({ available: p.after.available, reserve: p.after.reserve, entryCount: p.before.entryCount + p.entries.length });
+
+/**
+ * Dr 1150 (party) / Cr 4000 Sales [/ Cr output GST]: the part of the marketplace's
+ * gross sale that the sale voucher left out. The sale voucher, its COGS, the
+ * piece and stock are not touched; the fees come off clearing in the settlement.
+ */
+export async function planGrossUp(tx: Tx, input: GrossUpInput, opts: { assumedBefore?: ClearingBalance; pendingReclass?: boolean } = {}): Promise<ClearingPlan> {
+  const src = await grossUpSource(tx, input.saleVoucherId);
+  if ("block" in src) throw new ClearingError(src.block);
+  if (src.needsReclass && !opts.pendingReclass) throw new ClearingError(`The receipt of ${src.voucherNumber} is still in Cash/Bank — reclassify it to clearing first.`);
+  const gross = round2(money(input.grossSaleInr, "Gross sale amount", 2));
+  if (!gross.greaterThan(src.recordedInr)) throw new ClearingError(`The gross sale amount must be more than the ₹${src.recordedInr.toFixed(2)} already recorded on ${src.voucherNumber}.`);
+  const confirmation = (input.taxConfirmation ?? "").trim();
+  if (confirmation.length < 10) throw new ClearingError("Record the CA's GST confirmation for this gross-up (at least 10 characters: who confirmed, when, what). The app does not guess tax.");
+  const mode = input.taxMode;
+  if (!mode || !(GROSS_UP_TAX_MODES as readonly string[]).includes(mode)) throw new ClearingError("Choose the GST treatment of the gross-up exactly as the CA confirmed it.");
+
+  const missing = round2(gross.minus(src.recordedInr));
+  let revenue = missing;
+  let tax = new Decimal(0);
+  let treatment: "CGST_SGST" | "IGST" | null = null;
+  let rate = new Decimal(0);
+  if (mode !== "NONE") {
+    if (input.gstTreatment !== "CGST_SGST" && input.gstTreatment !== "IGST") throw new ClearingError("Choose CGST + SGST or IGST, as the CA confirmed.");
+    treatment = input.gstTreatment;
+    rate = money(input.gstRatePercent, "GST rate %", 2);
+    if (rate.greaterThan(100)) throw new ClearingError("GST rate % must be at most 100.");
+    if (mode === "EXCLUSIVE") tax = round2(missing.times(rate).dividedBy(100));
+    else {
+      tax = round2(missing.times(rate).dividedBy(rate.plus(100)));
+      revenue = round2(missing.minus(tax));
+    }
+  }
+  const clearingInr = round2(revenue.plus(tax));
+
+  const clearingAccount = await accountByCode(tx, SYSTEM_ACCOUNT_CODES.MARKETPLACE_CLEARING);
+  const salesAccount = await accountByCode(tx, SYSTEM_ACCOUNT_CODES.SALES_INCOME);
+  const before = opts.assumedBefore ?? (await getClearingBalance(tx, src.partyId, "INR"));
+  const lines: PlannedLine[] = [
+    { lineType: "GROSS_UP_REVENUE", direction: "ADDITION", accountId: salesAccount.id, accountCode: salesAccount.code, accountName: salesAccount.name, fc: revenue, inr: revenue, description: `Gross-up of ${src.voucherNumber}` },
+  ];
+  if (treatment) {
+    const split = splitGstAmount(tax, treatment);
+    for (const [code, amount] of [
+      [SYSTEM_ACCOUNT_CODES.OUTPUT_CGST, split.cgst],
+      [SYSTEM_ACCOUNT_CODES.OUTPUT_SGST, split.sgst],
+      [SYSTEM_ACCOUNT_CODES.OUTPUT_IGST, split.igst],
+    ] as const) {
+      if (amount.isZero()) continue;
+      const a = await accountByCode(tx, code);
+      lines.push({ lineType: "GROSS_UP_TAX", direction: "ADDITION", accountId: a.id, accountCode: a.code, accountName: a.name, fc: amount, inr: amount, description: `${mode === "INCLUSIVE" ? "Included" : "Added"} GST ${rate.toFixed(2)}% on the gross-up` });
+    }
+  }
+  const label = `Gross-up of ${src.voucherNumber} to ₹${gross.toFixed(2)}`;
+  const journal = journalFrom([
+    { accountCode: clearingAccount.code, accountName: clearingAccount.name, partyId: src.partyId, partyName: src.partyName, debit: clearingInr, description: label },
+    ...lines.map((l) => ({ accountCode: l.accountCode, accountName: l.accountName, partyName: null, credit: l.inr, description: `${CLEARING_LINE_LABELS[l.lineType]} — ${l.description}` })),
+  ]);
+
+  const warnings = [
+    `The sale ${src.voucherNumber}${src.saleCode ? ` (${src.saleCode})` : ""} is not edited: its amount, GST, COGS, finished-piece status and stock stay as posted. This separate voucher adds the ₹${missing.toFixed(2)} it left out.`,
+    `Sales revenue for this order becomes ₹${round2(src.recordedRevenueInr.plus(revenue)).toFixed(2)} (₹${src.recordedRevenueInr.toFixed(2)} + ₹${revenue.toFixed(2)}).`,
+    mode === "NONE"
+      ? "GST: none on the gross-up, as recorded from the CA's confirmation."
+      : `GST: ₹${tax.toFixed(2)} ${treatment === "IGST" ? "IGST" : "CGST + SGST"} at ${rate.toFixed(2)}% ${mode === "INCLUSIVE" ? "included in" : "added to"} the gross-up, as recorded from the CA's confirmation. The original sale's GST is not changed.`,
+    "Profit stays unchanged only when the settlement books the same amount as fees / expenses.",
+  ];
+  if (!src.discountInr.isZero()) warnings.push(`${src.saleCode} recorded a discount of ₹${src.discountInr.toFixed(2)}; it stays on the sale record (history is not rewritten).`);
+  if (mode === "EXCLUSIVE") warnings.push(`Clearing grows by ₹${clearingInr.toFixed(2)} (gross-up + GST): the settlement must account for the GST part too.`);
+
+  const plan: Omit<ClearingPlan, "fingerprint"> = {
+    kind: "GROSS_UP",
+    party: { id: src.partyId, name: src.partyName },
+    currencyCode: "INR",
+    documentDate: input.documentDate,
+    paymentAccount: null,
+    reference: input.reference?.trim() || src.voucherNumber,
+    notes: input.notes?.trim() || null,
+    receivedInr: new Decimal(0),
+    receivedFc: new Decimal(0),
+    payoutRate: new Decimal(1),
+    lines,
+    availableFc: clearingInr.negated(),
+    availableInr: clearingInr.negated(),
+    reserveFc: new Decimal(0),
+    reserveInr: new Decimal(0),
+    fxDifferenceInr: new Decimal(0),
+    availableOn: null,
+    sourceVoucherId: input.saleVoucherId,
+    grossSaleInr: gross,
+    taxConfirmation: confirmation,
+    before,
+    after: { available: { fc: r4(before.available.fc.plus(clearingInr)), inr: round2(before.available.inr.plus(clearingInr)) }, reserve: before.reserve },
+    journal,
+    entries: [{ bucket: "AVAILABLE", kind: "GROSS_UP", fc: clearingInr, inr: clearingInr }],
+    allocationsSupplied: false,
+    warnings,
+  };
+  return { ...plan, fingerprint: planFingerprint(plan, `${gross.toFixed(2)}|${mode}|${treatment ?? ""}|${rate.toFixed(2)}|${confirmation}`) };
+}
+
+export type GrossUpEffectRow = { accountCode: string; accountName: string; accountType: string; net: Decimal };
+
+export type GrossUpWorkflowPlan = {
+  sale: { voucherId: string; voucherNumber: string; recordedInr: Decimal; recordedRevenueInr: Decimal };
+  reclass: ClearingPlan | null;
+  grossUp: ClearingPlan;
+  settlement: ClearingPlan | null;
+  effect: {
+    /** Net Dr − Cr of every account the workflow touches. */
+    byAccount: GrossUpEffectRow[];
+    cashBankNet: Decimal;
+    clearingAfterInr: Decimal;
+    revenueAdded: Decimal;
+    taxAdded: Decimal;
+    expenseAdded: Decimal;
+    /** Income credited − expense debited by the workflow (0 = profit unchanged). */
+    profitChange: Decimal;
+  };
+  fingerprint: string;
+};
+
+const reclassInputOf = (input: GrossUpInput): ReclassifyInput => ({ saleVoucherId: input.saleVoucherId, documentDate: input.documentDate, currencyCode: "INR", reference: input.reference, notes: input.notes });
+const settlementInputOf = (input: GrossUpWorkflowInput, partyId: string): SettlementInput => ({
+  partyId,
+  currencyCode: "INR",
+  documentDate: input.settlement?.documentDate ?? input.documentDate,
+  paymentAccountId: input.settlement?.paymentAccountId ?? null,
+  reference: input.settlement?.reference ?? input.reference,
+  notes: input.settlement?.notes ?? null,
+  receivedInr: input.settlement?.receivedInr ?? "0",
+  lines: input.settlement?.lines ?? [],
+});
+
+/**
+ * Preview of the whole correction, each step planned on the balance the previous
+ * one leaves: (1) receipt Cash/Bank → clearing, if still needed; (2) gross-up;
+ * (3) optional settlement of the gross (Bank + fees). Nothing is saved.
+ */
+export async function planGrossUpWorkflow(tx: Tx, input: GrossUpWorkflowInput): Promise<GrossUpWorkflowPlan> {
+  const src = await grossUpSource(tx, input.saleVoucherId);
+  if ("block" in src) throw new ClearingError(src.block);
+  const reclass = src.needsReclass ? await planReclassify(tx, reclassInputOf(input)) : null;
+  const grossUp = await planGrossUp(tx, input, { assumedBefore: reclass ? assumedAfter(reclass) : undefined, pendingReclass: !!reclass });
+  const settlement = input.settlement ? await planSettlement(tx, settlementInputOf(input, src.partyId), { assumedBefore: assumedAfter(grossUp) }) : null;
+
+  const steps = [reclass, grossUp, settlement].filter((p): p is ClearingPlan => !!p);
+  const nets = new Map<string, Decimal>();
+  for (const l of steps.flatMap((p) => p.journal)) nets.set(l.accountCode, round2((nets.get(l.accountCode) ?? ZERO).plus(l.debit).minus(l.credit)));
+  const accounts = await tx.account.findMany({ where: { code: { in: [...nets.keys()] } }, select: { id: true, code: true, name: true, type: true } });
+  const paymentAccountIds = new Set((await tx.paymentAccount.findMany({ select: { accountId: true } })).map((p) => p.accountId));
+  const byAccount = accounts
+    .map((a) => ({ accountCode: a.code, accountName: a.name, accountType: a.type, net: nets.get(a.code)!, isPayment: paymentAccountIds.has(a.id) }))
+    .sort((a, b) => a.accountCode.localeCompare(b.accountCode));
+  const sum = (pred: (r: (typeof byAccount)[number]) => boolean) => round2(byAccount.filter(pred).reduce((s, r) => s.plus(r.net), ZERO));
+  const taxCodes = new Set<string>([SYSTEM_ACCOUNT_CODES.OUTPUT_CGST, SYSTEM_ACCOUNT_CODES.OUTPUT_SGST, SYSTEM_ACCOUNT_CODES.OUTPUT_IGST]);
+  const last = steps[steps.length - 1];
+  return {
+    sale: { voucherId: input.saleVoucherId, voucherNumber: src.voucherNumber, recordedInr: src.recordedInr, recordedRevenueInr: src.recordedRevenueInr },
+    reclass,
+    grossUp,
+    settlement,
+    effect: {
+      byAccount: byAccount.map(({ accountCode, accountName, accountType, net }) => ({ accountCode, accountName, accountType, net })),
+      cashBankNet: sum((r) => r.isPayment),
+      clearingAfterInr: last.after.available.inr,
+      revenueAdded: sum((r) => r.accountCode === SYSTEM_ACCOUNT_CODES.SALES_INCOME).negated(),
+      taxAdded: sum((r) => taxCodes.has(r.accountCode)).negated(),
+      expenseAdded: sum((r) => r.accountType === "EXPENSE"),
+      profitChange: sum((r) => r.accountType === "INCOME" || r.accountType === "EXPENSE").negated(),
+    },
+    fingerprint: fingerprintOf(steps.map((p) => p.fingerprint)),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Posting (one transaction, party locked, fresh preview required)
 // ---------------------------------------------------------------------------
 
-const VOUCHER_TYPE: Record<ClearingDocumentKind, "CLEARING_SETTLEMENT" | "CLEARING_RESERVE" | "CLEARING_RECLASS"> = {
+const VOUCHER_TYPE: Record<ClearingDocumentKind, "CLEARING_SETTLEMENT" | "CLEARING_RESERVE" | "CLEARING_RECLASS" | "CLEARING_GROSSUP"> = {
   SETTLEMENT: "CLEARING_SETTLEMENT",
   RESERVE_HOLD: "CLEARING_RESERVE",
   RESERVE_RELEASE: "CLEARING_RESERVE",
   RECLASSIFY: "CLEARING_RECLASS",
+  GROSS_UP: "CLEARING_GROSSUP",
 };
 
 type PostCommon = { idempotencyKey: string; expectedFingerprint: string; actor: Actor; fyStartMonth: number; fyStartDay: number };
@@ -604,6 +902,11 @@ async function postPlan(tx: Tx, partyId: string, build: () => Promise<ClearingPl
     throw new ClearingError("The balances or amounts changed after this preview. Review the new preview and confirm again. Nothing was saved.");
   }
   const amount = plan.kind === "SETTLEMENT" ? plan.availableInr.plus(plan.reserveInr.isNegative() ? plan.reserveInr.abs() : 0) : plan.availableInr.abs();
+  // Kinds that correct a sale: one live document of each kind per sale (checked again under the party lock).
+  if (plan.sourceVoucherId && (plan.kind === "RECLASSIFY" || plan.kind === "GROSS_UP")) {
+    const live = await tx.clearingDocument.findFirst({ where: { sourceVoucherId: plan.sourceVoucherId, kind: plan.kind, status: "POSTED" }, select: { id: true } });
+    if (live) throw new ClearingError(plan.kind === "RECLASSIFY" ? "This sale was already reclassified to clearing." : "This sale was already grossed up.");
+  }
   const voucher = await createVoucherHeader(
     tx,
     {
@@ -649,6 +952,8 @@ async function postPlan(tx: Tx, partyId: string, build: () => Promise<ClearingPl
       fxDifferenceInr: plan.fxDifferenceInr.toFixed(2),
       availableOn: plan.availableOn,
       sourceVoucherId: plan.sourceVoucherId,
+      grossSaleInr: plan.grossSaleInr ? plan.grossSaleInr.toFixed(2) : null,
+      taxConfirmation: plan.taxConfirmation ?? null,
       previewFingerprint: plan.fingerprint,
       voucherId: voucher.id,
       idempotencyKey: c.idempotencyKey,
@@ -691,6 +996,41 @@ export async function postReclassify(tx: Tx, input: ReclassifyInput & PostCommon
   return postPlan(tx, v.partyId, () => planReclassify(tx, input), input);
 }
 
+/**
+ * Posts the previewed gross-up workflow in ONE transaction (all or nothing):
+ * reclassification (if needed), gross-up, settlement (if given) — each through
+ * postPlan with its own fingerprint and a derived idempotency key.
+ */
+export async function postGrossUpWorkflow(tx: Tx, input: GrossUpWorkflowInput & PostCommon) {
+  requireOwner(input.actor);
+  if (!input.idempotencyKey?.trim()) throw new ClearingError("Missing submission key — reload the page and try again.");
+  const v = await tx.voucher.findUnique({ where: { id: input.saleVoucherId }, select: { partyId: true } });
+  if (!v?.partyId) throw new ClearingError("Sale not found.");
+  await lockParty(tx, v.partyId);
+  const replay = await tx.clearingDocument.findUnique({ where: { idempotencyKey: `${input.idempotencyKey}:g` } });
+  if (replay) {
+    if (replay.sourceVoucherId !== input.saleVoucherId) throw new ClearingError("This submission key was already used for another sale.");
+    return { replayed: true as const, voucherNumbers: [] as string[] };
+  }
+  const plan = await planGrossUpWorkflow(tx, input);
+  if (plan.fingerprint !== input.expectedFingerprint) {
+    throw new ClearingError("The balances or amounts changed after this preview. Review the new preview and confirm again. Nothing was saved.");
+  }
+  const common = { actor: input.actor, fyStartMonth: input.fyStartMonth, fyStartDay: input.fyStartDay };
+  const voucherNumbers: string[] = [];
+  const keep = (r: Awaited<ReturnType<typeof postPlan>>) => {
+    if (!r.replayed) voucherNumbers.push(r.voucherNumber);
+  };
+  if (plan.reclass) {
+    keep(await postPlan(tx, v.partyId, () => planReclassify(tx, reclassInputOf(input)), { ...common, idempotencyKey: `${input.idempotencyKey}:r`, expectedFingerprint: plan.reclass.fingerprint }));
+  }
+  keep(await postPlan(tx, v.partyId, () => planGrossUp(tx, input), { ...common, idempotencyKey: `${input.idempotencyKey}:g`, expectedFingerprint: plan.grossUp.fingerprint }));
+  if (plan.settlement) {
+    keep(await postPlan(tx, v.partyId, () => planSettlement(tx, settlementInputOf(input, v.partyId!)), { ...common, idempotencyKey: `${input.idempotencyKey}:s`, expectedFingerprint: plan.settlement.fingerprint }));
+  }
+  return { replayed: false as const, voucherNumbers };
+}
+
 /** Σ sub-ledger INR per bucket = the party's 1150 / 1160 ledger. */
 export async function assertPartyClearingReconciles(tx: Tx, partyId: string) {
   const [r] = await tx.$queryRawUnsafe<{ ledger_a: string; ledger_r: string; sub_a: string; sub_r: string }[]>(
@@ -715,8 +1055,8 @@ export async function clearingReversalBlock(tx: Tx, documentId: string): Promise
   if (!doc) return "Settlement not found.";
   if (doc.status !== "POSTED") return `${doc.voucher.voucherNumber} is already reversed.`;
   const later = await tx.clearingDocument.findFirst({
-    where: { partyId: doc.partyId, currencyCode: doc.currencyCode, status: "POSTED", createdAt: { gt: doc.createdAt } },
-    orderBy: { createdAt: "desc" },
+    where: { partyId: doc.partyId, currencyCode: doc.currencyCode, status: "POSTED", sequence: { gt: doc.sequence } },
+    orderBy: { sequence: "desc" },
     include: { voucher: { select: { voucherNumber: true } } },
   });
   if (later) return `Reverse the later ${later.voucher.voucherNumber} first (newest first).`;

@@ -17,19 +17,22 @@ Living document for whoever releases, checks or supports the system. Older
 | Owner "Correct entry" framework (+ migration 30) — see `CORRECTIONS_MATRIX.md` | `1ea7c27`…`4b71cab` | live (2026-10-06) — **production = `4b71cab`, 30 migrations** |
 | Payment balances: a second payment in an open form, refresh loop, advance labels, IST dates — see `PAYMENT_BALANCE_AUDIT.md` | `f3f9238`, `d7b1a75` | live (2026-10-11) — **production = `d7b1a75`, 30 migrations** |
 | Cash & Bank Book, Receivable & Payable (લેવાનું / આપવાનું), party summary, voucher page — see `CASH_BANK_BOOK.md` | `b4aca43`, `366e5ce` | live (2026-10-11) — **production = `366e5ce`, 30 migrations** |
-| Clearing settlement (marketplace / provider payouts, reserve, FX, reclassification) — see `CLEARING_SETTLEMENT_DESIGN.md` | branch `feature/clearing-settlement` | **not deployed** — needs migration 31 |
+| Clearing settlement (marketplace / provider payouts, reserve, FX, reclassification, audited sale gross-up) — see `CLEARING_SETTLEMENT_DESIGN.md` | branch `feature/clearing-settlement` | **not deployed** — needs migration 31 |
 
 ## 2. Migrations
 
 31 in `prisma/migrations/` on the clearing branch; production has 30. The 31st,
 `20261012090000_clearing_settlement` (checksum
-`f494ab452d2fa869ca59720a62bc7823ffdaf0aff28287ad8d9002a05567676d`, LF), is additive:
-a guard that refuses any conflicting account code, 7 new enums, 3 VoucherType values
-(`ADD VALUE IF NOT EXISTS`), `parties."clearingEnabled"` (default false), 5 new tables,
-11 system accounts (1150, 1160, 1170, 1180, 4300, 5600–5650) and 13 default line
-mappings. Rehearsed on a restore of the 2026-10-11 production backup: 67 of 69 tables
-byte-identical, `accounts` +11 rows (the 30 existing rows identical), `_prisma_migrations`
-+1, no drift, second deploy a no-op. Apply it **before** the code.
+`784fffad7debf8d7a4b89608d8db9b6ddf4337db3dcf273fbb27490698adf46e`, LF), is additive:
+a guard that refuses any conflicting account code, 7 new enums, 4 VoucherType values
+(`ADD VALUE IF NOT EXISTS`: CLEARING_SETTLEMENT, CLEARING_RESERVE, CLEARING_RECLASS,
+CLEARING_GROSSUP), `parties."clearingEnabled"` (default false), 5 new tables
+(`clearing_documents` carries a posting `sequence`, the corrected sale, the gross amount
+and the CA's tax confirmation), 11 system accounts (1150, 1160, 1170, 1180, 4300,
+5600–5650) and 13 default line mappings. Rehearsed on a restore of the 2026-10-11
+production backup: 67 of 69 tables byte-identical, `accounts` +11 rows,
+`_prisma_migrations` +1, 0 of 22 parties flagged, no drift, second deploy a no-op.
+Apply it **before** the code.
 
 The 30th, `20261008090000_entry_corrections`, only adds 8 enum values
 (`StockMovementType`: ROUGH_COUNT_CORRECTION_IN / _OUT, ROUGH_RETURN_REVERSAL_OUT,
@@ -106,8 +109,10 @@ The clearing-settlement release (migration 31, then code):
 5. Fast-forward push; wait for Vercel Production Ready at the new SHA.
 6. Read-only smoke: Dashboard Receivable / Payable unchanged; Cash & Bank Book Bank
    ₹12,599; Settlements tab shows no provider (nothing is marked clearing). **Post
-   nothing** — marking ETSY clearing and reclassifying `SAL/2026-27/0003` are the
-   Owner's decisions afterwards.
+   nothing** — marking ETSY clearing and the `SAL/2026-27/0003` gross-up (receipt
+   reclassification + ₹4,991 gross-up + ₹17,590 settlement, one preview, one
+   transaction) are the Owner's decisions afterwards, and the gross-up needs the CA's
+   GST decision first (`CLEARING_SETTLEMENT_DESIGN.md`, "Gross-up").
 7. Reconciliation again; maintenance off.
 
 The payment-balance fix (code only) followed `PAYMENT_BALANCE_AUDIT.md` section 5.

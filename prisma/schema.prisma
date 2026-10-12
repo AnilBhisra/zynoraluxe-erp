@@ -388,6 +388,7 @@ enum VoucherType {
   CLEARING_SETTLEMENT
   CLEARING_RESERVE
   CLEARING_RECLASS
+  CLEARING_GROSSUP
 }
 
 // Concurrency-safe voucher numbering: one row per (type, financial year),
@@ -501,7 +502,7 @@ model Voucher {
   customerJewelleryDeliveryReversal CustomerJewelleryDelivery? @relation("CustomerJewelleryDeliveryReversalVoucher")
   clearingDocument                  ClearingDocument?          @relation("ClearingDocumentVoucher")
   clearingDocumentReversal          ClearingDocument?          @relation("ClearingDocumentReversalVoucher")
-  clearingDocumentSource            ClearingDocument?          @relation("ClearingDocumentSourceVoucher")
+  clearingDocumentsSourced          ClearingDocument[]         @relation("ClearingDocumentSourceVoucher")
   clearingEntries                   ClearingEntry[]            @relation("ClearingEntryVoucher")
   clearingAllocations               ClearingAllocation[]       @relation("ClearingAllocationSale")
 
@@ -3944,6 +3945,11 @@ enum ClearingLineType {
   // Computed by the settlement, never entered: where an FX difference posts.
   FX_GAIN
   FX_LOSS
+  // Gross-up of a marketplace sale recorded net of fees: the missing revenue
+  // (Sales Income) and, only when the Owner records a CA-confirmed tax
+  // treatment, its output tax. Fixed accounts, never mapped.
+  GROSS_UP_REVENUE
+  GROSS_UP_TAX
 }
 
 enum ClearingLineDirection {
@@ -3965,6 +3971,7 @@ enum ClearingEntryKind {
   RESERVE_HOLD
   RESERVE_RELEASE
   RECLASSIFY
+  GROSS_UP
   // The mirror of an entry whose voucher was reversed (cancelVoucher).
   MIRROR
 }
@@ -3974,6 +3981,7 @@ enum ClearingDocumentKind {
   RESERVE_HOLD
   RESERVE_RELEASE
   RECLASSIFY
+  GROSS_UP
 }
 
 enum ClearingDocumentStatus {
@@ -4004,6 +4012,9 @@ model ClearingAccountMapping {
 model ClearingDocument {
   id   String               @id @default(cuid())
   kind ClearingDocumentKind
+  /// Posting order (database sequence). "Newest first" reversal uses this, not createdAt:
+  /// a gross-up workflow posts up to three documents in one transaction (same timestamp).
+  sequence Int @unique @default(autoincrement())
 
   partyId String
   party   Party  @relation("ClearingDocumentParty", fields: [partyId], references: [id])
@@ -4037,9 +4048,13 @@ model ClearingDocument {
   /// Reserve hold: when the marketplace says it becomes available.
   availableOn     DateTime?
 
-  /// RECLASSIFY: the sale voucher whose receipt is moved to clearing (once).
-  sourceVoucherId String?  @unique
+  /// RECLASSIFY / GROSS_UP: the sale voucher they correct (one live document of each kind per sale).
+  sourceVoucherId String?
   sourceVoucher   Voucher? @relation("ClearingDocumentSourceVoucher", fields: [sourceVoucherId], references: [id])
+  /// GROSS_UP: the marketplace's gross sale amount the Owner stated (INR).
+  grossSaleInr    Decimal? @db.Decimal(14, 2)
+  /// GROSS_UP: the tax treatment as confirmed by the CA, in the Owner's words (required to post).
+  taxConfirmation String?
 
   /// The balances the Owner previewed; posting refuses a stale preview.
   previewFingerprint String
@@ -4067,6 +4082,7 @@ model ClearingDocument {
 
   @@index([partyId, currencyCode, createdAt])
   @@index([status])
+  @@index([sourceVoucherId])
   @@map("clearing_documents")
 }
 

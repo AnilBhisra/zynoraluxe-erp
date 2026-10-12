@@ -4,9 +4,11 @@ import { startTransition, useActionState, useEffect, useRef, useState } from "re
 
 import {
   allocateAction,
+  postGrossUpAction,
   postReclassifyAction,
   postReserveAction,
   postSettlementAction,
+  previewGrossUpAction,
   previewReclassifyAction,
   previewReserveAction,
   previewSettlementAction,
@@ -15,6 +17,8 @@ import {
   setClearingPartyAction,
   updateLineMappingAction,
   type ClearingFormState,
+  type GrossUpFormState,
+  type SerializedGrossUp,
   type SerializedPlan,
 } from "@/app/actions/clearing";
 import { Alert } from "@/components/ui/Alert";
@@ -70,6 +74,20 @@ export type DocumentRow = {
 };
 export type SaleOption = { voucherId: string; voucherNumber: string; date: string; openFc: string };
 export type ReclassifyRow = { voucherId: string; voucherNumber: string; date: string; partyName: string; amount: string; accountName: string; block: string | null };
+export type GrossUpRow = {
+  voucherId: string;
+  voucherNumber: string;
+  date: string;
+  partyName: string;
+  amount: string;
+  /** Where the receipt is now: the payment account's name, or "clearing". */
+  receiptIn: string;
+  accountName: string | null;
+  saleCode: string | null;
+  subtotal: string | null;
+  discount: string | null;
+  block: string | null;
+};
 export type MappingRow = { lineType: string; label: string; accountId: string; accountLabel: string; fixed: boolean };
 
 const LINE_LABELS: Record<string, string> = {
@@ -86,6 +104,8 @@ const LINE_LABELS: Record<string, string> = {
   OTHER: "Other adjustment",
   FX_GAIN: "FX gain",
   FX_LOSS: "FX loss",
+  GROSS_UP_REVENUE: "Gross-up: sales revenue",
+  GROSS_UP_TAX: "Gross-up: output GST",
 };
 const USER_LINES = ["COMMISSION", "PROCESSING_FEE", "ADVERTISING", "SHIPPING", "SUBSCRIPTION", "REFUND", "TAX_WITHHELD", "TAX_REMITTED", "RESERVE_HOLD", "RESERVE_RELEASE", "OTHER"];
 const CURRENCIES = ["INR", "USD", "EUR", "GBP", "AUD", "CAD", "AED", "SGD"];
@@ -108,8 +128,8 @@ function runWith(form: HTMLFormElement | null, dispatch: (fd: FormData) => void)
 }
 
 /** Rotates the submission key and runs onSaved once per saved result (never on every render). */
-function useSavedOnce(state: ClearingFormState, onSaved: () => void) {
-  const handled = useRef<ClearingFormState>(undefined);
+function useSavedOnce<S extends { success?: string } | undefined>(state: S, onSaved: () => void) {
+  const handled = useRef<S | undefined>(undefined);
   const cb = useRef(onSaved);
   useEffect(() => {
     cb.current = onSaved;
@@ -419,6 +439,208 @@ export function ReclassifyPanel({ rows }: { rows: ReclassifyRow[] }) {
 }
 
 // ---------------------------------------------------------------------------
+// Gross-up a marketplace sale recorded net of the marketplace's fees
+// ---------------------------------------------------------------------------
+
+const TAX_MODES: { value: string; label: string }[] = [
+  { value: "", label: "— choose exactly as the CA confirmed —" },
+  { value: "NONE", label: "No GST on the gross-up" },
+  { value: "INCLUSIVE", label: "GST included in the gross-up amount" },
+  { value: "EXCLUSIVE", label: "GST added on top of the gross-up amount" },
+];
+
+function GrossUpPreview({ plan }: { plan: SerializedGrossUp }) {
+  const e = plan.effect;
+  const saleRevenueAfter = (Number(plan.recordedRevenueInr) + Number(e.revenueAdded)).toFixed(2);
+  const gu = plan.grossUp;
+  const guRevenue = gu.lines.filter((l) => l.lineType === "GROSS_UP_REVENUE").reduce((s, l) => s + Number(l.inr), 0).toFixed(2);
+  const st = plan.settlement;
+  const stDeductions = st ? st.lines.filter((l) => l.direction === "DEDUCTION").reduce((s, l) => s + Number(l.inr), 0).toFixed(2) : "0.00";
+  return (
+    <div className="flex min-w-0 flex-col gap-3" data-testid="grossup-preview">
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 text-xs" data-testid="grossup-effect">
+        <p className="mb-1 text-sm font-semibold">Overall effect of all steps together</p>
+        <dl className="grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-2">
+          <div><dt className="inline">Cash / Bank (net): </dt><dd className="inline font-medium" data-testid="effect-bank">{inr(e.cashBankNet)}</dd></div>
+          <div><dt className="inline">{gu.partyName} clearing after: </dt><dd className="inline font-medium" data-testid="effect-clearing">{inr(e.clearingAfterInr)}</dd></div>
+          <div><dt className="inline">Sales revenue of {plan.saleVoucherNumber}: </dt><dd className="inline font-medium" data-testid="effect-sale-revenue">{inr(plan.recordedRevenueInr)} → {inr(saleRevenueAfter)}</dd></div>
+          <div><dt className="inline">Revenue added: </dt><dd className="inline font-medium" data-testid="effect-revenue">{inr(e.revenueAdded)}</dd></div>
+          <div><dt className="inline">Output GST added: </dt><dd className="inline font-medium" data-testid="effect-tax">{inr(e.taxAdded)}</dd></div>
+          <div><dt className="inline">Fees / expenses added: </dt><dd className="inline font-medium" data-testid="effect-expense">{inr(e.expenseAdded)}</dd></div>
+          <div><dt className="inline">Profit change: </dt><dd className={`inline font-semibold ${e.profitChange === "0.00" ? "" : "text-red-700 dark:text-red-400"}`} data-testid="effect-profit">{inr(e.profitChange)}{e.profitChange === "0.00" ? " (unchanged)" : ""}</dd></div>
+          <div><dt className="inline">GST basis (CA): </dt><dd className="inline break-words">{plan.taxConfirmation}</dd></div>
+        </dl>
+        <div className="mt-2 overflow-x-auto">
+          <table className="w-full min-w-[360px]" data-testid="effect-accounts">
+            <thead className="text-left text-zinc-500"><tr><th className="px-2 py-1">Account</th><th className="px-2 py-1 text-right">Net Dr (+) / Cr (−)</th></tr></thead>
+            <tbody>
+              {e.byAccount.map((r) => (
+                <tr key={r.account} className="border-t border-[var(--border)]"><td className="px-2 py-1">{r.account}</td><td className="px-2 py-1 text-right">{inr(r.net)}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {plan.reclass ? (
+        <div className="flex min-w-0 flex-col gap-1" data-testid="grossup-step-reclass">
+          <p className="text-sm font-semibold">Step 1 — move the {inr(plan.recordedInr)} receipt from {plan.reclass.paymentAccountName} to clearing</p>
+          <PlanPreview plan={plan.reclass} />
+        </div>
+      ) : null}
+      <div className="flex min-w-0 flex-col gap-1" data-testid="grossup-step-grossup">
+        <p className="text-sm font-semibold">
+          Step {plan.reclass ? 2 : 1} — add the missing {inr((Number(plan.grossSaleInr) - Number(plan.recordedInr)).toFixed(2))} gross revenue to clearing ({inr(plan.recordedInr)} → {inr(plan.grossSaleInr)}; revenue {inr(guRevenue)})
+        </p>
+        <PlanPreview plan={gu} />
+      </div>
+      {st ? (
+        <div className="flex min-w-0 flex-col gap-1" data-testid="grossup-step-settlement">
+          <p className="text-sm font-semibold">
+            Step {plan.reclass ? 3 : 2} — settle {inr(st.availableInr)}: {st.paymentAccountName ?? "nothing received"} {inr(st.receivedInr)} + fees / deductions {inr(stDeductions)}
+          </p>
+          <PlanPreview plan={st} />
+        </div>
+      ) : (
+        <p className="text-xs text-amber-800 dark:text-amber-300">No settlement in this correction: clearing keeps {inr(e.clearingAfterInr)} until you post the payout and fees.</p>
+      )}
+    </div>
+  );
+}
+
+function GrossUpRowForm({ row, paymentAccounts }: { row: GrossUpRow; paymentAccounts: { id: string; name: string }[] }) {
+  const [preview, previewAction, previewing] = useActionState(previewGrossUpAction, undefined);
+  const [saved, saveAction, saving] = useActionState(postGrossUpAction, undefined);
+  const [key] = useState(newKey);
+  const [staleFor, setStaleFor] = useState<GrossUpFormState>(undefined);
+  const [taxMode, setTaxMode] = useState("");
+  const [withSettlement, setWithSettlement] = useState(true);
+  const [lines, setLines] = useState<LineDraft[]>(() => (row.discount && Number(row.discount) > 0 ? [{ lineType: "", amount: row.discount, direction: "DEDUCTION", description: "" }] : []));
+  const formRef = useRef<HTMLFormElement>(null);
+  const markEdited = () => setStaleFor(preview);
+  const fresh = !!preview?.preview && staleFor !== preview;
+  const defaultGross = row.subtotal && row.discount && Number(row.discount) > 0 ? row.subtotal : "";
+  return (
+    <li className="flex min-w-0 flex-col gap-2 p-3" data-testid="grossup-row">
+      <p className="text-sm">
+        <strong>{row.voucherNumber}</strong>{row.saleCode ? ` (${row.saleCode})` : ""} · {row.date} · {row.partyName} · recorded {inr(row.amount)} · receipt in {row.receiptIn}
+        {row.discount && Number(row.discount) > 0 ? ` · selling price ${inr(row.subtotal ?? "0")}, discount ${inr(row.discount)}` : ""}
+      </p>
+      {row.block ? (
+        <p className="text-xs text-red-700 dark:text-red-400" data-testid="grossup-block">Cannot gross up: {row.block}</p>
+      ) : saved?.success ? (
+        <Alert tone="success">{saved.replayed ? "Already posted — the repeated submit was ignored." : `Posted ${saved.success}. The original sale was not changed.`}</Alert>
+      ) : (
+        <details>
+          <summary className="cursor-pointer text-xs font-medium underline" data-testid="grossup-open">Gross up this sale…</summary>
+          <form ref={formRef} className="mt-2 flex flex-col gap-3" onChange={markEdited} onSubmit={(e) => e.preventDefault()} data-testid="grossup-form">
+            <input type="hidden" name="saleVoucherId" value={row.voucherId} />
+            <input type="hidden" name="idempotencyKey" value={key} />
+            <input type="hidden" name="fingerprint" value={preview?.preview?.fingerprint ?? ""} />
+            <input type="hidden" name="includeSettlement" value={withSettlement ? "true" : "false"} />
+            <input type="hidden" name="linesJson" value={JSON.stringify(lines)} />
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              <label className={LABEL}>Correction date<input type="date" name="documentDate" defaultValue={indiaToday()} className={INPUT} /></label>
+              <label className={LABEL}>Gross sale amount (marketplace statement, INR)<input name="grossSaleInr" inputMode="decimal" defaultValue={defaultGross} className={INPUT} data-testid="grossup-gross" /></label>
+              <label className={LABEL}>
+                GST on the gross-up
+                <select name="taxMode" className={INPUT} value={taxMode} onChange={(e) => setTaxMode(e.target.value)} data-testid="grossup-taxmode">
+                  {TAX_MODES.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                </select>
+              </label>
+              {taxMode === "INCLUSIVE" || taxMode === "EXCLUSIVE" ? (
+                <>
+                  <label className={LABEL}>GST type<select name="gstTreatment" className={INPUT} defaultValue=""><option value="">— choose —</option><option value="CGST_SGST">CGST + SGST</option><option value="IGST">IGST</option></select></label>
+                  <label className={LABEL}>GST rate %<input name="gstRatePercent" inputMode="decimal" className={INPUT} /></label>
+                </>
+              ) : null}
+              <label className={`${LABEL} sm:col-span-2 lg:col-span-4`}>
+                CA&apos;s GST confirmation (required — who, when, what)
+                <input name="taxConfirmation" className={INPUT} placeholder="e.g. CA … confirmed on … : no GST on the Etsy gross-up" data-testid="grossup-confirmation" />
+              </label>
+              <label className={LABEL}>Reference<input name="reference" className={INPUT} defaultValue={row.voucherNumber} /></label>
+              <label className={`${LABEL} sm:col-span-1 lg:col-span-3`}>Reason / notes<input name="notes" className={INPUT} placeholder="Sale entered net of Etsy fees and ads" /></label>
+            </div>
+            <label className="flex items-center gap-2 text-xs">
+              <input type="checkbox" checked={withSettlement} onChange={(e) => { setWithSettlement(e.target.checked); markEdited(); }} data-testid="grossup-with-settlement" />
+              Also settle it now (the payout that reached the Bank and the marketplace&apos;s fees)
+            </label>
+            {withSettlement ? (
+              <div className="flex flex-col gap-2 rounded-lg border border-[var(--border)] p-2">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                  <label className={LABEL}>Settlement date<input type="date" name="settlementDate" defaultValue={row.date} className={INPUT} /></label>
+                  <label className={LABEL}>
+                    Payout received into
+                    <select name="paymentAccountId" className={INPUT} defaultValue={paymentAccounts.find((p) => p.name === row.accountName)?.id ?? paymentAccounts[0]?.id}>
+                      <option value="">— nothing received —</option>
+                      {paymentAccounts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
+                  </label>
+                  <label className={LABEL}>Amount received (INR)<input name="receivedInr" inputMode="decimal" defaultValue={row.amount} className={INPUT} data-testid="grossup-received" /></label>
+                  <label className={LABEL}>Payout reference<input name="settlementReference" className={INPUT} /></label>
+                </div>
+                <p className="text-xs font-medium text-zinc-600 dark:text-zinc-400">Fees / deductions the marketplace kept (choose what each one is)</p>
+                {lines.map((l, i) => (
+                  <div key={i} className="grid grid-cols-1 gap-2 sm:grid-cols-[2fr_1fr_2fr_auto]" data-testid="grossup-line">
+                    <select aria-label="Line type" className={INPUT} value={l.lineType} onChange={(e) => { setLines((xs) => xs.map((x, j) => (j === i ? { ...x, lineType: e.target.value } : x))); markEdited(); }}>
+                      <option value="">— choose —</option>
+                      {USER_LINES.filter((t) => t !== "RESERVE_RELEASE").map((t) => <option key={t} value={t}>{LINE_LABELS[t]}</option>)}
+                    </select>
+                    <input aria-label="Amount" inputMode="decimal" className={INPUT} value={l.amount} onChange={(e) => { setLines((xs) => xs.map((x, j) => (j === i ? { ...x, amount: e.target.value } : x))); markEdited(); }} />
+                    <input aria-label="Description" className={INPUT} value={l.description} placeholder="description" onChange={(e) => { setLines((xs) => xs.map((x, j) => (j === i ? { ...x, description: e.target.value } : x))); markEdited(); }} />
+                    <button type="button" className="h-10 rounded-lg border border-zinc-300 px-3 text-xs dark:border-zinc-600" onClick={() => { setLines((xs) => xs.filter((_, j) => j !== i)); markEdited(); }}>Remove</button>
+                  </div>
+                ))}
+                <button type="button" className="self-start text-xs font-medium underline" onClick={() => { setLines((xs) => [...xs, { lineType: "", amount: "", direction: "DEDUCTION", description: "" }]); markEdited(); }} data-testid="grossup-add-line">+ Add a fee / deduction</button>
+              </div>
+            ) : null}
+            {preview?.error ? <Alert tone="error">{preview.error}</Alert> : null}
+            {saved?.error ? <Alert tone="error">{saved.error}</Alert> : null}
+            {fresh && preview?.preview ? <GrossUpPreview plan={preview.preview} /> : null}
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="secondary" disabled={previewing} onClick={() => runWith(formRef.current, previewAction)} data-testid="grossup-preview-btn">{previewing ? "Previewing…" : "Preview gross-up"}</Button>
+              <Button
+                type="button"
+                disabled={!fresh || saving}
+                data-testid="grossup-confirm"
+                onClick={() => {
+                  if (window.confirm(`Post the gross-up of ${row.voucherNumber}${preview?.preview?.reclass ? ", the receipt reclassification" : ""}${preview?.preview?.settlement ? " and the settlement" : ""} together? The original sale is not changed; each voucher can only be reversed (newest first).`)) runWith(formRef.current, saveAction);
+                }}
+              >
+                {saving ? "Saving…" : "Confirm and post"}
+              </Button>
+              {!fresh ? <span className="self-center text-xs text-zinc-500">Preview first — posting needs a fresh preview.</span> : null}
+            </div>
+          </form>
+        </details>
+      )}
+    </li>
+  );
+}
+
+export function GrossUpPanel({ rows, paymentAccounts }: { rows: GrossUpRow[]; paymentAccounts: { id: string; name: string }[] }) {
+  // Shown first: sales that look recorded net of fees (a discount on the finished sale, or the receipt still in Cash/Bank).
+  const looksNet = (r: GrossUpRow) => !r.block && ((r.discount !== null && Number(r.discount) > 0) || r.receiptIn !== "clearing");
+  const likely = rows.filter(looksNet);
+  const others = rows.filter((r) => !looksNet(r));
+  return (
+    <section className={`${CARD} flex flex-col gap-2`} data-testid="grossup-panel">
+      <h3 className="text-sm font-semibold">Gross-up a marketplace sale recorded net of fees</h3>
+      <p className="text-xs text-zinc-500">
+        When a marketplace sale was entered at the amount that reached the Bank (fees and ads taken as a discount), post its missing gross revenue as a separate audited voucher: Dr clearing / Cr Sales (and output GST only as the CA confirms). The fees then come off clearing in the settlement, so profit is unchanged. The original sale, its COGS, the piece and stock are never edited.
+      </p>
+      {rows.length === 0 ? <p className="text-xs text-zinc-400">No posted sale of a clearing party to gross up.</p> : null}
+      {likely.length ? <ul className="divide-y divide-[var(--border)] rounded-xl border border-[var(--border)]">{likely.map((r) => <GrossUpRowForm key={r.voucherId} row={r} paymentAccounts={paymentAccounts} />)}</ul> : null}
+      {others.length ? (
+        <details className="text-xs" data-testid="grossup-others">
+          <summary className="cursor-pointer font-medium">Other sales of clearing parties ({others.length})</summary>
+          <ul className="mt-2 divide-y divide-[var(--border)] rounded-xl border border-[var(--border)]">{others.map((r) => <GrossUpRowForm key={r.voucherId} row={r} paymentAccounts={paymentAccounts} />)}</ul>
+        </details>
+      ) : null}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Settlement list: reverse, allocate
 // ---------------------------------------------------------------------------
 
@@ -493,7 +715,7 @@ export function SettlementList({ docs, salesByKey }: { docs: DocumentRow[]; sale
                 <p className="min-w-0 break-words">
                   <a className="font-medium underline" href={`/accounting/voucher/${d.voucherId}`}>{d.voucherNumber}</a> · {d.date} · {d.partyName} · {d.currencyCode}
                   {d.reference ? ` · ${d.reference}` : ""} ·{" "}
-                  <span className={d.status === "REVERSED" ? "text-red-700 dark:text-red-400" : ""}>{d.status === "REVERSED" ? "Reversed" : d.kind === "SETTLEMENT" ? (d.allocatedFc === "0.00" ? "Unallocated pooled settlement" : "Partly allocated") : d.kind === "RECLASSIFY" ? `Reclassified ${d.sourceVoucherNumber}` : d.kind === "RESERVE_HOLD" ? "Reserve hold" : "Reserve release"}</span>
+                  <span className={d.status === "REVERSED" ? "text-red-700 dark:text-red-400" : ""}>{d.status === "REVERSED" ? "Reversed" : d.kind === "SETTLEMENT" ? (d.allocatedFc === "0.00" ? "Unallocated pooled settlement" : "Partly allocated") : d.kind === "RECLASSIFY" ? `Reclassified ${d.sourceVoucherNumber}` : d.kind === "GROSS_UP" ? `Gross-up ${d.sourceVoucherNumber}` : d.kind === "RESERVE_HOLD" ? "Reserve hold" : "Reserve release"}</span>
                 </p>
                 {d.status === "POSTED" && newestLive ? <ReverseForm doc={d} /> : null}
               </div>

@@ -12,7 +12,8 @@ sum after deducting fees fitted neither. In production, `SAL/2026-27/0003` (ETSY
 ₹12,599, 2026-10-08) was entered as "Paid now — Bank" and its note says ₹4,991
 of Etsy tax and offsite ads was deducted — the piece's selling price was ₹17,590
 and the ₹4,991 was entered as a **discount**. So revenue is understated by ₹4,991
-and the fees are invisible (profit is the same).
+and the fees are invisible (profit is the same). The audited **gross-up** below
+corrects that without editing the sale.
 
 ## 2. Accounting model
 
@@ -85,6 +86,38 @@ correction, no cancellation. The sale voucher, GST, revenue, COGS, piece status
 and stock are never touched. While it stands, the sale cannot be cancelled on its
 own (that would credit Bank twice) — reverse the reclassification first.
 
+### Gross-up a sale recorded net of the marketplace's fees
+
+```
+CLR-GRS/…:  Dr 1150 (party)  /  Cr 4000 Sales  [/ Cr 7001+7002 or 7003 output GST]
+```
+For a sale whose amount is what reached the Bank (fees/ads taken as a discount). The
+Owner states the marketplace's **gross** amount; the missing part (gross − recorded)
+is added to revenue and to the provider's clearing; the settlement then takes the fees
+off clearing as expenses, so **profit is unchanged** and revenue and fees are both
+shown gross. GST on the gross-up is **never defaulted**: the Owner must choose none /
+included / added, CGST+SGST or IGST and the rate, and type the CA's confirmation
+(≥ 10 characters, stored on the document with the gross amount). Only the gross-up
+amount is taxed; the original sale's GST is not changed.
+
+One preview, one transaction, all or nothing, each step planned on the balance the
+previous step leaves:
+1. receipt reclassification (only if the receipt is still in Cash/Bank);
+2. the gross-up;
+3. optionally the settlement (payout to Bank + each fee line).
+
+The preview shows each voucher and the overall effect (Cash/Bank net, clearing after,
+revenue, GST, expense, profit change, the order's revenue before → after). Each step
+keeps its own fingerprint and idempotency key (`key:r`, `key:g`, `key:s`).
+
+Refused unless: the party is clearing; the sale is POSTED, INR, fully in the receipt /
+clearing (not part on credit), has no live gross-up, no sale return or returned line,
+no correction. The sale voucher, the finished-sale record (its discount stays), COGS,
+the piece's status and stock are never touched. While a gross-up stands, the sale
+cannot be cancelled (reverse the gross-up first). The P&L counts gross-up revenue of
+a finished sale as linked revenue, not as a "manual sale". Reversal is the ordinary
+newest-first reversal of each document (settlement → gross-up → reclassification).
+
 ### Reversal
 
 Owner only, reason ≥ 10 characters, idempotency key, party row locked, **newest
@@ -92,7 +125,9 @@ first per provider and currency** (a later posted document blocks it), refused i
 it would leave a negative available or reserve balance. Posts the generic mirror
 voucher (`REV/…`); the sub-ledger entries are mirrored by the same call
 (`cancelVoucher` → `mirrorClearingEntries`); active allocations are reversed.
-The generic voucher Cancel refuses CLR / CLR-RSV / CLR-RCL vouchers.
+The generic voucher Cancel refuses CLR / CLR-RSV / CLR-RCL / CLR-GRS vouchers.
+"Newest" is the document's posting `sequence` (a gross-up workflow posts up to three
+documents in one transaction, with the same timestamp).
 
 ### Sale return / cancellation of a clearing sale
 
@@ -113,6 +148,10 @@ proportion; cancelling the sale mirrors its clearing entry. A settlement
 | Hold ₹300 | Dr 1160 300.00 · Cr 1150 300.00 |
 | Payout ₹1,000 incl. release ₹300 | Dr 1002 1,000.00 · Cr 1150 700.00 · Cr 1160 300.00 |
 | Reclassify ETSY ₹12,599 | Dr 1150 12,599.00 · Cr 1002 12,599.00 |
+| Gross-up ETSY to ₹17,590 (no GST) | Dr 1150 4,991.00 · Cr 4000 4,991.00 |
+| Then settle ₹17,590 | Dr 1002 12,599.00 · Dr 5600/5610 4,991.00 · Cr 1150 17,590.00 → clearing 0, Bank net 0, profit 0 |
+| Gross-up ₹500 + IGST 18% added | Dr 1150 590.00 · Cr 4000 500.00 · Cr 7003 90.00 |
+| Gross-up ₹590 incl. CGST+SGST 18% | Dr 1150 590.00 · Cr 4000 500.00 · Cr 7001 45.00 · Cr 7002 45.00 |
 
 ## 4. Where it shows
 
@@ -148,9 +187,12 @@ line taking the remainder; sub-ledger = ledger asserted before commit.
 * Refund not recorded as a Sale Return → 4100 Sales Returns (contra revenue).
 * Shipping deductions → 5630 expense (or reduce shipping income if charged).
 * FX gain/loss → 4300 / 5650.
-* Whether `SAL/2026-27/0003` should be restated at ₹17,590 with ₹4,991 of fees:
-  the app does not rewrite a posted sale; that needs an Owner/CA decision (a
-  separate audited sale correction would be required).
+* `SAL/2026-27/0003`: whether to gross it up to ₹17,590 with ₹4,991 of fees, how to
+  split the ₹4,991 (the note says "Etsy tax and offsite ads" — tax the marketplace
+  collects is not an expense: use the "Tax collected / remitted" line, 1180 suspense,
+  until classified), and the GST on the gross-up (none / included / added, rate). The
+  app takes all three from the Owner and records the CA's confirmation; it guesses
+  none of them.
 
 ## 7. Limitations
 
@@ -163,6 +205,6 @@ line taking the remainder; sub-ledger = ledger asserted before commit.
 ## 8. Rollback
 
 Code rollback to `366e5ce` is safe **until the first clearing posting** (party
-flag, settlement, reserve move or reclassification). After that, old code would
+flag, settlement, reserve move, reclassification or gross-up). After that, old code would
 treat 1150/1160 lines as unknown and allow the generic Cancel on CLR vouchers —
 fix forward. Never roll the migration back (enum values and tables are additive).

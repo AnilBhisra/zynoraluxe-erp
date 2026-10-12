@@ -674,15 +674,19 @@ export async function cancelVoucher(
     throw new PostingError("Original voucher has no journal entries to reverse.");
   }
   const clearing = await clearingAccountIds(tx);
-  // A sale whose Cash/Bank receipt was reclassified to clearing cannot be
-  // reversed on its own: that would take the receipt out of Cash/Bank twice.
+  // A sale with a live reclassification (its Cash/Bank receipt moved to
+  // clearing) or gross-up (revenue added on top of it) cannot be reversed on
+  // its own: that would take the receipt out of Cash/Bank twice, or leave the
+  // gross-up revenue without its sale.
   if (original.voucherType === "SALE" && clearing.available) {
-    const reclass = await tx.clearingDocument.findFirst({
+    const linked = await tx.clearingDocument.findFirst({
       where: { sourceVoucherId: original.id, status: "POSTED" },
+      orderBy: { sequence: "desc" },
       include: { voucher: { select: { voucherNumber: true } } },
     });
-    if (reclass) {
-      throw new PostingError(`Reverse the reclassification ${reclass.voucher.voucherNumber} (Accounting → Settlements) before cancelling this sale.`);
+    if (linked) {
+      const what = linked.kind === "GROSS_UP" ? "gross-up" : "reclassification";
+      throw new PostingError(`Reverse the ${what} ${linked.voucher.voucherNumber} (Accounting → Settlements) before cancelling this sale.`);
     }
   }
 

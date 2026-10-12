@@ -10,6 +10,7 @@ export const CLEARING_REPORT_COLUMNS: { key: keyof ClearingReportRow; label: str
   { key: "grossSalesInr", label: "Gross sales posted" },
   { key: "returnsInr", label: "Returns" },
   { key: "reclassifiedInr", label: "Receipts reclassified" },
+  { key: "grossUpInr", label: "Sale gross-ups" },
   { key: "payoutsInr", label: "Bank / Cash payouts" },
   { key: "feesInr", label: "Fees / commission / shipping" },
   { key: "marketingInr", label: "Marketing / ads" },
@@ -25,6 +26,7 @@ export function docStatusLabel(d: ClearingDocumentRow): string {
   if (d.status === "REVERSED") return "Reversed";
   if (d.kind === "SETTLEMENT") return d.allocatedFc.isZero() ? "Unallocated pooled settlement" : "Partly allocated";
   if (d.kind === "RECLASSIFY") return `Reclassified ${d.sourceVoucherNumber ?? ""}`;
+  if (d.kind === "GROSS_UP") return `Gross-up ${d.sourceVoucherNumber ?? ""}`;
   return d.kind === "RESERVE_HOLD" ? "Reserve hold" : "Reserve release";
 }
 

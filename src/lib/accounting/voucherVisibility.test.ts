@@ -32,6 +32,7 @@ const EXPECTED_STAFF_VISIBLE: Record<VoucherType, boolean | "follows reversed vo
   CLEARING_SETTLEMENT: false,
   CLEARING_RESERVE: false,
   CLEARING_RECLASS: false,
+  CLEARING_GROSSUP: false,
 };
 
 type Where = Record<string, unknown>;

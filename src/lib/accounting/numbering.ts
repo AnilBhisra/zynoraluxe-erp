@@ -23,6 +23,7 @@ const PREFIX_BY_TYPE: Record<VoucherType, string> = {
   CLEARING_SETTLEMENT: "CLR",
   CLEARING_RESERVE: "CLR-RSV",
   CLEARING_RECLASS: "CLR-RCL",
+  CLEARING_GROSSUP: "CLR-GRS",
 };
 
 /**

@@ -23,26 +23,32 @@ import {
   allocateSettlement,
   ClearingError,
   getClearingBalance,
+  grossUpBlock,
+  planGrossUp,
+  planGrossUpWorkflow,
   planReclassify,
   planReserveMove,
   planSettlement,
+  postGrossUpWorkflow,
   postReclassify,
   postReserveMove,
   postSettlement,
   reclassifyBlock,
   reverseAllocation,
   reverseClearingDocument,
+  type GrossUpWorkflowInput,
   type SettlementInput,
 } from "@/lib/accounting/clearing";
 import { clearingReconciliation, getClearingReport, getProviderBalances } from "@/lib/accounting/clearingReports";
 import { Decimal } from "@/lib/accounting/money";
 import { cancelVoucher, postSale, VOUCHER_TRANSACTION_OPTIONS } from "@/lib/accounting/posting";
-import { getReceivablePayableSummary } from "@/lib/accounting/reports";
+import { getProfitAndLoss, getReceivablePayableSummary } from "@/lib/accounting/reports";
+import { reconcileMetalLedger } from "@/lib/jewellery/karigarCustodyReports";
 import { prisma } from "@/lib/db/prisma";
 import { postFinishedJewellerySale, returnFinishedJewelleryItems } from "@/lib/jewellery/finishedSalesPosting";
 import { createJewelleryJob, issueMaterialsToJewelleryJob, postOpeningMetalStock, receiveFinishedJewellery } from "@/lib/jewellery/posting";
 import { cancelVoucherAction } from "@/app/actions/vouchers";
-import { clearingBalanceAction, postSettlementAction, previewSettlementAction, reverseClearingAction, setClearingPartyAction } from "@/app/actions/clearing";
+import { clearingBalanceAction, postGrossUpAction, postSettlementAction, previewGrossUpAction, previewSettlementAction, reverseClearingAction, setClearingPartyAction } from "@/app/actions/clearing";
 import { GET as clearingCsv } from "@/app/(app)/accounting/clearing-report/export/route";
 import { assertDisposableTestDb } from "../../../test/setup/dbGuard";
 
@@ -426,6 +432,229 @@ describe("Historical direct-to-Bank marketplace sale (SAL/2026-27/0003 shape)", 
     expect(new Decimal(await payAcct(bank)).minus(bankBefore).toFixed(2)).toBe("0.00");
     expect(await bal(etsy)).toMatchObject({ a: "0.00" });
     expect(r.replayed).toBe(false);
+  });
+});
+
+describe("Gross-up of a sale recorded net of marketplace fees (SAL/2026-27/0003 exact shape)", () => {
+  async function finishedPiece() {
+    const karigar = (await prisma.party.create({ data: { name: `CLR GU Karigar ${++seq}`, type: "KARIGAR", createdByUserId: ownerId } })).id;
+    const job = await prisma.$transaction((tx) => createJewelleryJob(tx, { jewelleryType: "RING", designName: "GU ring", karigarId: karigar, issueDate: DATE, quantity: 1, createdByUserId: ownerId, idempotencyKey: key("j") }), TX);
+    await prisma.$transaction((tx) => issueMaterialsToJewelleryJob(tx, { legacyDirectGoldIssue: true, ...FY, jobId: job.id, issueDate: DATE, metalLines: [{ metalType: "GOLD", purityId: g22, grossWeight: "1" }], polishedDiamondIds: [], otherMaterialLines: [], idempotencyKey: key("i"), createdByUserId: ownerId }), TX);
+    const rcv = await prisma.$transaction(
+      (tx) =>
+        receiveFinishedJewellery(tx, {
+          ...FY, jobId: job.id, receiveDate: DATE,
+          outputs: [{ jewelleryType: "RING", quantity: 1, netMetalWeight: 1, metalType: "GOLD", purityId: g22, diamondIds: [], qcStatus: "PASSED" as const }],
+          diamondResolutions: [], returnedMetalLines: [], scrapMetalLines: [], karigarAddedFineWeight: 0, karigarAddedCost: 0,
+          labourCharge: "125", makingCharge: 0, settingCharge: 0, platingCharge: 0, otherExpense: 0,
+          markJobComplete: true, isAbnormalLoss: false, damagedLostByUserId: ownerId, idempotencyKey: key("r"), createdByUserId: ownerId,
+        }),
+      TX
+    );
+    return prisma.finishedJewellery.findFirstOrThrow({ where: { receiptId: rcv.receipt.id } });
+  }
+  /** ETSY-like finished sale: selling price 17,590, 4,991 entered as a discount, "Paid now" into Bank. */
+  async function netOfFeesSale(partyId: string) {
+    const piece = await finishedPiece();
+    const s = await prisma.$transaction(
+      (tx) =>
+        postFinishedJewellerySale(tx, {
+          customerId: partyId, saleDate: at("2026-10-08"), date: at("2026-10-08"), gstTreatment: "NONE", ...FY, currencyCode: "INR", exchangeRate: 1, createdByUserId: ownerId, idempotencyKey: key("fs"),
+          paymentAccountId: bank,
+          items: [{ finishedJewelleryId: piece.id, sellingPrice: "17590", discountShare: "4991", gstRatePercent: "0", taxType: "EXCLUSIVE" }],
+        }),
+      TX
+    );
+    return { piece, sale: s.sale, voucherId: s.sale.voucherId };
+  }
+  const total = async () => {
+    const [r] = await prisma.$queryRawUnsafe<{ n: string }[]>(`select coalesce(sum(debit - credit), 0)::numeric(14,2)::text n from journal_entries`);
+    return r.n;
+  };
+  const voucherCredit = async (voucherIds: string[], code: string) => {
+    const [r] = await prisma.$queryRawUnsafe<{ n: string | null }[]>(
+      `select sum(j.credit - j.debit)::numeric(14,2)::text n from journal_entries j join accounts a on a.id = j."accountId" where a.code = $1 and j."voucherId" = any($2::text[])`,
+      code,
+      voucherIds
+    );
+    return new Decimal(r?.n ?? 0).toFixed(2);
+  };
+  const metalDiffs = async () => (await prisma.$transaction((tx) => reconcileMetalLedger(tx), TX)).lines.map((l) => `${l.accountCode} ${l.difference.toFixed(2)}`);
+  const settlement = () => ({ paymentAccountId: bank, receivedInr: "12599", lines: [{ lineType: "COMMISSION" as const, amount: "2000", description: "Etsy fees" }, { lineType: "ADVERTISING" as const, amount: "2991", description: "Offsite ads" }] });
+  const input = (saleVoucherId: string, extra: Partial<GrossUpWorkflowInput> = {}): GrossUpWorkflowInput => ({
+    saleVoucherId,
+    documentDate: at("2026-10-12"),
+    grossSaleInr: "17590",
+    taxMode: "NONE",
+    taxConfirmation: "CA confirmed 12-10-2026: no GST on the Etsy gross-up",
+    settlement: { ...settlement(), documentDate: at("2026-10-08") },
+    ...extra,
+  });
+  const fmt = (j: { accountCode: string; debit: Decimal; credit: Decimal }[]) => j.map((l) => `${l.accountCode} ${l.debit.greaterThan(0) ? "Dr" : "Cr"} ${l.debit.plus(l.credit).toFixed(2)}`);
+
+  it("25. preview shows reclass ₹12,599 + gross-up ₹4,991 + settlement ₹17,590; posting keeps Bank, profit, COGS, stock and the sale; revenue ₹17,590, expense ₹4,991, clearing 0", async () => {
+    const etsy = (await prisma.party.create({ data: { name: `CLR GU ETSY ${++seq}`, type: "CUSTOMER", createdByUserId: ownerId } })).id;
+    const { piece, sale: fjs, voucherId } = await netOfFeesSale(etsy);
+    const sv = await prisma.voucher.findUniqueOrThrow({ where: { id: voucherId } });
+    const saleLinesBefore = await lines(sv.voucherNumber);
+    expect(saleLinesBefore).toEqual(expect.arrayContaining(["1002 Dr 12599.00", "4000 Cr 12599.00"]));
+    expect(await prisma.$transaction((tx) => grossUpBlock(tx, voucherId), TX)).toMatch(/not a clearing party/);
+    await prisma.party.update({ where: { id: etsy }, data: { clearingEnabled: true } });
+
+    const before = {
+      bank: await payAcct(bank),
+      cogs: await ledger("5200"),
+      fin: await ledger("1330"),
+      fees: new Decimal(await ledger("5600")).plus(await ledger("5610")).toFixed(2),
+      sales: await ledger("4000"),
+      movements: await prisma.metalStockMovement.count(),
+      piece: await prisma.finishedJewellery.findUniqueOrThrow({ where: { id: piece.id } }),
+      fjs: await prisma.finishedJewellerySale.findUniqueOrThrow({ where: { id: fjs.id } }),
+      pl: await getProfitAndLoss(),
+      metal: await metalDiffs(),
+    };
+    expect(before.metal.every((l) => l.endsWith(" 0.00"))).toBe(true);
+
+    // The CA's GST decision is never guessed.
+    await expect(prisma.$transaction((tx) => planGrossUpWorkflow(tx, input(voucherId, { taxMode: null })), TX)).rejects.toThrow(/GST treatment .* as the CA confirmed/);
+    await expect(prisma.$transaction((tx) => planGrossUpWorkflow(tx, input(voucherId, { taxConfirmation: "ok" })), TX)).rejects.toThrow(/CA's GST confirmation/);
+    await expect(prisma.$transaction((tx) => planGrossUpWorkflow(tx, input(voucherId, { grossSaleInr: "12599" })), TX)).rejects.toThrow(/must be more than/);
+    // A gross-up on its own is refused while the receipt is still in Bank.
+    await expect(prisma.$transaction((tx) => planGrossUp(tx, input(voucherId)), TX)).rejects.toThrow(/reclassify it to clearing first/);
+
+    const plan = await prisma.$transaction((tx) => planGrossUpWorkflow(tx, input(voucherId)), TX);
+    expect(fmt(plan.reclass!.journal)).toEqual(["1150 Dr 12599.00", "1002 Cr 12599.00"]);
+    expect(fmt(plan.grossUp.journal)).toEqual(["1150 Dr 4991.00", "4000 Cr 4991.00"]);
+    expect(fmt(plan.settlement!.journal)).toEqual(["1002 Dr 12599.00", "5600 Dr 2000.00", "5610 Dr 2991.00", "1150 Cr 17590.00"]);
+    expect(plan.settlement!.before.available.inr.toFixed(2)).toBe("17590.00");
+    expect(plan.effect.cashBankNet.toFixed(2)).toBe("0.00");
+    expect(plan.effect.clearingAfterInr.toFixed(2)).toBe("0.00");
+    expect(plan.effect.revenueAdded.toFixed(2)).toBe("4991.00");
+    expect(plan.effect.taxAdded.toFixed(2)).toBe("0.00");
+    expect(plan.effect.expenseAdded.toFixed(2)).toBe("4991.00");
+    expect(plan.effect.profitChange.toFixed(2)).toBe("0.00");
+    expect(plan.grossUp.warnings.join(" ")).toMatch(/is not edited.*COGS/);
+    expect(await prisma.clearingDocument.count({ where: { partyId: etsy } })).toBe(0); // a preview saves nothing
+
+    const k = key("gu");
+    const post = () => prisma.$transaction((tx) => postGrossUpWorkflow(tx, { ...input(voucherId), idempotencyKey: k, expectedFingerprint: plan.fingerprint, actor: owner(), ...FY }), TX);
+    const r = await post();
+    expect(r.replayed).toBe(false);
+    expect(r.voucherNumbers.map((n) => n.split("/")[0])).toEqual(["CLR-RCL", "CLR-GRS", "CLR"]);
+    expect((await post()).replayed).toBe(true); // double-click
+    expect(await prisma.clearingDocument.count({ where: { partyId: etsy } })).toBe(3);
+    const doc = await prisma.clearingDocument.findFirstOrThrow({ where: { partyId: etsy, kind: "GROSS_UP" } });
+    expect(doc.grossSaleInr?.toFixed(2)).toBe("17590.00");
+    expect(doc.taxConfirmation).toMatch(/no GST/);
+    const gv = await prisma.voucher.findUniqueOrThrow({ where: { id: doc.voucherId } });
+    expect(gv.voucherType).toBe("CLEARING_GROSSUP");
+
+    // Bank unchanged, clearing zero, revenue 17,590 for this order, expense 4,991, profit unchanged.
+    expect(await payAcct(bank)).toBe(before.bank);
+    expect(await bal(etsy)).toMatchObject({ a: "0.00", ai: "0.00", r: "0.00" });
+    expect(await ledger("1150", etsy)).toBe("0.00");
+    expect(await voucherCredit([voucherId, doc.voucherId], "4000")).toBe("17590.00");
+    expect(new Decimal(await ledger("5600")).plus(await ledger("5610")).minus(before.fees).toFixed(2)).toBe("4991.00");
+    expect(new Decimal(await ledger("4000")).minus(before.sales).toFixed(2)).toBe("-4991.00");
+    const pl = await getProfitAndLoss();
+    expect(pl.netProfit.toFixed(2)).toBe(before.pl.netProfit.toFixed(2));
+    expect(pl.grossSales.minus(before.pl.grossSales).toFixed(2)).toBe("4991.00");
+    expect(pl.otherExpensesTotal.minus(before.pl.otherExpensesTotal).toFixed(2)).toBe("4991.00");
+    expect(pl.manualSalesAmount.toFixed(2)).toBe(before.pl.manualSalesAmount.toFixed(2)); // linked revenue, not a manual sale
+    expect(pl.finishedJewelleryCogs.toFixed(2)).toBe(before.pl.finishedJewelleryCogs.toFixed(2));
+
+    // Stock, piece status, COGS and the original sale voucher are untouched.
+    expect(await ledger("5200")).toBe(before.cogs);
+    expect(await ledger("1330")).toBe(before.fin);
+    expect(await prisma.metalStockMovement.count()).toBe(before.movements);
+    expect(await prisma.finishedJewellery.findUniqueOrThrow({ where: { id: piece.id } })).toEqual(before.piece);
+    expect(await prisma.finishedJewellerySale.findUniqueOrThrow({ where: { id: fjs.id } })).toEqual(before.fjs);
+    expect(await lines(sv.voucherNumber)).toEqual(saleLinesBefore);
+    expect((await prisma.voucher.findUniqueOrThrow({ where: { id: voucherId } })).status).toBe("POSTED");
+
+    // Every ledger reconciles.
+    expect(await total()).toBe("0.00");
+    expect(await unbalanced()).toBe(0);
+    expect(await clearingReconciliation()).toEqual([]);
+    expect(await metalDiffs()).toEqual(before.metal);
+    const [row] = await getClearingReport({ partyId: etsy, currencyCode: "", dateFrom: "2026-04-01", dateTo: "2027-03-31" });
+    expect({ reclass: row.reclassifiedInr.toFixed(2), grossUp: row.grossUpInr.toFixed(2), payouts: row.payoutsInr.toFixed(2), fees: row.feesInr.toFixed(2), ads: row.marketingInr.toFixed(2), closing: row.closingInr.toFixed(2) }).toEqual({
+      reclass: "12599.00", grossUp: "4991.00", payouts: "12599.00", fees: "2000.00", ads: "2991.00", closing: "0.00",
+    });
+
+    // One gross-up per sale; the sale cannot be cancelled underneath it; generic Cancel refuses CLR-GRS.
+    expect(await prisma.$transaction((tx) => grossUpBlock(tx, voucherId), TX)).toMatch(/already grossed up/);
+    await expect(prisma.$transaction((tx) => cancelVoucher(tx, { voucherId, cancelledByUserId: ownerId, cancellationReason: "x", ...FY }), TX)).rejects.toThrow(/Reverse the gross-up/);
+    const cfd = new FormData();
+    cfd.set("voucherId", doc.voucherId);
+    cfd.set("cancellationReason", "Trying the generic cancel on a gross-up");
+    expect((await cancelVoucherAction(undefined, cfd))?.error).toMatch(/Settlements/);
+
+    // Reversal is newest first and restores everything exactly.
+    const docs = await prisma.clearingDocument.findMany({ where: { partyId: etsy }, orderBy: { sequence: "asc" } });
+    expect(docs.map((d) => d.kind)).toEqual(["RECLASSIFY", "GROSS_UP", "SETTLEMENT"]);
+    await expect(reverse(docs[1].id)).rejects.toThrow(/Reverse the later CLR\//);
+    for (const d of [...docs].reverse()) await reverse(d.id);
+    expect(await payAcct(bank)).toBe(before.bank);
+    expect(await ledger("4000")).toBe(before.sales);
+    expect(new Decimal(await ledger("5600")).plus(await ledger("5610")).toFixed(2)).toBe(before.fees);
+    expect((await getProfitAndLoss()).netProfit.toFixed(2)).toBe(before.pl.netProfit.toFixed(2));
+    expect(await bal(etsy)).toMatchObject({ a: "0.00", ai: "0.00" });
+    expect(await clearingReconciliation()).toEqual([]);
+    expect(await total()).toBe("0.00");
+    expect(await lines(sv.voucherNumber)).toEqual(saleLinesBefore);
+    expect(await prisma.$transaction((tx) => grossUpBlock(tx, voucherId), TX)).toBeNull(); // can be redone
+  });
+
+  it("26. GST on the gross-up is configurable (exclusive IGST, inclusive CGST+SGST) and only as recorded", async () => {
+    const p = await provider("CLR GU Tax");
+    const s1 = await sale(p, "1000", { cur: "INR" }); // a clearing sale: receipt already in clearing, no reclass step
+    const ex = await prisma.$transaction((tx) => planGrossUpWorkflow(tx, { saleVoucherId: s1.id, documentDate: DATE, grossSaleInr: "1500", taxMode: "EXCLUSIVE", gstTreatment: "IGST", gstRatePercent: "18", taxConfirmation: "CA: IGST 18% on top of the gross-up" }), TX);
+    expect(ex.reclass).toBeNull();
+    expect(ex.settlement).toBeNull();
+    expect(fmt(ex.grossUp.journal)).toEqual(["1150 Dr 590.00", "4000 Cr 500.00", "7003 Cr 90.00"]);
+    expect(ex.effect.taxAdded.toFixed(2)).toBe("90.00");
+    expect(ex.effect.clearingAfterInr.toFixed(2)).toBe("1590.00");
+    const inc = await prisma.$transaction((tx) => planGrossUpWorkflow(tx, { saleVoucherId: s1.id, documentDate: DATE, grossSaleInr: "1590", taxMode: "INCLUSIVE", gstTreatment: "CGST_SGST", gstRatePercent: "18", taxConfirmation: "CA: 18% CGST+SGST included in it" }), TX);
+    expect(fmt(inc.grossUp.journal)).toEqual(["1150 Dr 590.00", "4000 Cr 500.00", "7001 Cr 45.00", "7002 Cr 45.00"]);
+    await expect(prisma.$transaction((tx) => planGrossUpWorkflow(tx, { saleVoucherId: s1.id, documentDate: DATE, grossSaleInr: "1590", taxMode: "INCLUSIVE", taxConfirmation: "CA: 18% included in it" }), TX)).rejects.toThrow(/CGST \+ SGST or IGST/);
+    // Post the exclusive one on its own and settle later through an ordinary settlement.
+    const r = await prisma.$transaction((tx) => postGrossUpWorkflow(tx, { saleVoucherId: s1.id, documentDate: DATE, grossSaleInr: "1500", taxMode: "EXCLUSIVE", gstTreatment: "IGST", gstRatePercent: "18", taxConfirmation: "CA: IGST 18% on top of the gross-up", idempotencyKey: key("gx"), expectedFingerprint: ex.fingerprint, actor: owner(), ...FY }), TX);
+    expect(r.voucherNumbers).toHaveLength(1);
+    expect(await ledger("7003")).toBe("-90.00");
+    expect(await bal(p)).toMatchObject({ a: "1590.00", ai: "1590.00" });
+    expect(await clearingReconciliation()).toEqual([]);
+    await settle(p, { receivedInr: "1000", lines: [{ lineType: "COMMISSION", amount: "500" }, { lineType: "TAX_REMITTED", amount: "90" }] });
+    expect(await bal(p)).toMatchObject({ a: "0.00", ai: "0.00" });
+  });
+
+  it("27. refused for a returned or cancelled sale, a stale preview, a foreign-currency sale and Staff", async () => {
+    const p = (await prisma.party.create({ data: { name: `CLR GU Block ${++seq}`, type: "CUSTOMER", createdByUserId: ownerId } })).id;
+    const { sale: fjs, voucherId } = await netOfFeesSale(p);
+    await prisma.party.update({ where: { id: p }, data: { clearingEnabled: true } });
+    const saleLine = await prisma.finishedJewellerySaleLine.findFirstOrThrow({ where: { saleId: fjs.id } });
+    const plan = await prisma.$transaction((tx) => planGrossUpWorkflow(tx, input(voucherId)), TX);
+    // Stale: another sale of the same provider lands in clearing after the preview.
+    await sale(p, "10", { cur: "INR" });
+    await expect(prisma.$transaction((tx) => postGrossUpWorkflow(tx, { ...input(voucherId), idempotencyKey: key("st"), expectedFingerprint: plan.fingerprint, actor: owner(), ...FY }), TX)).rejects.toThrow(/changed after this preview/);
+    expect(await prisma.clearingDocument.count({ where: { partyId: p } })).toBe(0); // all or nothing
+    await expect(prisma.$transaction((tx) => postGrossUpWorkflow(tx, { ...input(voucherId), idempotencyKey: key("sf"), expectedFingerprint: plan.fingerprint, actor: { id: ownerId, role: "STAFF" }, ...FY }), TX)).rejects.toThrow(/Only the Owner/);
+    await prisma.$transaction((tx) => returnFinishedJewelleryItems(tx, { saleId: fjs.id, items: [{ saleLineId: saleLine.id, disposition: "SELLABLE" }], reason: "Buyer returned it", returnDate: DATE, createdByUserId: ownerId, idempotencyKey: key("ret"), ...FY }), TX);
+    expect(await prisma.$transaction((tx) => grossUpBlock(tx, voucherId), TX)).toMatch(/sale return/);
+    const usd = await sale(p, "8300", { cur: "USD", fc: "100" });
+    expect(await prisma.$transaction((tx) => grossUpBlock(tx, usd.id), TX)).toMatch(/only for INR/);
+    const gone = await sale(p, "500", { cur: "INR" });
+    await prisma.$transaction((tx) => cancelVoucher(tx, { voucherId: gone.id, cancelledByUserId: ownerId, cancellationReason: "Entered twice by mistake", ...FY }), TX);
+    expect(await prisma.$transaction((tx) => grossUpBlock(tx, gone.id), TX)).toMatch(/cancelled/);
+    const fd = new FormData();
+    fd.set("saleVoucherId", voucherId);
+    auth.user = { id: ownerId, role: "STAFF", name: "Staff", email: "staff@test" };
+    try {
+      await expect(previewGrossUpAction(undefined, fd)).rejects.toThrow(/unauthorized/);
+      await expect(postGrossUpAction(undefined, fd)).rejects.toThrow(/unauthorized/);
+    } finally {
+      auth.user = { id: ownerId, role: "OWNER", name: "Owner", email: "owner@test" };
+    }
   });
 });
 
