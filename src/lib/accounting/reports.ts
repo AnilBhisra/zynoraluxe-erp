@@ -278,6 +278,9 @@ export type VoucherListRow = {
   referenceNumber: string | null;
 };
 
+export const SALE_KINDS = ["JEWELLERY", "DIAMOND", "OTHER"] as const;
+export type SaleKind = (typeof SALE_KINDS)[number];
+
 export async function listVouchers(filters: {
   /** Required: Staff never load internal costing vouchers (see voucherVisibility.ts). */
   viewerRole: UserRole;
@@ -287,6 +290,8 @@ export async function listVouchers(filters: {
   dateFrom?: Date;
   dateTo?: Date;
   search?: string;
+  /** SALE vouchers only: Jewellery (Finished Stock), Diamond-only, or Other (neither). */
+  saleKind?: SaleKind;
   take?: number;
 }): Promise<VoucherListRow[]> {
   const vouchers = await prisma.voucher.findMany({
@@ -306,6 +311,13 @@ export async function listVouchers(filters: {
               ],
             }
           : {},
+        filters.saleKind === "JEWELLERY"
+          ? { finishedJewellerySale: { isNot: null } }
+          : filters.saleKind === "DIAMOND"
+            ? { diamondSale: { isNot: null } }
+            : filters.saleKind === "OTHER"
+              ? { finishedJewellerySale: { is: null }, diamondSale: { is: null } }
+              : {},
       ],
     },
     include: { party: true, paymentAccount: true },
@@ -442,6 +454,8 @@ export type ProfitAndLoss = {
   salesReturns: Decimal;
   netSales: Decimal;
   finishedJewelleryCogs: Decimal;
+  /** Cost of polished stones / packet stones sold loose (Diamond Sale, 5210). */
+  diamondCogs: Decimal;
   grossProfit: Decimal;
   grossMarginPercent: Decimal;
   damagedJewelleryLoss: Decimal;
@@ -466,6 +480,7 @@ export async function getProfitAndLoss(filters?: {
     SYSTEM_ACCOUNT_CODES.BUSINESS_EXPENSES,
     SYSTEM_ACCOUNT_CODES.SALES_RETURNS,
     SYSTEM_ACCOUNT_CODES.FINISHED_JEWELLERY_COGS,
+    SYSTEM_ACCOUNT_CODES.POLISHED_DIAMOND_COGS,
     SYSTEM_ACCOUNT_CODES.DAMAGED_JEWELLERY_LOSS,
   ]);
 
@@ -492,6 +507,7 @@ export async function getProfitAndLoss(filters?: {
     SYSTEM_ACCOUNT_CODES.PURCHASES,
     SYSTEM_ACCOUNT_CODES.BUSINESS_EXPENSES,
     SYSTEM_ACCOUNT_CODES.FINISHED_JEWELLERY_COGS,
+    SYSTEM_ACCOUNT_CODES.POLISHED_DIAMOND_COGS,
     SYSTEM_ACCOUNT_CODES.DAMAGED_JEWELLERY_LOSS,
   ]);
   const expenseAccounts = await prisma.account.findMany({
@@ -539,7 +555,8 @@ export async function getProfitAndLoss(filters?: {
   const salesReturns = round2(await netFor(SYSTEM_ACCOUNT_CODES.SALES_RETURNS));
   const netSales = round2(grossSales.minus(salesReturns));
   const finishedJewelleryCogs = round2(await netFor(SYSTEM_ACCOUNT_CODES.FINISHED_JEWELLERY_COGS));
-  const grossProfit = round2(netSales.minus(finishedJewelleryCogs));
+  const diamondCogs = round2(await netFor(SYSTEM_ACCOUNT_CODES.POLISHED_DIAMOND_COGS));
+  const grossProfit = round2(netSales.minus(finishedJewelleryCogs).minus(diamondCogs));
   const grossMarginPercent = netSales.greaterThan(0)
     ? grossProfit.dividedBy(netSales).times(100).toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
     : ZERO;
@@ -569,7 +586,12 @@ export async function getProfitAndLoss(filters?: {
     },
     _sum: { inrAmount: true },
   });
-  const linkedSalesAmount = round2(new Decimal(linkedSaleAgg._sum.taxableTotal ?? 0).plus(grossUpAgg._sum.inrAmount ?? 0));
+  // A Diamond Sale carries its own stock-matched cost too: linked, not manual.
+  const diamondSaleAgg = await prisma.diamondSale.aggregate({
+    where: { status: "POSTED", saleDate: { gte: filters?.dateFrom, lte: filters?.dateTo } },
+    _sum: { taxableTotal: true },
+  });
+  const linkedSalesAmount = round2(new Decimal(linkedSaleAgg._sum.taxableTotal ?? 0).plus(grossUpAgg._sum.inrAmount ?? 0).plus(diamondSaleAgg._sum.taxableTotal ?? 0));
   const manualSalesAmount = round2(Decimal.max(grossSales.minus(linkedSalesAmount), ZERO));
   const manualSalesCount = await prisma.voucher.count({
     where: {
@@ -577,6 +599,7 @@ export async function getProfitAndLoss(filters?: {
       status: "POSTED",
       date: { gte: filters?.dateFrom, lte: filters?.dateTo },
       finishedJewellerySale: { is: null },
+      diamondSale: { is: null },
     },
   });
 
@@ -593,6 +616,7 @@ export async function getProfitAndLoss(filters?: {
     salesReturns,
     netSales,
     finishedJewelleryCogs,
+    diamondCogs,
     grossProfit,
     grossMarginPercent,
     damagedJewelleryLoss,

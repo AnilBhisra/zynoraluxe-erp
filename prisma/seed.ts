@@ -56,6 +56,7 @@ const SYSTEM_ACCOUNTS: AccountSeed[] = [
     type: "ASSET",
   },
   { code: SYSTEM_ACCOUNT_CODES.OTHER_MATERIAL_INVENTORY, name: "Other Material Inventory", type: "ASSET" },
+  { code: SYSTEM_ACCOUNT_CODES.POLISHED_DIAMOND_COGS, name: "Polished Diamond Cost of Sales", type: "EXPENSE" },
   { code: SYSTEM_ACCOUNT_CODES.METAL_INVENTORY, name: "Metal Inventory", type: "ASSET" },
   { code: SYSTEM_ACCOUNT_CODES.SCRAP_METAL_INVENTORY, name: "Scrap Metal Inventory", type: "ASSET" },
   { code: SYSTEM_ACCOUNT_CODES.JEWELLERY_WIP, name: "Jewellery WIP", type: "ASSET" },

@@ -24,6 +24,8 @@ import {
   listManualSalesWithoutLinkedCogs,
   listVouchers,
   partyNetBalances,
+  SALE_KINDS,
+  type SaleKind,
 } from "@/lib/accounting/reports";
 import { listAvailableFinishedJewelleryForSale, listFinishedJewellerySaleLines } from "@/lib/jewellery/reports";
 import { resolveJewelleryAssetUrl } from "@/lib/storage/jewelleryMedia";
@@ -177,6 +179,7 @@ export default async function AccountingPage({
           dateTo={typeof params.dateTo === "string" ? params.dateTo : today()}
           canSeeOwnerReports={user.role === "OWNER"}
           viewerRole={user.role}
+          saleKind={typeof params.saleKind === "string" && (SALE_KINDS as readonly string[]).includes(params.saleKind) ? (params.saleKind as SaleKind) : undefined}
         />
       ) : null}
     </div>
@@ -573,12 +576,14 @@ async function ReportsTabContent({
   dateTo,
   canSeeOwnerReports,
   viewerRole,
+  saleKind,
 }: {
   report: ReportKey;
   dateFrom: string;
   dateTo: string;
   canSeeOwnerReports: boolean;
   viewerRole: "OWNER" | "STAFF";
+  saleKind?: SaleKind;
 }) {
   const dateFromDate = new Date(`${dateFrom}T00:00:00.000Z`);
   const dateToDate = new Date(`${dateTo}T23:59:59.999Z`);
@@ -592,6 +597,8 @@ async function ReportsTabContent({
         dateTo={dateToDate}
         canSeeOwnerReports={canSeeOwnerReports}
         viewerRole={viewerRole}
+        saleKind={saleKind}
+        dateRange={{ dateFrom, dateTo }}
       />
     </div>
   );
@@ -603,20 +610,46 @@ async function ReportBody({
   dateTo,
   canSeeOwnerReports,
   viewerRole,
+  saleKind,
+  dateRange,
 }: {
   report: ReportKey;
   dateFrom: Date;
   dateTo: Date;
   canSeeOwnerReports: boolean;
   viewerRole: "OWNER" | "STAFF";
+  saleKind?: SaleKind;
+  dateRange: { dateFrom: string; dateTo: string };
 }) {
   if (report === "purchases") {
     const vouchers = await listVouchers({ types: ["PURCHASE"], dateFrom, dateTo, viewerRole });
     return <VoucherReportView vouchers={vouchers} label="Purchases" filename="purchases.csv" />;
   }
   if (report === "sales") {
-    const vouchers = await listVouchers({ types: ["SALE"], dateFrom, dateTo, viewerRole });
-    return <VoucherReportView vouchers={vouchers} label="Sales" filename="sales.csv" />;
+    const vouchers = await listVouchers({ types: ["SALE"], dateFrom, dateTo, viewerRole, saleKind });
+    const kinds: { value: SaleKind | ""; label: string }[] = [
+      { value: "", label: "All sales" },
+      { value: "JEWELLERY", label: "Jewellery sales" },
+      { value: "DIAMOND", label: "Diamond-only sales" },
+      { value: "OTHER", label: "Other" },
+    ];
+    return (
+      <div className="flex flex-col gap-3">
+        <nav aria-label="Sale kind" className="flex flex-wrap gap-1" data-testid="sale-kind-filter">
+          {kinds.map((k) => (
+            <a
+              key={k.value}
+              href={`/accounting?tab=reports&report=sales&dateFrom=${dateRange.dateFrom}&dateTo=${dateRange.dateTo}${k.value ? `&saleKind=${k.value}` : ""}`}
+              aria-current={(saleKind ?? "") === k.value ? "page" : undefined}
+              className={`rounded-lg px-2.5 py-1.5 text-xs font-medium ${(saleKind ?? "") === k.value ? "bg-zinc-900 text-white dark:bg-amber-200 dark:text-zinc-900" : "border border-[var(--border)] text-zinc-600 dark:text-zinc-300"}`}
+            >
+              {k.label}
+            </a>
+          ))}
+        </nav>
+        <VoucherReportView vouchers={vouchers} label={kinds.find((k) => k.value === (saleKind ?? ""))!.label} filename={`sales${saleKind ? `-${saleKind.toLowerCase()}` : ""}.csv`} />
+      </div>
+    );
   }
   if (report === "expenses") {
     const vouchers = await listVouchers({ types: ["EXPENSE"], dateFrom, dateTo, viewerRole });

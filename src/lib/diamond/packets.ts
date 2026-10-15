@@ -17,7 +17,10 @@ export type PacketMovementKind =
   | "JEWELLERY_ISSUE_CANCEL_IN"
   | "JEWELLERY_RETURN_IN"
   | "ADJUSTMENT_IN"
-  | "ADJUSTMENT_OUT";
+  | "ADJUSTMENT_OUT"
+  | "SALE_OUT"
+  | "SALE_CANCEL_IN"
+  | "SALE_RETURN_IN";
 
 /** Direction each immutable movement applies to a packet's own balance. */
 export const PACKET_MOVEMENT_EFFECT: Partial<Record<string, -1 | 1>> = {
@@ -33,6 +36,10 @@ export const PACKET_MOVEMENT_EFFECT: Partial<Record<string, -1 | 1>> = {
   JEWELLERY_RETURN_IN: 1,
   ADJUSTMENT_IN: 1,
   ADJUSTMENT_OUT: -1,
+  // Diamond-only Sale.
+  SALE_OUT: -1,
+  SALE_CANCEL_IN: 1,
+  SALE_RETURN_IN: 1,
 };
 
 export type PacketAttributes = {

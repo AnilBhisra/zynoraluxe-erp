@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   paymentAccountFindMany: vi.fn(),
   finishedJewellerySaleAggregate: vi.fn(),
   clearingDocumentLineAggregate: vi.fn(),
+  diamondSaleAggregate: vi.fn(),
   voucherCount: vi.fn(),
   voucherFindMany: vi.fn(),
 }));
@@ -25,6 +26,7 @@ vi.mock("@/lib/db/prisma", () => ({
     paymentAccount: { findMany: mocks.paymentAccountFindMany },
     finishedJewellerySale: { aggregate: mocks.finishedJewellerySaleAggregate },
     clearingDocumentLine: { aggregate: mocks.clearingDocumentLineAggregate },
+    diamondSale: { aggregate: mocks.diamondSaleAggregate },
     voucher: { count: mocks.voucherCount, findMany: mocks.voucherFindMany },
   },
 }));
@@ -162,6 +164,7 @@ function useLedger(accounts: { id: string; code: string }[], entries: LedgerRow[
   });
   mocks.finishedJewellerySaleAggregate.mockResolvedValue({ _sum: { taxableTotal: null } });
   mocks.clearingDocumentLineAggregate.mockResolvedValue({ _sum: { inrAmount: null } });
+  mocks.diamondSaleAggregate.mockResolvedValue({ _sum: { taxableTotal: null } });
   mocks.voucherCount.mockResolvedValue(0);
 }
 

@@ -34,6 +34,7 @@ const STATUS_LABELS: Record<string, string> = {
   AVAILABLE: "Available",
   RECUT: "Recut",
   CONVERTED_TO_PARCEL: "Converted to parcel",
+  SOLD: "Sold (Diamond Sale)",
 };
 
 const CERT_LABELS: Record<string, string> = {

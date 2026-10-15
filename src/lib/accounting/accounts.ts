@@ -52,6 +52,8 @@ export const SYSTEM_ACCOUNT_CODES = {
   BROKERAGE_EXPENSE: "5400",
   SALES_RETURNS: "4100",
   FINISHED_JEWELLERY_COGS: "5200",
+  // Diamond-only Sale: carrying cost of polished stones / packet stones sold loose.
+  POLISHED_DIAMOND_COGS: "5210",
   DAMAGED_JEWELLERY_LOSS: "5300",
   // Phase 8 — an Owner-authorized stock adjustment is this period's gain or
   // loss, never opening capital, so it must NOT post to OPENING_BALANCE_EQUITY

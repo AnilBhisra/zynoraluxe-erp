@@ -140,6 +140,9 @@ model User {
   otherMaterialPurchasesCreated OtherMaterialPurchase[]    @relation("OtherMaterialPurchaseCreatedBy")
   otherMaterialDocsCreated      OtherMaterialJobDocument[] @relation("OtherMaterialJobDocumentCreatedBy")
 
+  diamondSalesCreated       DiamondSale[]       @relation("DiamondSaleCreatedBy")
+  diamondSaleReturnsCreated DiamondSaleReturn[] @relation("DiamondSaleReturnCreatedBy")
+
   @@map("users")
 }
 
@@ -257,6 +260,8 @@ model Party {
   clearingEntries             ClearingEntry[]             @relation("ClearingEntryParty")
 
   otherMaterialPurchases OtherMaterialPurchase[] @relation("OtherMaterialPurchaseSupplier")
+
+  diamondSales DiamondSale[] @relation("DiamondSaleCustomer")
 
   @@index([type])
   @@index([name])
@@ -517,6 +522,10 @@ model Voucher {
   otherMaterialJobDocument          OtherMaterialJobDocument? @relation("OtherMaterialJobDocumentVoucher")
   otherMaterialJobDocumentReversal  OtherMaterialJobDocument? @relation("OtherMaterialJobDocumentReversalVoucher")
 
+  diamondSale             DiamondSale?       @relation("DiamondSaleVoucher")
+  diamondSaleCancellation DiamondSale?       @relation("DiamondSaleCancellationVoucher")
+  diamondSaleReturn       DiamondSaleReturn? @relation("DiamondSaleReturnVoucher")
+
   @@index([voucherType])
   @@index([partyId])
   @@index([date])
@@ -681,6 +690,8 @@ enum PolishedDiamondStatus {
   ISSUED_TO_JEWELLERY
   SET_IN_JEWELLERY
   DAMAGED_LOST
+  /// Sold to a Customer as a loose stone (Diamond Sale).
+  SOLD
 }
 
 // One row per (entityType, calendar year) for human-readable diamond
@@ -697,6 +708,8 @@ enum DiamondSequenceType {
   POLISHED_PACKET
   PACKET_PROCESS_JOB
   PACKET_PROCESS_RECEIPT
+  DIAMOND_SALE
+  DIAMOND_SALE_RETURN
 }
 
 model DiamondSequence {
@@ -1071,6 +1084,8 @@ model PolishedDiamond {
   jewelleryIssueLines   JewelleryDiamondIssueLine[]
   costSheetDiamondLines CostSheetDiamondLine[]
 
+  diamondSaleLines DiamondSaleLine[]
+
   @@index([jobId])
   @@index([status])
   @@map("polished_diamonds")
@@ -1111,6 +1126,10 @@ enum StockMovementType {
   /// to the job (mirrors its ROUGH_CONSUMED_OUT). Linked by reversalOfMovementId.
   ROUGH_RETURN_REVERSAL_OUT
   ROUGH_CONSUMED_REVERSAL_IN
+  /// Diamond Sale of a single polished stone, its cancellation and its return.
+  POLISHED_SALE_OUT
+  POLISHED_SALE_CANCEL_IN
+  POLISHED_SALE_RETURN_IN
 }
 
 // Immutable audit ledger. Never updated or deleted after insert — a
@@ -2806,6 +2825,10 @@ enum PolishedPacketMovementType {
   JEWELLERY_RETURN_IN
   ADJUSTMENT_IN
   ADJUSTMENT_OUT
+  /// Diamond Sale from a packet, its cancellation and its return.
+  SALE_OUT
+  SALE_CANCEL_IN
+  SALE_RETURN_IN
 }
 
 model PolishedPurchase {
@@ -2976,6 +2999,8 @@ model PolishedPacket {
   movements           PolishedPacketMovement[]
   jewelleryIssueLines JewelleryPacketIssueLine[]
   processJobLines     PacketProcessJobLine[]
+
+  diamondSaleLines DiamondSaleLine[]
 
   @@index([mergeKey])
   @@index([status])
@@ -4408,4 +4433,114 @@ model JewelleryReceiptKarigarMaterialLine {
 
   @@index([receiptId])
   @@map("jewellery_receipt_karigar_material_lines")
+}
+
+// ---------------------------------------------------------------------------
+// Diamond-only Sale (JEWELLERY_JOB_LIST_FILTERS_AND_LABELS.md §13): an available
+// polished stone, a whole packet or part of a packet sold straight to a
+// Customer — no Jewellery Job. Posted through postSale (Credit / Cash / Bank /
+// Marketplace Clearing, GST, invoice lines) with COGS: Dr 5210 Polished
+// Diamond Cost of Sales / Cr 1220 at the saved carrying cost.
+// ---------------------------------------------------------------------------
+
+enum DiamondSalePricing {
+  PER_CARAT
+  PER_PIECE
+  FIXED
+}
+
+model DiamondSale {
+  id           String       @id @default(cuid())
+  saleCode     String       @unique
+  customerId   String
+  customer     Party        @relation("DiamondSaleCustomer", fields: [customerId], references: [id])
+  saleDate     DateTime
+  gstTreatment GstTreatment
+
+  subtotal      Decimal @db.Decimal(14, 2)
+  discountTotal Decimal @default(0) @db.Decimal(14, 2)
+  taxableTotal  Decimal @db.Decimal(14, 2)
+  taxTotal      Decimal @default(0) @db.Decimal(14, 2)
+  grandTotal    Decimal @db.Decimal(14, 2)
+  /// Carrying cost of what was sold (Owner only).
+  cogsTotal     Decimal @db.Decimal(14, 2)
+
+  voucherId String  @unique
+  voucher   Voucher @relation("DiamondSaleVoucher", fields: [voucherId], references: [id])
+
+  status                VoucherStatus @default(POSTED)
+  cancelledAt           DateTime?
+  cancelledByUserId     String?
+  cancellationReason    String?
+  cancellationVoucherId String?       @unique
+  cancellationVoucher   Voucher?      @relation("DiamondSaleCancellationVoucher", fields: [cancellationVoucherId], references: [id])
+
+  idempotencyKey  String?  @unique
+  createdByUserId String
+  createdBy       User     @relation("DiamondSaleCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt       DateTime @default(now())
+
+  lines   DiamondSaleLine[]
+  returns DiamondSaleReturn[]
+
+  @@index([customerId])
+  @@index([saleDate])
+  @@map("diamond_sales")
+}
+
+/// One stone, or pieces + carat of one packet. Exactly one of polishedDiamondId / packetId.
+model DiamondSaleLine {
+  id                String           @id @default(cuid())
+  saleId            String
+  sale              DiamondSale      @relation(fields: [saleId], references: [id])
+  polishedDiamondId String?
+  polishedDiamond   PolishedDiamond? @relation(fields: [polishedDiamondId], references: [id])
+  packetId          String?
+  packet            PolishedPacket?  @relation(fields: [packetId], references: [id])
+  description       String
+
+  pieces         Int
+  carat          Decimal            @db.Decimal(10, 3)
+  pricing        DiamondSalePricing
+  rate           Decimal            @db.Decimal(14, 4)
+  baseAmount     Decimal            @db.Decimal(14, 2)
+  discount       Decimal            @default(0) @db.Decimal(14, 2)
+  taxableValue   Decimal            @db.Decimal(14, 2)
+  gstRatePercent Decimal            @default(0) @db.Decimal(5, 2)
+  taxType        TaxType            @default(EXCLUSIVE)
+  taxAmount      Decimal            @default(0) @db.Decimal(14, 2)
+  lineTotal      Decimal            @db.Decimal(14, 2)
+  /// Carrying cost moved to 5210 (Owner only). A partial packet line takes the carat share; the line that empties the packet takes the exact remainder.
+  cogsAmount     Decimal            @db.Decimal(14, 2)
+  sortOrder      Int                @default(0)
+
+  returnId String?
+  return   DiamondSaleReturn? @relation(fields: [returnId], references: [id])
+
+  @@index([saleId])
+  @@index([polishedDiamondId])
+  @@index([packetId])
+  @@map("diamond_sale_lines")
+}
+
+model DiamondSaleReturn {
+  id             String      @id @default(cuid())
+  returnCode     String      @unique
+  saleId         String
+  sale           DiamondSale @relation(fields: [saleId], references: [id])
+  returnDate     DateTime
+  reason         String
+  returnedTotal  Decimal     @db.Decimal(14, 2)
+  voucherId      String      @unique
+  voucher        Voucher     @relation("DiamondSaleReturnVoucher", fields: [voucherId], references: [id])
+  idempotencyKey String?     @unique
+
+  createdByUserId String
+  createdBy       User     @relation("DiamondSaleReturnCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt       DateTime @default(now())
+
+  lines DiamondSaleLine[]
+
+  @@index([saleId])
+  @@map("diamond_sale_returns")
 }

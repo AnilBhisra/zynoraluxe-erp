@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   roughLotFindUnique: vi.fn(),
   polishedPurchaseFindUnique: vi.fn(),
   otherMaterialPurchaseFindFirst: vi.fn(),
+  diamondSaleFindUnique: vi.fn(),
   metalPurchaseFindUnique: vi.fn(),
   metalStockMovementFindFirst: vi.fn(),
   finishedJewellerySaleFindUnique: vi.fn(),
@@ -32,6 +33,7 @@ vi.mock("@/lib/db/prisma", () => ({
     roughLot: { findUnique: mocks.roughLotFindUnique },
     polishedPurchase: { findUnique: mocks.polishedPurchaseFindUnique },
     otherMaterialPurchase: { findFirst: mocks.otherMaterialPurchaseFindFirst },
+    diamondSale: { findUnique: mocks.diamondSaleFindUnique },
     metalPurchase: { findUnique: mocks.metalPurchaseFindUnique },
     metalStockMovement: { findFirst: mocks.metalStockMovementFindFirst },
     finishedJewellerySale: { findUnique: mocks.finishedJewellerySaleFindUnique },
@@ -78,6 +80,7 @@ beforeEach(() => {
   mocks.transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => fn({}));
   mocks.polishedPurchaseFindUnique.mockResolvedValue(null);
   mocks.otherMaterialPurchaseFindFirst.mockResolvedValue(null);
+  mocks.diamondSaleFindUnique.mockResolvedValue(null);
   mocks.voucherFindUnique.mockResolvedValue(null);
   mocks.roughLotFindUnique.mockResolvedValue(null);
   mocks.metalPurchaseFindUnique.mockResolvedValue(null);

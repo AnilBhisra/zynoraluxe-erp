@@ -439,6 +439,12 @@ export function ProfitAndLossView({ pnl }: { pnl: ProfitAndLoss }) {
             − {money(pnl.finishedJewelleryCogs)}
           </dd>
         </div>
+        {pnl.diamondCogs && !pnl.diamondCogs.isZero() ? (
+          <div className="flex justify-between px-4 py-3 text-sm" data-testid="pnl-diamond-cogs">
+            <dt className="text-zinc-600 dark:text-zinc-400">Polished diamond cost of sales (Diamond Sales)</dt>
+            <dd className="font-medium text-zinc-900 dark:text-zinc-50">− {money(pnl.diamondCogs)}</dd>
+          </div>
+        ) : null}
         <div className="flex justify-between px-4 py-3 text-sm">
           <dt className="font-semibold text-zinc-900 dark:text-zinc-50">Gross profit</dt>
           <dd className="font-semibold text-zinc-900 dark:text-zinc-50">

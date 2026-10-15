@@ -141,6 +141,7 @@ describe("ProfitAndLossView — expense accounts without their own line", () => 
     salesReturns: d("0"),
     netSales: d("250000"),
     finishedJewelleryCogs: d("78776.55"),
+    diamondCogs: d("0"),
     grossProfit: d("171223.45"),
     grossMarginPercent: d("68.49"),
     damagedJewelleryLoss: d("0"),

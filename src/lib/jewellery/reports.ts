@@ -455,6 +455,9 @@ const DIAMOND_MOVEMENT_LABELS: Record<string, string> = {
   JEWELLERY_ISSUE_OUT: "Diamond issued to job",
   JEWELLERY_ISSUE_CANCEL_IN: "Issue cancelled — diamond returned to stock",
   JEWELLERY_RETURN_IN: "Diamond returned to stock",
+  POLISHED_SALE_OUT: "Sold (Diamond Sale)",
+  POLISHED_SALE_CANCEL_IN: "Diamond Sale cancelled — back in stock",
+  POLISHED_SALE_RETURN_IN: "Returned by Customer — back in stock",
   JEWELLERY_SET_OUT: "Diamond set in finished jewellery",
   JEWELLERY_DAMAGED_LOSS_OUT: "Diamond marked damaged/lost",
 };

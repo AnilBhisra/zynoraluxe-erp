@@ -1004,6 +1004,7 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
       keywords: [
         "finished stock", "sale", "return", "refund", "cancel sale", "available", "sold",
         "તૈયાર જ્વેલરી", "વેચાણ", "રિટર્ન", "રિફંડ",
+        "diamond sale", "loose diamond", "packet sale", "હીરો વેચવો",
       ],
       body: (
         <div className="flex flex-col gap-4">
@@ -1031,6 +1032,28 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
           <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
             Save બટન ભૂલથી બે વાર દબાઈ જાય, અથવા બે અલગ કોમ્પ્યુટર પર એક જ piece વેચવાની કોશિશ થાય, તો સોફ્ટવેર આપોઆપ ફક્ત એક જ વારને સ્વીકારશે — બીજી કોશિશ “no longer available” જેવો error આપશે. આ error આવે તો ગભરાવાની જરૂર નથી, બીજો piece પસંદ કરો અથવા Refresh કરીને ફરી જુઓ.
           </p>
+
+          <SubHeading id="task-diamond-sale">Diamond-only Sale: છૂટો હીરો કે packet વેચવો</SubHeading>
+          <BadgeRow>
+            <StaffCanBadge />
+          </BadgeRow>
+          <Steps>
+            <li>Diamond → <Btn>Diamond Sales</Btn> tab ખોલો. Jewellery Job ની જરૂર નથી.</li>
+            <li>Customer, તારીખ, GST અને Payment પસંદ કરો (On credit, અથવા Paid now — Cash / Bank). Marketplace Customer હોય તો Payment આપોઆપ marketplace clearing માં જાય છે; currency અને foreign amount ભરો.</li>
+            <li>દરેક line માં <strong>Single stone</strong> કે <strong>Packet</strong> પસંદ કરો. યાદીમાં ફક્ત Available stone અને Active packet જ દેખાય છે. Packet માંથી કેટલા pieces અને કેટલા carat વેચ્યા એ ભરો — packet ના બધા pieces લો તો બધા carat પણ લેવા પડે.</li>
+            <li>Pricing પસંદ કરો: Rate per carat, Rate per piece, કે Fixed total. રકમ આપોઆપ ગણાય છે: 2.500 CT × ₹20,000.00/CT = ₹50,000.00. Discount અને GST % (extra કે included) ભરો.</li>
+            <li><Btn>Preview sale</Btn> → તપાસો → <Btn>Confirm sale</Btn>. Stone “Sold” થાય છે અને packet માંથી એટલા pieces / carat ઓછા થાય છે.</li>
+            <li>એક જ stone બે વાર વેચાતો નથી — બે જણ એક સાથે વેચે તો એક જ sale સચવાય છે, બીજાને “just sold” error આવે છે. Preview પછી કંઈ બદલાય તો ફરી Preview કરવું પડે.</li>
+          </Steps>
+          <BadgeRow>
+            <OwnerOnlyBadge />
+          </BadgeRow>
+          <Steps>
+            <li>Owner ને preview અને યાદીમાં stone ની કિંમત પણ દેખાય છે.</li>
+            <li><Btn>Cancel sale</Btn>: આખું sale રદ — mirror voucher બને છે અને દરેક stone / packet ના pieces પાછા stock માં આવે છે. કોઈ line return થઈ હોય તો આખું cancel થતું નથી.</li>
+            <li><Btn>Customer return</Btn>: પાછી આવેલી lines પસંદ કરો — Sales Returns માં રકમ અને GST પાછા જાય છે, Customer નું બાકી ઘટે છે અને stone stock માં પાછો આવે છે.</li>
+            <li>Accounting → Reports → Sales માં “Diamond-only sales” filter થી આ વેચાણ અલગ જોઈ શકાય છે.</li>
+          </Steps>
 
           <SubHeading id="task-sale-return">Sale Return — Sellable અને Damaged</SubHeading>
           <BadgeRow>

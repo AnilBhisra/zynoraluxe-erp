@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 
+import { DiamondSalesTab } from "@/components/diamond/DiamondSalesTab";
+import { listDiamondSales } from "@/lib/diamond/diamondSale";
 import { requireUser } from "@/lib/auth/dal";
 import { prisma } from "@/lib/db/prisma";
 import { listEntryCorrections } from "@/lib/corrections/entry/service";
@@ -79,7 +81,7 @@ type SearchParams = {
 };
 
 // "jobs" is the Manufacturer section (kept as the URL key so existing links work).
-const TABS = ["rough", "jobs", "job-manufacturer", "polished"] as const;
+const TABS = ["rough", "jobs", "job-manufacturer", "polished", "sales"] as const;
 type Tab = (typeof TABS)[number];
 
 function TabLink({ tab, label, active }: { tab: Tab; label: string; active: boolean }) {
@@ -117,6 +119,7 @@ export default async function DiamondPage({ searchParams }: { searchParams: Prom
         <TabLink tab="jobs" label="Manufacturer" active={tab === "jobs"} />
         <TabLink tab="job-manufacturer" label="Job Manufacturer" active={tab === "job-manufacturer"} />
         <TabLink tab="polished" label="Polished Diamond" active={tab === "polished"} />
+        <TabLink tab="sales" label="Diamond Sales" active={tab === "sales"} />
       </nav>
 
       {tab === "rough" ? <RoughStockTabContent search={params.roughSearch ?? ""} isOwner={isOwner} /> : null}
@@ -138,6 +141,7 @@ export default async function DiamondPage({ searchParams }: { searchParams: Prom
         />
       ) : null}
       {tab === "polished" ? <PolishedStockTabContent search={params.polishedSearch ?? ""} isOwner={isOwner} /> : null}
+      {tab === "sales" ? <DiamondSalesTabContent isOwner={isOwner} /> : null}
     </div>
   );
 }
@@ -518,5 +522,28 @@ function SummaryStat({ label, value, sub }: { label: string; value: string; sub?
       <p className="mt-1 text-lg font-semibold text-zinc-900 dark:text-zinc-50">{value}</p>
       {sub ? <p className="text-xs text-zinc-500 dark:text-zinc-400">{sub}</p> : null}
     </div>
+  );
+}
+
+/** Diamond-only Sale (Owner or Staff). Stock cost, COGS and margin reach the Owner only. */
+async function DiamondSalesTabContent({ isOwner }: { isOwner: boolean }) {
+  const [stones, packets, customers, paymentAccounts, sales] = await Promise.all([
+    prisma.polishedDiamond.findMany({ where: { status: "AVAILABLE" }, orderBy: { polishedCode: "asc" }, select: { id: true, polishedCode: true, shape: true, carat: true, clarity: true } }),
+    listPolishedPackets(),
+    prisma.party.findMany({ where: { type: "CUSTOMER", isActive: true }, orderBy: { name: "asc" }, select: { id: true, name: true, type: true, stateCode: true, clearingEnabled: true } }),
+    prisma.paymentAccount.findMany({ where: { isActive: true }, orderBy: { name: "asc" }, select: { id: true, name: true } }),
+    listDiamondSales(prisma, { includeCost: isOwner }),
+  ]);
+  return (
+    <DiamondSalesTab
+      isOwner={isOwner}
+      customers={customers}
+      paymentAccounts={paymentAccounts}
+      stones={stones.map((d) => ({ id: d.id, code: d.polishedCode, label: `${shapeLabel(d.shape)}${d.clarity ? ` ${d.clarity}` : ""}`, carat: d.carat.toFixed(3) }))}
+      packets={packets
+        .filter((p) => p.pieces > 0)
+        .map((p) => ({ id: p.id, code: p.packetCode, label: `${shapeLabel(p.shape)} ${p.sizeLabel}${p.quality ? ` ${p.quality}` : ""}`, pieces: p.pieces, carat: p.carat }))}
+      sales={sales}
+    />
   );
 }

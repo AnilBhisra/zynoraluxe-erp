@@ -597,6 +597,12 @@ export async function cancelVoucherAction(
         error: "This sale is linked to Finished Jewellery stock — cancel it from the Finished Stock page instead, so stock stays in sync.",
       };
     }
+    const diamondSale = await prisma.diamondSale.findUnique({ where: { voucherId: parsed.data.voucherId }, select: { id: true } });
+    if (diamondSale) {
+      return {
+        error: "This is a Diamond Sale — cancel it from the Diamond page's Diamond Sales section instead, so the stones / packets go back into stock.",
+      };
+    }
   }
   if (target?.voucherType === "PURCHASE") {
     // Phase 7: a direct Polished Diamond Purchase also posts as a plain
