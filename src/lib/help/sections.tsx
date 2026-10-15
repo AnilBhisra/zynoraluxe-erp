@@ -581,6 +581,7 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
         "24k", "18k", "14k", "9k", "alloy", "copper", "scrap", "process loss",
         "rate basis", "fine gram", "gross gram", "effective rate", "history", "karigar metal", "sticker", "qr", "print",
         "filter", "customer filter", "gold source", "customer gold", "company gold", "mixed gold", "review required",
+        "other material", "moissanite", "findings", "enamel", "material purchase",
         "મેટલ", "જ્વેલરી જોબ", "શુદ્ધતા", "ભાવ", "સ્ટીકર",
       ],
       body: (
@@ -685,9 +686,33 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
             <li>Job ખોલો, <Btn>Issue Materials</Btn> દબાવો.</li>
             <li>Gold અહીં આપાતું નથી (નીચે જુઓ). Silver, Platinum કે Company Copper/Alloy આપવું હોય તો “+ Add silver / platinum / copper line” દબાવી Metal type, Purity અને gross weight ભરો.</li>
             <li>જે polished diamonds આ job માં વાપરવા હોય એ યાદીમાંથી ✓ ટીક કરો.</li>
-            <li>જરૂર હોય તો “More details” ખોલી Other material line (દા.ત. Enamel work) ઉમેરો.</li>
+            <li>Moissanite, findings, enamel જેવો બીજો સામાન જોઈએ તો “Other material from stock” ખોલી <strong>ખરીદેલા stock માંથી</strong> item અને quantity પસંદ કરો (નીચે જુઓ).</li>
             <li><Btn>Issue Materials</Btn> દબાવીને save કરો.</li>
           </Steps>
+
+          <SubHeading id="task-other-material">Other Material: પહેલાં ખરીદી, પછી જ Job માં</SubHeading>
+          <BadgeRow>
+            <StaffCanBadge />
+          </BadgeRow>
+          <Steps>
+            <li>Jewellery Jobs → <Btn>Other Material</Btn> tab → “New Other Material” માં નામ અને unit (PCS / CT / GRAM) ભરી <Btn>Add material</Btn>.</li>
+            <li>“Purchase Other Material” માં Supplier, તારીખ, invoice નંબર, GST પસંદ કરો. દરેક line માં material, quantity અને <strong>₹ per unit</strong> ભરો — રકમ આપોઆપ ગણાય છે: 200 CT × ₹50/CT = ₹10,000.00. રકમ હાથે લખાતી નથી.</li>
+            <li><Btn>Preview purchase</Btn> → તપાસો → <Btn>Confirm purchase</Btn>. Stock વધે છે અને Supplier ને આપવાનું (payable) અહીં જ એક વાર બને છે.</li>
+            <li>Job ખોલી <Btn>Issue Other Material</Btn> (અથવા Issue Materials માં) stock માંથી item અને quantity પસંદ કરો. Stock થી વધારે issue થતું નથી; ખર્ચ stock ની કિંમતે આપોઆપ લાગે છે અને Supplier નું payable ફરી બનતું નથી.</li>
+            <li>વપરાયો ન હોય તે સામાન <Btn>Return unused material</Btn> થી stock માં પાછો મૂકો (એ જ કિંમતે).</li>
+            <li>Finished Jewellery receive થાય ત્યારે job નો સામાન આપોઆપ દાગીનાની કિંમતમાં જાય છે.</li>
+          </Steps>
+          <BadgeRow>
+            <OwnerOnlyBadge />
+          </BadgeRow>
+          <Steps>
+            <li>ખરીદી cancel કરવી કે issue / return reverse કરવું Owner જ કરી શકે — સૌથી નવું પહેલાં. સામાન job માં વપરાઈ ગયો હોય તો કયા document ને લીધે અટક્યું એ દેખાડે છે.</li>
+            <li>Job cancel કરતાં પહેલાં job પર બાકી Other Material stock માં return કરવો પડે.</li>
+            <li>“Legacy manual entries” માં જૂની હાથે લખેલી entries દેખાય છે — એ બદલાતી નથી, ફક્ત ઓળખ માટે.</li>
+          </Steps>
+          <Note>
+            Karigar પોતાનો સામાન (દા.ત. પોતાના CZ પથ્થર) વાપરે તો એ Company stock નથી: Receive Finished Jewellery → More details → “+ Add Karigar-supplied material” માં description, quantity અને charge લખો. એ charge Karigar ને આપવાના હિસાબમાં એક જ વાર જાય છે.
+          </Note>
 
           <SubHeading>24K આપ્યું, 18K / 14K / 9K તૈયાર આવ્યું</SubHeading>
           <Steps>

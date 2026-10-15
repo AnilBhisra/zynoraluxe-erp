@@ -32,6 +32,7 @@ import {
   type MetalStockMovementKind,
 } from "@/lib/jewellery/metalMath";
 import { nextJewelleryCode } from "@/lib/jewellery/numbering";
+import { consumeJobMaterialForReceipt, issueOtherMaterialToJob, jobHoldings } from "@/lib/jewellery/otherMaterial";
 import { customerGoldOnJobInTx } from "@/lib/jewellery/customerGoldLedger";
 
 export { PostingError };
@@ -915,14 +916,13 @@ export type PacketIssueLineInput = {
   carat: DecimalInput;
 };
 
-export type OtherMaterialLineInput = {
-  description: string;
-  quantity: DecimalInput;
-  unit: "PCS" | "CT" | "GRAM" | "OTHER";
-  weight?: DecimalInput | null;
-  cost: DecimalInput;
-  note?: string | null;
-};
+/**
+ * Purchased Other Material to issue with the job's materials: an item from
+ * Other Material stock and a quantity. Its cost comes from the stock's
+ * carrying cost, never typed in; free-text material can no longer be issued
+ * (JEWELLERY_JOB_LIST_FILTERS_AND_LABELS.md §12).
+ */
+export type OtherMaterialLineInput = { itemId: string; quantity: DecimalInput };
 
 /**
  * Issue Materials is a once-per-job step. A DRAFT job can always take it. So
@@ -1185,14 +1185,14 @@ export async function issueMaterialsToJewelleryJob(
   }
   issuedPacketDiamondCost = round2(issuedPacketDiamondCost);
 
-  // ---- Other material lines (never stock-tracked) ----
-  let otherMaterialCost = ZERO;
-  for (const line of input.otherMaterialLines) {
-    const cost = round2(line.cost);
-    if (cost.isNegative()) throw new PostingError("Other material cost cannot be negative.");
-    otherMaterialCost = otherMaterialCost.plus(cost);
+  // ---- Other material: purchased stock only (posted below, in its own
+  // document and voucher — never inside this job's WIP voucher, which a job
+  // cancellation mirrors) ----
+  for (const [i, line] of input.otherMaterialLines.entries()) {
+    if (!(line as { itemId?: string }).itemId) {
+      throw new PostingError(`Other material line ${i + 1}: choose a purchased material from stock. Free-text material can no longer be issued — purchase it first.`);
+    }
   }
-  otherMaterialCost = round2(otherMaterialCost);
 
   // 1220 Polished Diamond Inventory carries both single certified stones and
   // bulk packets, so one credit covers both.
@@ -1328,22 +1328,6 @@ export async function issueMaterialsToJewelleryJob(
     }
   }
 
-  // ---- Other material lines (documentation only, no movement) ----
-  for (const line of input.otherMaterialLines) {
-    await tx.jewelleryOtherMaterialLine.create({
-      data: {
-        jobId: job.id,
-        description: line.description,
-        quantity: round3(line.quantity).toFixed(3),
-        unit: line.unit,
-        weight: line.weight != null ? round3(line.weight).toFixed(3) : null,
-        cost: round2(line.cost).toFixed(2),
-        note: line.note || null,
-        createdByUserId: input.createdByUserId,
-      },
-    });
-  }
-
   // remainingWipCost tracks FINE-BEARING METAL WIP only. Diamonds are
   // discrete and already individually costed (costAtIssue per issue line),
   // so they resolve directly by that exact figure when SET/RETURNED/
@@ -1357,7 +1341,7 @@ export async function issueMaterialsToJewelleryJob(
   // keep what it has. `job` was read after the row lock above, so this sum is
   // the current value.
   const plus = (current: Decimal | string | number, add: Decimal, places: 2 | 3) => new Decimal(current).plus(add).toFixed(places);
-  return tx.jewelleryJob.update({
+  const updated = await tx.jewelleryJob.update({
     where: { id: job.id },
     data: {
       status: job.status === "DRAFT" ? "MATERIALS_ISSUED" : job.status,
@@ -1365,7 +1349,6 @@ export async function issueMaterialsToJewelleryJob(
       issuedMetalCost: plus(job.issuedMetalCost, issuedMetalCost, 2),
       issuedDiamondCost: plus(job.issuedDiamondCost, issuedDiamondCost, 2),
       issuedPacketDiamondCost: plus(job.issuedPacketDiamondCost, issuedPacketDiamondCost, 2),
-      otherMaterialCost: plus(job.otherMaterialCost, otherMaterialCost, 2),
       remainingWipCost: plus(job.remainingWipCost, fineBearingMetalCost, 2),
       issuedAlloyGrossWeight: plus(job.issuedAlloyGrossWeight, issuedAlloyGrossWeight, 3),
       issuedAlloyCost: plus(job.issuedAlloyCost, issuedAlloyCost, 2),
@@ -1377,6 +1360,17 @@ export async function issueMaterialsToJewelleryJob(
       idempotencyKey: job.idempotencyKey ?? input.idempotencyKey ?? null,
     },
   });
+  if (input.otherMaterialLines.length === 0) return updated;
+  await issueOtherMaterialToJob(tx, {
+    jobId: job.id,
+    lines: input.otherMaterialLines,
+    issueDate: input.issueDate,
+    idempotencyKey: input.idempotencyKey ? `${input.idempotencyKey}:material` : null,
+    createdByUserId: input.createdByUserId,
+    fyStartMonth: input.fyStartMonth,
+    fyStartDay: input.fyStartDay,
+  });
+  return tx.jewelleryJob.findUniqueOrThrow({ where: { id: job.id } });
 }
 
 // ---------------------------------------------------------------------------
@@ -1405,6 +1399,9 @@ export async function cancelJewelleryJob(
   const job = await tx.jewelleryJob.findUnique({ where: { id: input.jobId } });
   if (!job) throw new PostingError("Job not found.");
   if (job.status === "CANCELLED") throw new PostingError("This job has already been cancelled.");
+  if (!new Decimal(job.stockMaterialWipCost).isZero() || (await jobHoldings(tx, job.id)).size > 0) {
+    throw new PostingError(`${job.jobCode} still holds issued Other Material (₹${new Decimal(job.stockMaterialWipCost).toFixed(2)} at cost). Return it to stock (Other Material → Return from job) before cancelling the job.`);
+  }
   if ((await customerGoldOnJobInTx(tx, job.id)).length > 0) {
     throw new PostingError("This job holds Customer-owned gold. Release it back to the Karigar (Customer Gold) before cancelling the job.");
   }
@@ -1698,6 +1695,9 @@ export async function assessJobReconciliation(tx: Tx, jobId: string): Promise<Jo
   if (!alloyPending.isZero() || !new Decimal(job.remainingAlloyWipCost).isZero()) {
     return { ok: false, reason: `${job.jobCode} still has ${alloyPending.toFixed(3)}g of Company Copper/Alloy unresolved.` };
   }
+  if (!new Decimal(job.stockMaterialWipCost).isZero()) {
+    return { ok: false, reason: `${job.jobCode} still holds issued Other Material (₹${new Decimal(job.stockMaterialWipCost).toFixed(2)} at cost) — return it to stock or receive it in a piece.` };
+  }
 
   const unresolvedDiamond = await tx.jewelleryDiamondIssueLine.findFirst({ where: { jobId, resolvedAs: null } });
   if (unresolvedDiamond) {
@@ -1836,6 +1836,8 @@ export type AlloyAddedInput = {
   includedGrossWeight?: DecimalInput | null;
 };
 
+export type KarigarMaterialLineInput = { description: string; quantity: DecimalInput; unit: "PCS" | "CT" | "GRAM" | "OTHER"; charge: DecimalInput };
+
 export async function receiveFinishedJewellery(
   tx: Tx,
   input: FyInput & {
@@ -1854,6 +1856,12 @@ export async function receiveFinishedJewellery(
     settingCharge: DecimalInput;
     platingCharge: DecimalInput;
     otherExpense: DecimalInput;
+    /**
+     * Material the Karigar supplied himself (never Company stock): recorded
+     * line by line; its charges are already INCLUDED in otherExpense (the
+     * action adds them), so the Karigar payable carries them exactly once.
+     */
+    karigarMaterialLines?: KarigarMaterialLineInput[];
     markJobComplete: boolean;
     /**
      * Default true (historic behaviour): a receipt that resolves exactly the
@@ -2441,6 +2449,36 @@ export async function receiveFinishedJewellery(
     otherMaterialReallocation = new Map(allocations.map((a) => [a.key, a.amount]));
   }
 
+  // ---- Purchased Other Material on the job (posted WIP, 1320): drains by
+  // fine weight like metal — the share resolved, or everything on the final
+  // receipt — into the pieces' materialCost; with no piece to carry it, it is
+  // expensed with the other unabsorbed cost. ----
+  const stockMaterialBefore = new Decimal(job.stockMaterialWipCost);
+  const stockMaterialResolved = !stockMaterialBefore.greaterThan(0)
+    ? ZERO
+    : isFinalMetal
+      ? stockMaterialBefore
+      : resolvedThisReceipt.greaterThan(0) && pendingAvailable.greaterThan(0)
+        ? round2(stockMaterialBefore.times(resolvedThisReceipt).dividedBy(pendingAvailable))
+        : ZERO;
+  const stockMaterialToFinished = hasOutputs ? stockMaterialResolved : ZERO;
+  if (!hasOutputs) unabsorbedCost = round2(unabsorbedCost.plus(stockMaterialResolved));
+
+  // Karigar-supplied material: charges already inside otherExpense.
+  const karigarMaterialLines = (input.karigarMaterialLines ?? []).map((l, i) => {
+    const description = l.description?.trim() ?? "";
+    if (description.length < 2) throw new PostingError(`Karigar material line ${i + 1}: describe the material.`);
+    const quantity = round3(l.quantity);
+    if (!quantity.greaterThan(0)) throw new PostingError(`Karigar material line ${i + 1}: enter the quantity.`);
+    const charge = round2(l.charge);
+    if (charge.isNegative()) throw new PostingError(`Karigar material line ${i + 1}: the charge cannot be negative.`);
+    return { description: description.slice(0, 200), quantity, unit: l.unit, charge };
+  });
+  const karigarMaterialCharges = round2(karigarMaterialLines.reduce((s, l) => s.plus(l.charge), ZERO));
+  if (karigarMaterialCharges.greaterThan(round2(input.otherExpense ?? 0))) {
+    throw new PostingError("Internal check failed: Karigar material charges must be part of the other expense. Nothing was saved.");
+  }
+
   const totalCharges = round2(
     new Decimal(input.labourCharge ?? 0)
       .plus(input.makingCharge ?? 0)
@@ -2476,6 +2514,7 @@ export async function receiveFinishedJewellery(
       ? byFineWeight
       : resolvedOutputs.map((o, i) => ({ key: String(i), weight: o.netMetalWeight }));
   const alloyAllocation = hasOutputs && alloyCostToOutputs.greaterThan(0) ? allocateProportionally(alloyCostToOutputs, alloyWeights) : [];
+  const materialAllocation = hasOutputs && stockMaterialToFinished.greaterThan(0) ? allocateProportionally(stockMaterialToFinished, byFineWeight) : [];
 
   // Per piece: the Company's authoritative inventory cost (metal incl. alloy +
   // stones + charges). A Customer-owned piece's share goes to 1340.
@@ -2486,7 +2525,8 @@ export async function receiveFinishedJewellery(
       .filter((l) => resolved.input.diamondIds.includes(l.polishedDiamondId))
       .reduce((sum, l) => sum.plus(new Decimal(l.costAtIssue)), ZERO)
       .plus(resolvedPacketResolutions.filter((r) => r.resolution === "SET" && r.setInOutputIndex === i).reduce((sum, r) => sum.plus(r.costValue), ZERO));
-    return round2(metal.plus(stones).plus(labour));
+    const material = materialAllocation.find((a) => a.key === String(i))?.amount ?? ZERO;
+    return round2(metal.plus(stones).plus(labour).plus(material));
   });
   const customerPiecesInventoryCost = round2(
     outputCompanyInventoryCost.reduce((sum, c, i) => (customerFineByOutput[i].greaterThan(0) ? sum.plus(c) : sum), ZERO)
@@ -2503,7 +2543,7 @@ export async function receiveFinishedJewellery(
     });
   }
   const finishedInventoryDebit = round2(
-    finishedPortionCost.plus(alloyCostToOutputs).plus(chargesToFinished).plus(setDiamondCost).plus(setPacketCost)
+    finishedPortionCost.plus(alloyCostToOutputs).plus(chargesToFinished).plus(setDiamondCost).plus(setPacketCost).plus(stockMaterialToFinished)
   );
   // Company pieces → 1330; the Company's own cost in Customer-owned pieces → 1340.
   const companyFinishedDebit = round2(finishedInventoryDebit.minus(customerPiecesInventoryCost));
@@ -2577,6 +2617,7 @@ export async function receiveFinishedJewellery(
       .plus(setPacketCost)
       .plus(returnedPacketCost)
       .plus(damagedPacketCost)
+      .plus(stockMaterialResolved)
   );
   if (wipCredit.greaterThan(0)) {
     journalLines.push({
@@ -2655,6 +2696,15 @@ export async function receiveFinishedJewellery(
     },
   });
 
+  for (const [i, l] of karigarMaterialLines.entries()) {
+    await tx.jewelleryReceiptKarigarMaterialLine.create({
+      data: { receiptId: receipt.id, description: l.description, quantity: l.quantity.toFixed(3), unit: l.unit, charge: l.charge.toFixed(2), sortOrder: i },
+    });
+  }
+  if (stockMaterialResolved.greaterThan(0)) {
+    await consumeJobMaterialForReceipt(tx, { jobId: job.id, receiptId: receipt.id, amount: stockMaterialResolved, final: isFinalMetal, date: input.receiveDate, actorId: input.createdByUserId });
+  }
+
   // ---- Create finished outputs ----
   const purityDisplayNameCache = new Map<string, string>();
   async function purityDisplayName(purityId: string): Promise<string> {
@@ -2675,6 +2725,7 @@ export async function receiveFinishedJewellery(
     const metalCost = round2(goldMetalCost.plus(alloyCost));
     const otherCost = otherMaterialReallocation.get(`new:${i}`) ?? ZERO;
     const labourAllocated = chargesAllocation.find((a) => a.key === String(i))?.amount ?? ZERO;
+    const materialCost = materialAllocation.find((a) => a.key === String(i))?.amount ?? ZERO;
     const outputDiamondIssueLines = issueLines.filter((l) => resolved.input.diamondIds.includes(l.polishedDiamondId));
     const outputPacketResolutions = resolvedPacketResolutions.filter(
       (r) => r.resolution === "SET" && r.setInOutputIndex === i
@@ -2689,7 +2740,7 @@ export async function receiveFinishedJewellery(
         .reduce((sum, l) => sum.plus(new Decimal(l.caratAtIssue)), ZERO)
         .plus(outputPacketResolutions.reduce((sum, r) => sum.plus(r.carat), ZERO))
     );
-    const totalCost = round2(metalCost.plus(diamondCostForOutput).plus(otherCost).plus(labourAllocated));
+    const totalCost = round2(metalCost.plus(diamondCostForOutput).plus(otherCost).plus(labourAllocated).plus(materialCost));
 
     const output = await tx.finishedJewellery.create({
       data: {
@@ -2713,6 +2764,7 @@ export async function receiveFinishedJewellery(
         diamondCost: diamondCostForOutput.toFixed(2),
         otherMaterialCost: otherCost.toFixed(2),
         labourAllocated: labourAllocated.toFixed(2),
+        materialCost: materialCost.toFixed(2),
         totalCost: totalCost.toFixed(2),
         photoAssetId: resolved.input.photoAssetId || null,
         qcStatus: resolved.input.qcStatus,
@@ -2731,7 +2783,7 @@ export async function receiveFinishedJewellery(
     createdOutputs.push(output);
     if (customerFineByOutput[i].greaterThan(0)) {
       // Customer-owned: never Company Finished Stock, so no stock-ledger entry.
-      if (!round2(metalCost.plus(diamondCostForOutput).plus(labourAllocated)).equals(outputCompanyInventoryCost[i])) {
+      if (!round2(metalCost.plus(diamondCostForOutput).plus(labourAllocated).plus(materialCost)).equals(outputCompanyInventoryCost[i])) {
         throw new PostingError("Internal check failed: piece cost mismatch. Nothing was saved.");
       }
       continue;
@@ -2749,7 +2801,7 @@ export async function receiveFinishedJewellery(
     // above): that reallocation only ever changes otherMaterialCost, which
     // this figure never included in the first place. Phase 7: metalCost
     // already includes this output's real alloy cost.
-    const inventoryCost = round2(metalCost.plus(diamondCostForOutput).plus(labourAllocated));
+    const inventoryCost = round2(metalCost.plus(diamondCostForOutput).plus(labourAllocated).plus(materialCost));
     await tx.finishedJewelleryStockMovement.create({
       data: {
         type: "PRODUCED_IN",
@@ -2780,7 +2832,7 @@ export async function receiveFinishedJewellery(
     const newShare = otherMaterialReallocation.get(`prior:${prior.id}`) ?? ZERO;
     if (!newShare.equals(new Decimal(prior.otherMaterialCost))) {
       const newTotalCost = round2(
-        new Decimal(prior.metalCost).plus(prior.diamondCost).plus(newShare).plus(prior.labourAllocated)
+        new Decimal(prior.metalCost).plus(prior.diamondCost).plus(newShare).plus(prior.labourAllocated).plus(prior.materialCost)
       );
       await tx.finishedJewellery.update({
         where: { id: prior.id },
@@ -3074,6 +3126,7 @@ export async function receiveFinishedJewellery(
       remainingAlloyWipCost: round2(remainingAlloyCostBefore.minus(alloyResolvedCost)).toFixed(2),
       totalLabourCharge: round2(new Decimal(job.totalLabourCharge).plus(totalCharges)).toFixed(2),
       remainingWipCost: round2(totalCostPool.minus(resolvedCost)).toFixed(2),
+      stockMaterialWipCost: round2(stockMaterialBefore.minus(stockMaterialResolved)).toFixed(2),
       status: jobComplete ? "COMPLETED" : "PARTIALLY_RECEIVED",
     },
   });

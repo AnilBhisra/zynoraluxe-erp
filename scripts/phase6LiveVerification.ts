@@ -115,7 +115,7 @@ async function main() {
           issueDate: now,
           metalLines: [{ metalType: "GOLD", purityId: purity.id, grossWeight: 20 }],
           polishedDiamondIds: [],
-          otherMaterialLines: [{ description: "Enamel work", quantity: 1, unit: "PCS", cost: 2000 }],
+          otherMaterialLines: [], // free-text material can no longer be issued (purchase it first)
         });
         assert(issued.status === "MATERIALS_ISSUED", "Job 1 issued materials");
 

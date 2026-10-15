@@ -111,6 +111,7 @@ describe("getAuthoritativeInventoryCost", () => {
       metalCost: "50000.00",
       diamondCost: "20000.00",
       labourAllocated: "8000.00",
+      materialCost: "0.00",
     });
     expect(cost.toFixed(2)).toBe("78000.00");
   });

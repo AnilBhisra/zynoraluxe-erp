@@ -51,9 +51,11 @@ export function getAuthoritativeInventoryCost(output: {
   metalCost: DecimalInput;
   diamondCost: DecimalInput;
   labourAllocated: DecimalInput;
+  /** Purchased Other Material carried in at receipt (0 for pieces made before it existed). */
+  materialCost: DecimalInput;
 }): Decimal {
   return round2(
-    new Decimal(output.metalCost).plus(output.diamondCost).plus(output.labourAllocated)
+    new Decimal(output.metalCost).plus(output.diamondCost).plus(output.labourAllocated).plus(output.materialCost)
   );
 }
 
@@ -209,6 +211,7 @@ export async function postFinishedJewellerySale(
       diamondCost: new Decimal(output.diamondCost),
       otherMaterialCost: new Decimal(output.otherMaterialCost),
       labourAllocated: new Decimal(output.labourAllocated),
+      materialCost: new Decimal(output.materialCost),
       totalCost: new Decimal(output.totalCost),
     }))
   );
@@ -697,6 +700,7 @@ export async function adjustFinishedJewelleryStock(
     diamondCost: new Decimal(output.diamondCost),
     otherMaterialCost: new Decimal(output.otherMaterialCost),
     labourAllocated: new Decimal(output.labourAllocated),
+    materialCost: new Decimal(output.materialCost),
     totalCost: new Decimal(output.totalCost),
   });
   if (isUnavailable(carrying.authoritativeCost)) {

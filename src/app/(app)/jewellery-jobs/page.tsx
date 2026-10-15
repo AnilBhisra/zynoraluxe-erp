@@ -19,6 +19,8 @@ import {
 import { listPolishedDiamonds } from "@/lib/diamond/reports";
 import { resolveJewelleryAssetUrl } from "@/lib/storage/jewelleryMedia";
 import { isGoldSource } from "@/lib/jewellery/jobGoldSource";
+import { getJobMaterialPanel, legacyOtherMaterialLines, listOtherMaterialStock, otherMaterialPurchaseCancelBlock } from "@/lib/jewellery/otherMaterial";
+import { OtherMaterialTab } from "@/components/jewellery/OtherMaterialTab";
 import { jobListHref } from "@/lib/jewellery/jobListHref";
 import { ownerOnly } from "@/lib/security/ownerOnly";
 import { serializeJobCostSummary, serializeJobPacketLines } from "@/lib/jewellery/jobDetailSerializers";
@@ -86,7 +88,7 @@ type SearchParams = {
   goldSource?: string;
 };
 
-const TABS = ["jobs", "karigar", "customer-gold", "metal", "finished"] as const;
+const TABS = ["jobs", "karigar", "customer-gold", "metal", "material", "finished"] as const;
 type Tab = (typeof TABS)[number];
 
 function TabLink({ tab, label, active }: { tab: Tab; label: string; active: boolean }) {
@@ -124,6 +126,7 @@ export default async function JewelleryJobsPage({ searchParams }: { searchParams
         <TabLink tab="karigar" label="Karigar Metal" active={tab === "karigar"} />
         <TabLink tab="customer-gold" label="Customer Gold" active={tab === "customer-gold"} />
         <TabLink tab="metal" label="Metal Stock" active={tab === "metal"} />
+        <TabLink tab="material" label="Other Material" active={tab === "material"} />
         <TabLink tab="finished" label="Finished Stock" active={tab === "finished"} />
       </nav>
 
@@ -164,6 +167,7 @@ export default async function JewelleryJobsPage({ searchParams }: { searchParams
           }
         />
       ) : null}
+      {tab === "material" ? <MaterialTabContent isOwner={isOwner} /> : null}
       {tab === "finished" ? (
         <FinishedTabContent
           search={params.finishedSearch ?? ""}
@@ -234,6 +238,9 @@ async function JobsTabContent({
       listReceiptCustodySources(prisma, jobId),
       // Customer-owned gold: weights for everyone; money only for the Owner.
       getJobCustomerGoldPanel(prisma, jobId, { includeValues: isOwner }),
+      // Purchased Other Material: quantities for everyone; cost only for the Owner.
+      getJobMaterialPanel(prisma, jobId, { includeCost: isOwner }),
+      listOtherMaterialStock(prisma, { includeCost: isOwner }),
     ] as const);
     const detail = settled[0].status === "fulfilled" ? settled[0].value : null;
     if (!detail) {
@@ -251,6 +258,8 @@ async function JobsTabContent({
     const transferPanel = value(settled[6]);
     const custodySources = value(settled[7]);
     const customerGold = value(settled[8]);
+    const materialPanel = value(settled[9]);
+    const materialStock = value(settled[10]).map((i) => ({ id: i.id, code: i.code, name: i.name, unit: i.unit, available: i.available, averageRate: i.averageRate }));
     const designImageUrl = await resolveJewelleryAssetUrl(detail.designImageAssetId);
     const addedLaterByReceipt = new Map((chargePanels ?? []).map((p) => [p.receiptId, p.addedLaterTotal]));
     // Packet quantities only — no packet cost ever reaches these props.
@@ -421,6 +430,8 @@ async function JobsTabContent({
       <JobDetailView
         job={serialized}
         isOwner={isOwner}
+        materialPanel={materialPanel}
+        materialStock={materialStock}
         backHref={jobListHref(view, { customerId: customerFilter, karigarId: karigarFilter, goldSource: goldSourceFilter, search })}
         entryHistory={entryHistory}
         purities={toMetalPurityOptions(purities)}
@@ -815,5 +826,47 @@ async function FinishedTabContent({
       <FinishedStockTab items={items} isOwner={isOwner} search={search} status={status} />
       {isOwner ? <FinishedSalesManager sales={sales} search={saleSearch} /> : null}
     </div>
+  );
+}
+
+/** Other Material: stock, items, purchases (Owner or Staff — figures for the Owner only), legacy audit (Owner). */
+async function MaterialTabContent({ isOwner }: { isOwner: boolean }) {
+  const [items, purchases, suppliers, legacy] = await Promise.all([
+    listOtherMaterialStock(prisma, { includeCost: isOwner }),
+    prisma.otherMaterialPurchase.findMany({
+      orderBy: [{ purchaseDate: "desc" }, { createdAt: "desc" }],
+      take: 100,
+      include: { supplier: { select: { name: true } }, lines: { include: { item: { select: { code: true, name: true } } }, orderBy: { sortOrder: "asc" } } },
+    }),
+    prisma.party.findMany({ where: { type: "SUPPLIER", isActive: true }, orderBy: { name: "asc" }, select: { id: true, name: true } }),
+    isOwner ? legacyOtherMaterialLines(prisma) : Promise.resolve(null),
+  ]);
+  const blocks = isOwner
+    ? await Promise.all(purchases.map((p) => (p.status === "POSTED" ? prisma.$transaction((tx) => otherMaterialPurchaseCancelBlock(tx, p.id)) : Promise.resolve(null))))
+    : purchases.map(() => null);
+  return (
+    <OtherMaterialTab
+      isOwner={isOwner}
+      items={items.map((i) => ({ id: i.id, code: i.code, name: i.name, category: i.category, unit: i.unit, available: i.available, stockValue: i.stockValue, averageRate: i.averageRate }))}
+      suppliers={suppliers}
+      legacy={legacy}
+      purchases={purchases.map((p, idx) => ({
+        id: p.id,
+        code: p.purchaseCode,
+        date: p.purchaseDate.toISOString().slice(0, 10),
+        supplier: p.supplier.name,
+        reference: p.reference,
+        status: p.status,
+        grandTotal: ownerOnly(isOwner, p.grandTotal.toFixed(2)),
+        cancelBlock: blocks[idx],
+        lines: p.lines.map((l) => ({
+          item: `${l.item.code} ${l.item.name}`,
+          quantity: l.quantity.toFixed(3),
+          unit: l.unit,
+          rate: ownerOnly(isOwner, l.rate.toFixed(2)),
+          lineTotal: ownerOnly(isOwner, l.lineTotal.toFixed(2)),
+        })),
+      }))}
+    />
   );
 }

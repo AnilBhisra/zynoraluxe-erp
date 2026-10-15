@@ -34,7 +34,7 @@ export async function getJobCustomerGoldPanel(
         status: true,
         netMetalWeight: true,
         customerGoldFineWeight: true,
-        ...(opts.includeValues ? { metalCost: true, diamondCost: true, labourAllocated: true } : {}),
+        ...(opts.includeValues ? { metalCost: true, diamondCost: true, labourAllocated: true, materialCost: true } : {}),
       },
     }),
     tx.customerJewelleryDelivery.findMany({
@@ -91,7 +91,7 @@ export async function getJobCustomerGoldPanel(
       mixApproved: sources.mixApproved,
     },
     pieces: pieces.map((p) => {
-      const costed = p as typeof p & { metalCost?: unknown; diamondCost?: unknown; labourAllocated?: unknown };
+      const costed = p as typeof p & { metalCost?: unknown; diamondCost?: unknown; labourAllocated?: unknown; materialCost?: unknown };
       return {
         id: p.id,
         finishedCode: p.finishedCode,
@@ -99,7 +99,7 @@ export async function getJobCustomerGoldPanel(
         netMetalWeight: f3(p.netMetalWeight),
         customerGoldFineWeight: f3(p.customerGoldFineWeight),
         companyCost: opts.includeValues
-          ? new Decimal(String(costed.metalCost ?? 0)).plus(String(costed.diamondCost ?? 0)).plus(String(costed.labourAllocated ?? 0)).toFixed(2)
+          ? new Decimal(String(costed.metalCost ?? 0)).plus(String(costed.diamondCost ?? 0)).plus(String(costed.labourAllocated ?? 0)).plus(String(costed.materialCost ?? 0)).toFixed(2)
           : null,
       };
     }),

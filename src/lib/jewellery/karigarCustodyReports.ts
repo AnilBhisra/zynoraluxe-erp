@@ -9,6 +9,7 @@ import type { Tx } from "@/lib/corrections/types";
 import { prisma } from "@/lib/db/prisma";
 import { round3 } from "@/lib/diamond/allocation";
 import { CARRYING_COST_UNAVAILABLE, carryingFinishedPieceCosts, formatCarryingAmount, isUnavailable, type CarryingAmount } from "@/lib/jewellery/carryingCost";
+import { otherMaterialStockValue } from "@/lib/jewellery/otherMaterial";
 import { custodyReversalBlock, KIND_LABEL, listCustodyBalancesInTx } from "@/lib/jewellery/karigarCustody";
 import { canStillIssueMaterialsForJobs, getMetalStockBalanceInTx, getScrapMetalBalanceInTx, pendingFineWeightOf } from "@/lib/jewellery/posting";
 
@@ -391,6 +392,7 @@ export async function reconcileMetalLedger(tx: Tx): Promise<{ lines: Reconciliat
     include: { diamondIssueLines: { where: { resolvedAs: null } }, packetIssueLines: true },
   });
   const jobMetal = jobs.reduce((s, j) => s.plus(j.remainingWipCost).plus(j.remainingAlloyWipCost), ZERO);
+  const jobMaterial = jobs.reduce((s, j) => s.plus(j.stockMaterialWipCost), ZERO);
   const jobStones = jobs.reduce(
     (s, j) =>
       s
@@ -403,7 +405,7 @@ export async function reconcileMetalLedger(tx: Tx): Promise<{ lines: Reconciliat
 
   const available = await tx.finishedJewellery.findMany({
     where: { status: "AVAILABLE" },
-    select: { id: true, jobId: true, metalCost: true, diamondCost: true, otherMaterialCost: true, labourAllocated: true, totalCost: true },
+    select: { id: true, jobId: true, metalCost: true, diamondCost: true, otherMaterialCost: true, labourAllocated: true, materialCost: true, totalCost: true },
   });
   const carrying = await carryingFinishedPieceCosts(
     tx,
@@ -414,6 +416,7 @@ export async function reconcileMetalLedger(tx: Tx): Promise<{ lines: Reconciliat
       diamondCost: new Decimal(r.diamondCost),
       otherMaterialCost: new Decimal(r.otherMaterialCost),
       labourAllocated: new Decimal(r.labourAllocated),
+      materialCost: new Decimal(r.materialCost),
       totalCost: new Decimal(r.totalCost),
     }))
   );
@@ -427,9 +430,9 @@ export async function reconcileMetalLedger(tx: Tx): Promise<{ lines: Reconciliat
 
   const awaiting = await tx.finishedJewellery.findMany({
     where: { status: "CUSTOMER_AWAITING_DELIVERY" },
-    select: { metalCost: true, diamondCost: true, labourAllocated: true },
+    select: { metalCost: true, diamondCost: true, labourAllocated: true, materialCost: true },
   });
-  const customerPieces = awaiting.reduce((s, p) => s.plus(p.metalCost).plus(p.diamondCost).plus(p.labourAllocated), ZERO);
+  const customerPieces = awaiting.reduce((s, p) => s.plus(p.metalCost).plus(p.diamondCost).plus(p.labourAllocated).plus(p.materialCost), ZERO);
 
   const line = (accountCode: string, label: string, ledger: Decimal, parts: { label: string; value: Decimal }[]): ReconciliationLine => {
     const expected = round2(parts.reduce((s, p) => s.plus(p.value), ZERO));
@@ -446,6 +449,7 @@ export async function reconcileMetalLedger(tx: Tx): Promise<{ lines: Reconciliat
         { label: "Metal pending on open jobs", value: jobMetal },
         { label: "Posted revaluations of job WIP", value: new Decimal(wipReval._sum.deltaCostValue ?? 0) },
         { label: "Diamonds / packet stones pending on open jobs", value: jobStones },
+        { label: "Purchased Other Material on open jobs", value: jobMaterial },
       ]),
       line(SYSTEM_ACCOUNT_CODES.FINISHED_JEWELLERY_INVENTORY, "Finished Jewellery Inventory", await ledgerOf(SYSTEM_ACCOUNT_CODES.FINISHED_JEWELLERY_INVENTORY), [
         { label: "Available finished pieces (authoritative cost)", value: finished },
@@ -453,6 +457,10 @@ export async function reconcileMetalLedger(tx: Tx): Promise<{ lines: Reconciliat
       // Customer Gold: the Company's own cost in Customer-owned pieces not yet delivered.
       line(SYSTEM_ACCOUNT_CODES.CUSTOMER_JEWELLERY_WIP, "Customer Jewellery Work Awaiting Delivery", await ledgerOf(SYSTEM_ACCOUNT_CODES.CUSTOMER_JEWELLERY_WIP), [
         { label: "Company cost in Customer-owned pieces awaiting delivery", value: customerPieces },
+      ]),
+      // Purchased Other Material in stock, at its carrying cost (the movement ledger).
+      line(SYSTEM_ACCOUNT_CODES.OTHER_MATERIAL_INVENTORY, "Other Material Inventory", await ledgerOf(SYSTEM_ACCOUNT_CODES.OTHER_MATERIAL_INVENTORY), [
+        { label: "Other Material stock, every item (carrying cost)", value: await otherMaterialStockValue(tx) },
       ]),
     ],
   };

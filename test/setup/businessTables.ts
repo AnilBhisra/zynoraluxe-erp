@@ -19,6 +19,9 @@ export const BUSINESS_ROOT_TABLES = [
   "correction_batches",
   "finished_jewellery",
   "jewellery_receipts",
+  // Other Material: items hang off users only, so they are a root of their own
+  // (their purchase lines and movements cascade from here and from vouchers / jobs).
+  "other_material_items",
 ] as const;
 
 export const CLEAR_BUSINESS_DATA_SQL = `TRUNCATE TABLE ${BUSINESS_ROOT_TABLES.map((t) => `"${t}"`).join(", ")} CASCADE`;

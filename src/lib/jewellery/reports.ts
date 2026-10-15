@@ -504,6 +504,7 @@ export async function getJewelleryJobDetail(jobId: string): Promise<JewelleryJob
         diamondCost: new Decimal(f.diamondCost),
         otherMaterialCost: new Decimal(f.otherMaterialCost),
         labourAllocated: new Decimal(f.labourAllocated),
+        materialCost: new Decimal(f.materialCost),
         totalCost: new Decimal(f.totalCost),
       }))
     ),
@@ -802,6 +803,7 @@ export async function listFinishedJewellery(filters?: { search?: string }): Prom
       diamondCost: new Decimal(o.diamondCost),
       otherMaterialCost: new Decimal(o.otherMaterialCost),
       labourAllocated: new Decimal(o.labourAllocated),
+      materialCost: new Decimal(o.materialCost),
       totalCost: new Decimal(o.totalCost),
     }))
   );
@@ -958,6 +960,7 @@ export async function listFinishedJewelleryStock(filters?: {
         diamondCost: true,
         otherMaterialCost: true,
         labourAllocated: true,
+        materialCost: true,
         totalCost: true,
         job: { select: { jobCode: true, designName: true, karigar: { select: { name: true } } } },
         purity: { select: { displayName: true } },
@@ -987,6 +990,7 @@ export async function listFinishedJewelleryStock(filters?: {
         diamondCost: new Decimal(o.diamondCost),
         otherMaterialCost: new Decimal(o.otherMaterialCost),
         labourAllocated: new Decimal(o.labourAllocated),
+        materialCost: new Decimal(o.materialCost),
         totalCost: new Decimal(o.totalCost),
       }))
     );
@@ -1191,6 +1195,7 @@ export async function getFinishedJewelleryStockSummary(includeValue = false): Pr
         diamondCost: true,
         otherMaterialCost: true,
         labourAllocated: true,
+        materialCost: true,
         totalCost: true,
       },
     });
@@ -1203,6 +1208,7 @@ export async function getFinishedJewelleryStockSummary(includeValue = false): Pr
         diamondCost: new Decimal(r.diamondCost),
         otherMaterialCost: new Decimal(r.otherMaterialCost),
         labourAllocated: new Decimal(r.labourAllocated),
+        materialCost: new Decimal(r.materialCost),
         totalCost: new Decimal(r.totalCost),
       }))
     );

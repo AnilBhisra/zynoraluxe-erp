@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/db/prisma", () => ({ prisma: {} }));
 
 import { createFakeCostingTx } from "../../../test/fixtures/fakeCostingTx";
+import { seedLegacyOtherMaterial } from "../../../test/fixtures/legacyOtherMaterial";
 import {
   createJewelleryJob,
   createMetalPurchase,
@@ -79,8 +80,9 @@ async function setupSimpleCompletedJobWithOutput(fixture: Fixture) {
     issueDate: DATE,
     metalLines: [{ metalType: "GOLD", purityId: purity.id as string, grossWeight: 10 }], // fine 9.16, cost 50000
     polishedDiamondIds: [diamond.id as string],
-    otherMaterialLines: [{ description: "Findings", quantity: 1, unit: "PCS", cost: 500 }],
+    otherMaterialLines: [],
   });
+  await seedLegacyOtherMaterial(fixture.tx, { jobId: issued.id as string, description: "Findings", quantity: 1, unit: "PCS", cost: 500, createdByUserId: "user-1" });
 
   const result = await receiveFinishedJewellery(fixture.tx as never, {
     ...common(),

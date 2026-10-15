@@ -20,6 +20,7 @@ import {
   poolKeyString,
   writeCustomerGoldEntry,
 } from "@/lib/jewellery/customerGoldLedger";
+import { reverseReceiptMaterialConsumption } from "@/lib/jewellery/otherMaterial";
 import { declareCustodyAware, pendingFineWeightOf } from "@/lib/jewellery/posting";
 
 /**
@@ -52,6 +53,9 @@ const COUNTERS = [
   ["remainingAlloyWipCost", 2],
   ["totalLabourCharge", 2],
   ["remainingWipCost", 2],
+  // Purchased Other Material on the job. Snapshots taken before it existed
+  // have no value for it: read as 0.00 (it was 0.00 then).
+  ["stockMaterialWipCost", 2],
 ] as const;
 type CounterName = (typeof COUNTERS)[number][0];
 export type ReversalJobState = Record<CounterName, string> & { status: JewelleryJobStatus };
@@ -75,9 +79,14 @@ export function jobStateOf(job: JobRow): ReversalJobState {
   return state;
 }
 
+/** A counter from a snapshot; a counter added after the snapshot was taken reads as zero. */
+function snapValue(state: ReversalJobState, name: CounterName, dp: number): string {
+  return state[name] ?? new Decimal(0).toFixed(dp);
+}
+
 function changedCounters(current: ReversalJobState, expected: ReversalJobState): string[] {
   const out: string[] = [];
-  for (const [name] of COUNTERS) if (current[name] !== expected[name]) out.push(`${name} ${expected[name]} → ${current[name]}`);
+  for (const [name, dp] of COUNTERS) if (current[name] !== snapValue(expected, name, dp)) out.push(`${name} ${snapValue(expected, name, dp)} → ${current[name]}`);
   if (current.status !== expected.status) out.push(`status ${expected.status} → ${current.status}`);
   return out;
 }
@@ -312,7 +321,7 @@ export async function planCustomerGoldReceiptReversal(tx: Tx, receiptId: string)
         }
       : null,
     jobStatusAfter: jobBefore.status,
-    jobPendingFineAfter: pendingFineWeightOf({ ...job, ...Object.fromEntries(COUNTERS.map(([n]) => [n, jobBefore[n]])) } as never).toFixed(3),
+    jobPendingFineAfter: pendingFineWeightOf({ ...job, ...Object.fromEntries(COUNTERS.map(([n, dp]) => [n, snapValue(jobBefore, n, dp)])) } as never).toFixed(3),
   };
 }
 
@@ -345,6 +354,8 @@ export async function reverseCustomerGoldJobReceipt(
   const reversalVoucher = receipt.postingVoucherId
     ? await cancelVoucher(tx, { voucherId: receipt.postingVoucherId, cancelledByUserId: input.actor.id, cancellationReason: label, fyStartMonth: input.fyStartMonth, fyStartDay: input.fyStartDay })
     : null;
+  // Purchased Other Material the receipt carried into its pieces goes back onto the job.
+  await reverseReceiptMaterialConsumption(tx, { receiptId: receipt.id, actorId: input.actor.id });
 
   // 2. The Customer's gold: a mirror for every entry, newest first; proven non-negative once, at the end.
   const pool: PoolKey = { customerId: s.pool.customerId, metalType: s.pool.metalType, purityId: s.pool.purityId, finenessPercentSnapshot: new Decimal(s.pool.finenessPercent) };
@@ -434,7 +445,7 @@ export async function reverseCustomerGoldJobReceipt(
 
   // 6. The job exactly as before the receipt; earlier pieces' shared material cost as before.
   const data: Record<string, string> = {};
-  for (const [name] of COUNTERS) data[name] = s.jobBefore[name];
+  for (const [name, dp] of COUNTERS) data[name] = snapValue(s.jobBefore, name, dp);
   await tx.jewelleryJob.update({ where: { id: receipt.jobId }, data: { ...data, status: s.jobBefore.status } });
   for (const p of s.priorOutputs) {
     await tx.finishedJewellery.update({ where: { id: p.id }, data: { otherMaterialCost: p.before.otherMaterialCost, totalCost: p.before.totalCost } });

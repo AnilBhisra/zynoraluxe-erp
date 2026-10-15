@@ -136,6 +136,10 @@ model User {
   clearingAllocationsUndone ClearingAllocation[]     @relation("ClearingAllocationReversedBy")
   clearingMappingsUpdated   ClearingAccountMapping[] @relation("ClearingMappingUpdatedBy")
 
+  otherMaterialItemsCreated     OtherMaterialItem[]        @relation("OtherMaterialItemCreatedBy")
+  otherMaterialPurchasesCreated OtherMaterialPurchase[]    @relation("OtherMaterialPurchaseCreatedBy")
+  otherMaterialDocsCreated      OtherMaterialJobDocument[] @relation("OtherMaterialJobDocumentCreatedBy")
+
   @@map("users")
 }
 
@@ -251,6 +255,8 @@ model Party {
   customerOwnedPieces         FinishedJewellery[]         @relation("FinishedJewelleryCustomer")
   clearingDocuments           ClearingDocument[]          @relation("ClearingDocumentParty")
   clearingEntries             ClearingEntry[]             @relation("ClearingEntryParty")
+
+  otherMaterialPurchases OtherMaterialPurchase[] @relation("OtherMaterialPurchaseSupplier")
 
   @@index([type])
   @@index([name])
@@ -505,6 +511,11 @@ model Voucher {
   clearingDocumentsSourced          ClearingDocument[]         @relation("ClearingDocumentSourceVoucher")
   clearingEntries                   ClearingEntry[]            @relation("ClearingEntryVoucher")
   clearingAllocations               ClearingAllocation[]       @relation("ClearingAllocationSale")
+
+  otherMaterialPurchase             OtherMaterialPurchase?    @relation("OtherMaterialPurchaseVoucher")
+  otherMaterialPurchaseCancellation OtherMaterialPurchase?    @relation("OtherMaterialPurchaseCancellationVoucher")
+  otherMaterialJobDocument          OtherMaterialJobDocument? @relation("OtherMaterialJobDocumentVoucher")
+  otherMaterialJobDocumentReversal  OtherMaterialJobDocument? @relation("OtherMaterialJobDocumentReversalVoucher")
 
   @@index([voucherType])
   @@index([partyId])
@@ -1466,6 +1477,10 @@ model JewelleryJob {
   consumedAlloyGrossWeight Decimal @default(0) @db.Decimal(10, 3)
   returnedAlloyGrossWeight Decimal @default(0) @db.Decimal(10, 3)
   remainingAlloyWipCost    Decimal @default(0) @db.Decimal(14, 2)
+  /// Purchased Other Material issued to this job and not yet returned or
+  /// consumed by a receipt (Jewellery WIP, 1320). Receipts drain it into the
+  /// pieces' materialCost by fine weight (the final receipt takes the rest).
+  stockMaterialWipCost     Decimal @default(0) @db.Decimal(14, 2)
 
   // Drains to exactly 0 as receipts resolve it — mirrors DiamondJob's
   // remainingWipCost (see src/lib/diamond/posting.ts for the pattern).
@@ -1529,6 +1544,9 @@ model JewelleryJob {
   customerGoldEntries       CustomerGoldEntry[]          @relation("CustomerGoldEntryJob")
   customerJewelleryBills    CustomerJewelleryBill[]      @relation("CustomerJewelleryBillJob")
   customerDeliveries        CustomerJewelleryDelivery[]  @relation("CustomerJewelleryDeliveryJob")
+
+  otherMaterialJobDocuments OtherMaterialJobDocument[]
+  otherMaterialMovements    OtherMaterialMovement[]
 
   @@index([karigarId])
   @@index([customerId])
@@ -1837,6 +1855,9 @@ model JewelleryReceipt {
   packetResolutions   JewelleryPacketResolution[]
   customerGoldEntries CustomerGoldEntry[]         @relation("CustomerGoldEntryReceipt")
 
+  karigarMaterialLines   JewelleryReceiptKarigarMaterialLine[]
+  otherMaterialMovements OtherMaterialMovement[]
+
   @@index([jobId])
   @@map("jewellery_receipts")
 }
@@ -1905,6 +1926,10 @@ model FinishedJewellery {
   metalCost         Decimal @default(0) @db.Decimal(14, 2)
   diamondCost       Decimal @default(0) @db.Decimal(14, 2)
   otherMaterialCost Decimal @default(0) @db.Decimal(14, 2)
+  /// Purchased Other Material carried into this piece at receipt — POSTED
+  /// (part of the authoritative cost: metal + diamonds + labour + material).
+  /// Unlike the display-only otherMaterialCost above it is never rewritten.
+  materialCost      Decimal @default(0) @db.Decimal(14, 2)
   labourAllocated   Decimal @default(0) @db.Decimal(14, 2)
   totalCost         Decimal @default(0) @db.Decimal(14, 2)
 
@@ -2261,6 +2286,9 @@ enum JewellerySequenceType {
   CUSTOMER_JEWELLERY_DELIVERY
   /// Owner "Correct entry" corrections that post no voucher (metadata, counts).
   ENTRY_CORRECTION
+  OTHER_MATERIAL_ITEM
+  OTHER_MATERIAL_PURCHASE
+  OTHER_MATERIAL_JOB_DOCUMENT
 }
 
 model JewellerySequence {
@@ -4032,11 +4060,11 @@ model ClearingAccountMapping {
 
 /// One posted clearing action (never edited; reversed by a mirror voucher).
 model ClearingDocument {
-  id   String               @id @default(cuid())
-  kind ClearingDocumentKind
+  id       String               @id @default(cuid())
+  kind     ClearingDocumentKind
   /// Posting order (database sequence). "Newest first" reversal uses this, not createdAt:
   /// a gross-up workflow posts up to three documents in one transaction (same timestamp).
-  sequence Int @unique @default(autoincrement())
+  sequence Int                  @unique @default(autoincrement())
 
   partyId String
   party   Party  @relation("ClearingDocumentParty", fields: [partyId], references: [id])
@@ -4184,4 +4212,200 @@ model ClearingAllocation {
   @@index([documentId])
   @@index([saleVoucherId])
   @@map("clearing_allocations")
+}
+
+// ---------------------------------------------------------------------------
+// Other Material — purchased stock (JEWELLERY_JOB_LIST_FILTERS_AND_LABELS.md §12)
+// Purchase (Dr 1230 / Cr 2000 supplier) → stock → job issue (Dr 1320 / Cr 1230,
+// no payable) → receipt (into the pieces' materialCost) or return
+// (Dr 1230 / Cr 1320). Stock is valued at its weighted carrying cost; the
+// movement that empties an item takes the exact remainder. Legacy free-text
+// JewelleryOtherMaterialLine rows are left untouched (display only).
+// ---------------------------------------------------------------------------
+
+/// A reusable Other Material (moissanite, findings, enamel …) in one unit.
+model OtherMaterialItem {
+  id          String                @id @default(cuid())
+  code        String                @unique
+  name        String
+  category    OtherMaterialCategory @default(OTHER)
+  unit        InvoiceUnit
+  description String?
+  isActive    Boolean               @default(true)
+
+  createdByUserId String
+  createdBy       User     @relation("OtherMaterialItemCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt       DateTime @default(now())
+
+  purchaseLines OtherMaterialPurchaseLine[]
+  movements     OtherMaterialMovement[]
+
+  @@index([isActive, name])
+  @@map("other_material_items")
+}
+
+model OtherMaterialPurchase {
+  id           String   @id @default(cuid())
+  purchaseCode String   @unique
+  supplierId   String
+  supplier     Party    @relation("OtherMaterialPurchaseSupplier", fields: [supplierId], references: [id])
+  purchaseDate DateTime
+  /// Supplier's invoice / bill reference.
+  reference    String?
+  notes        String?
+
+  gstTreatment  GstTreatment
+  subtotal      Decimal      @db.Decimal(14, 2)
+  discountTotal Decimal      @default(0) @db.Decimal(14, 2)
+  taxableTotal  Decimal      @db.Decimal(14, 2)
+  taxTotal      Decimal      @default(0) @db.Decimal(14, 2)
+  grandTotal    Decimal      @db.Decimal(14, 2)
+
+  voucherId String  @unique
+  voucher   Voucher @relation("OtherMaterialPurchaseVoucher", fields: [voucherId], references: [id])
+
+  status                VoucherStatus @default(POSTED)
+  cancelledAt           DateTime?
+  cancelledByUserId     String?
+  cancellationReason    String?
+  cancellationVoucherId String?       @unique
+  cancellationVoucher   Voucher?      @relation("OtherMaterialPurchaseCancellationVoucher", fields: [cancellationVoucherId], references: [id])
+
+  idempotencyKey  String?  @unique
+  createdByUserId String
+  createdBy       User     @relation("OtherMaterialPurchaseCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt       DateTime @default(now())
+
+  lines OtherMaterialPurchaseLine[]
+
+  @@index([supplierId])
+  @@map("other_material_purchases")
+}
+
+model OtherMaterialPurchaseLine {
+  id         String                @id @default(cuid())
+  purchaseId String
+  purchase   OtherMaterialPurchase @relation(fields: [purchaseId], references: [id])
+  itemId     String
+  item       OtherMaterialItem     @relation(fields: [itemId], references: [id])
+
+  quantity       Decimal     @db.Decimal(14, 3)
+  unit           InvoiceUnit
+  /// Rate per `unit`; baseAmount = quantity × rate, recomputed on the server.
+  rate           Decimal     @db.Decimal(14, 4)
+  baseAmount     Decimal     @db.Decimal(14, 2)
+  discount       Decimal     @default(0) @db.Decimal(14, 2)
+  /// baseAmount − discount (exclusive) or the GST-exclusive part (inclusive): the stock's landed cost.
+  taxableValue   Decimal     @db.Decimal(14, 2)
+  gstRatePercent Decimal     @default(0) @db.Decimal(5, 2)
+  taxType        TaxType     @default(EXCLUSIVE)
+  taxAmount      Decimal     @default(0) @db.Decimal(14, 2)
+  lineTotal      Decimal     @db.Decimal(14, 2)
+  sortOrder      Int         @default(0)
+
+  movements OtherMaterialMovement[]
+
+  @@index([purchaseId])
+  @@map("other_material_purchase_lines")
+}
+
+enum OtherMaterialJobDocumentKind {
+  ISSUE
+  RETURN
+}
+
+/// One issue of purchased material to a job, or one return of unused material.
+model OtherMaterialJobDocument {
+  id           String                       @id @default(cuid())
+  documentCode String                       @unique
+  kind         OtherMaterialJobDocumentKind
+  jobId        String
+  job          JewelleryJob                 @relation(fields: [jobId], references: [id])
+  documentDate DateTime
+  reason       String?
+  totalCost    Decimal                      @db.Decimal(14, 2)
+
+  voucherId String  @unique
+  voucher   Voucher @relation("OtherMaterialJobDocumentVoucher", fields: [voucherId], references: [id])
+
+  status            CustomerJewelleryDocStatus @default(POSTED)
+  reversedAt        DateTime?
+  reversedByUserId  String?
+  reversalReason    String?
+  reversalVoucherId String?                    @unique
+  reversalVoucher   Voucher?                   @relation("OtherMaterialJobDocumentReversalVoucher", fields: [reversalVoucherId], references: [id])
+
+  idempotencyKey  String?  @unique
+  createdByUserId String
+  createdBy       User     @relation("OtherMaterialJobDocumentCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt       DateTime @default(now())
+  sequence        Int      @unique @default(autoincrement())
+
+  movements OtherMaterialMovement[]
+
+  @@index([jobId])
+  @@map("other_material_job_documents")
+}
+
+enum OtherMaterialMovementType {
+  /// stock +
+  PURCHASE_IN
+  /// stock −
+  PURCHASE_CANCEL_OUT
+  /// stock −, job +
+  JOB_ISSUE_OUT
+  /// stock +, job −
+  JOB_RETURN_IN
+  /// job − (a receipt carried it into its pieces)
+  JOB_CONSUMED
+}
+
+/// The Other Material ledger. Quantity and cost are positive magnitudes; the
+/// effect on stock / on the job comes from the type, inverted for a reversal row.
+model OtherMaterialMovement {
+  id           String                    @id @default(cuid())
+  itemId       String
+  item         OtherMaterialItem         @relation(fields: [itemId], references: [id])
+  type         OtherMaterialMovementType
+  quantity     Decimal                   @db.Decimal(14, 3)
+  costValue    Decimal                   @db.Decimal(14, 2)
+  movementDate DateTime
+
+  purchaseLineId String?
+  purchaseLine   OtherMaterialPurchaseLine? @relation(fields: [purchaseLineId], references: [id])
+  jobId          String?
+  job            JewelleryJob?              @relation(fields: [jobId], references: [id])
+  documentId     String?
+  document       OtherMaterialJobDocument?  @relation(fields: [documentId], references: [id])
+  receiptId      String?
+  receipt        JewelleryReceipt?          @relation(fields: [receiptId], references: [id])
+
+  reversalOfMovementId String?                @unique
+  reversalOf           OtherMaterialMovement? @relation("OtherMaterialMovementReversal", fields: [reversalOfMovementId], references: [id])
+  reversedBy           OtherMaterialMovement? @relation("OtherMaterialMovementReversal")
+
+  createdByUserId String
+  createdAt       DateTime @default(now())
+  sequence        Int      @unique @default(autoincrement())
+
+  @@index([itemId])
+  @@index([jobId, itemId])
+  @@index([receiptId])
+  @@map("other_material_movements")
+}
+
+/// Material the Karigar supplied himself on a receipt — never Company stock.
+/// Its charges are part of the receipt's otherExpense (Karigar payable, once).
+model JewelleryReceiptKarigarMaterialLine {
+  id          String           @id @default(cuid())
+  receiptId   String
+  receipt     JewelleryReceipt @relation(fields: [receiptId], references: [id])
+  description String
+  quantity    Decimal          @db.Decimal(14, 3)
+  unit        InvoiceUnit
+  charge      Decimal          @db.Decimal(14, 2)
+  sortOrder   Int              @default(0)
+
+  @@index([receiptId])
+  @@map("jewellery_receipt_karigar_material_lines")
 }

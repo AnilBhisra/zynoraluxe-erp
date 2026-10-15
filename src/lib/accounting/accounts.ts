@@ -23,6 +23,8 @@ export const SYSTEM_ACCOUNT_CODES = {
   ROUGH_DIAMOND_INVENTORY: "1200",
   DIAMOND_WIP: "1210",
   POLISHED_DIAMOND_INVENTORY: "1220",
+  // Purchased Other Material (moissanite, findings, enamel …) in stock — JEWELLERY_JOB_LIST_FILTERS_AND_LABELS.md §12.
+  OTHER_MATERIAL_INVENTORY: "1230",
   // Phase 4 — Jewellery Jobs. Karigar labour AND added-material payable
   // again deliberately reuse ACCOUNTS_PAYABLE above (by partyId) rather
   // than a dedicated account, for the same reason as Phase 3.

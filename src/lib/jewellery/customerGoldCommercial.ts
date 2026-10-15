@@ -533,7 +533,7 @@ export async function deliverCustomerJewellery(tx: Tx, input: CustomerJewelleryD
   if (locked.length !== pieces.length) throw new CustomerGoldError("One or more pieces were just delivered by someone else. Refresh and try again.");
 
   const deliveryCode = await nextJewelleryCode(tx, "CUSTOMER_JEWELLERY_DELIVERY");
-  const companyCost = round2(pieces.reduce((s, p) => s.plus(p.metalCost).plus(p.diamondCost).plus(p.labourAllocated), ZERO));
+  const companyCost = round2(pieces.reduce((s, p) => s.plus(p.metalCost).plus(p.diamondCost).plus(p.labourAllocated).plus(p.materialCost), ZERO));
   const goldFine = round3(pieces.reduce((s, p) => s.plus(p.customerGoldFineWeight), ZERO));
   let cogsVoucherId: string | null = null;
   if (companyCost.greaterThan(0)) {
@@ -575,7 +575,7 @@ export async function deliverCustomerJewellery(tx: Tx, input: CustomerJewelleryD
       items: {
         create: pieces.map((p) => ({
           finishedJewelleryId: p.id,
-          companyCost: round2(new Decimal(p.metalCost).plus(p.diamondCost).plus(p.labourAllocated)).toFixed(2),
+          companyCost: round2(new Decimal(p.metalCost).plus(p.diamondCost).plus(p.labourAllocated).plus(p.materialCost)).toFixed(2),
           customerGoldFineWeight: new Decimal(p.customerGoldFineWeight).toFixed(3),
         })),
       },

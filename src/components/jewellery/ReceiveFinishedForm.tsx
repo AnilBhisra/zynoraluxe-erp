@@ -9,6 +9,7 @@ import { Alert } from "@/components/ui/Alert";
 import { JewelleryPhotoUploadField } from "@/components/jewellery/PhotoUploadField";
 import { JEWELLERY_TYPES, metalTypeLabel } from "@/lib/jewellery/types";
 import { computeOutputMetal, fineWeightThousandths, formatThousandths, toThousandths } from "@/lib/jewellery/metalMath";
+import { sumMoney } from "@/lib/jewellery/otherMaterialAmounts";
 
 export type MetalPurityOption = { id: string; metalType: string; displayName: string; finenessPercent: string };
 export type UnresolvedDiamondOption = { polishedDiamondId: string; polishedCode: string; shape: string; carat: string };
@@ -327,6 +328,10 @@ export function ReceiveFinishedForm({
   const [settingCharge, setSettingCharge] = useState("0");
   const [platingCharge, setPlatingCharge] = useState("0");
   const [otherExpense, setOtherExpense] = useState("0");
+  // Karigar-supplied material (never Company stock): its charges join the other expense once.
+  const [karigarMaterial, setKarigarMaterial] = useState<{ description: string; quantity: string; unit: "PCS" | "CT" | "GRAM" | "OTHER"; charge: string }[]>([]);
+  const karigarMaterialForSubmit = karigarMaterial.filter((l) => l.description.trim() || l.charge.trim());
+  const otherExpenseTotal = karigarMaterialForSubmit.length ? sumMoney([otherExpense || "0", ...karigarMaterialForSubmit.map((l) => l.charge || "0")]) : otherExpense || "0";
   const [markJobComplete, setMarkJobComplete] = useState(false);
   const [isAbnormalLoss, setIsAbnormalLoss] = useState(false);
   const [abnormalLossReason, setAbnormalLossReason] = useState("");
@@ -709,8 +714,8 @@ export function ReceiveFinishedForm({
     making: makingCharge,
     setting: settingCharge,
     plating: platingCharge,
-    other: otherExpense,
-    total: String([labourCharge, makingCharge, settingCharge, platingCharge, otherExpense].reduce((sum, v) => sum + (Number(v) || 0), 0)),
+    other: otherExpenseTotal,
+    total: String([labourCharge, makingCharge, settingCharge, platingCharge, otherExpenseTotal].reduce((sum, v) => sum + (Number(v) || 0), 0)),
   };
   const postingFields: [string, string][] = [
     ["diamondResolutionsJson", JSON.stringify(diamondResolutionsForSubmit)],
@@ -725,7 +730,8 @@ export function ReceiveFinishedForm({
     ["makingCharge", makingCharge || "0"],
     ["settingCharge", settingCharge || "0"],
     ["platingCharge", platingCharge || "0"],
-    ["otherExpense", otherExpense || "0"],
+    ["otherExpense", otherExpenseTotal],
+    ["karigarMaterialLinesJson", JSON.stringify(karigarMaterialForSubmit)],
     ["karigarAddedFineWeight", karigarAddedFineWeight || "0"],
     ["karigarAddedCost", karigarAddedCost || "0"],
     ["notes", notes],
@@ -832,7 +838,8 @@ export function ReceiveFinishedForm({
       <input type="hidden" name="makingCharge" value={makingCharge || "0"} />
       <input type="hidden" name="settingCharge" value={settingCharge || "0"} />
       <input type="hidden" name="platingCharge" value={platingCharge || "0"} />
-      <input type="hidden" name="otherExpense" value={otherExpense || "0"} />
+      <input type="hidden" name="otherExpense" value={otherExpenseTotal} />
+      <input type="hidden" name="karigarMaterialLinesJson" value={JSON.stringify(karigarMaterialForSubmit)} />
       <input type="hidden" name="karigarAddedFineWeight" value={karigarAddedFineWeight || "0"} />
       <input type="hidden" name="karigarAddedCost" value={karigarAddedCost || "0"} />
       <input type="hidden" name="notes" value={notes} />
@@ -1734,6 +1741,28 @@ export function ReceiveFinishedForm({
         <Field label="Karigar-added fine metal (g)" name="karigarAddedFineWeightInput" type="number" step="0.001" min={0} value={karigarAddedFineWeight} onChange={(e) => setKarigarAddedFineWeight(e.target.value)} />
         <Field label="Karigar-added material cost (₹)" name="karigarAddedCostInput" type="number" step="0.01" min={0} value={karigarAddedCost} onChange={(e) => setKarigarAddedCost(e.target.value)} />
         <Field label="Notes (optional)" name="notesInput" value={notes} onChange={(e) => setNotes(e.target.value)} className="sm:col-span-2" />
+        <div className="flex flex-col gap-2 sm:col-span-3" data-testid="karigar-material-section">
+          <p className="text-xs font-medium text-zinc-700 dark:text-zinc-300">Karigar-supplied material (his own stones / findings — not Company stock)</p>
+          {karigarMaterial.map((l, i) => (
+            <div key={i} className="grid grid-cols-2 gap-2 sm:grid-cols-[2fr_1fr_1fr_1fr_auto]" data-testid="karigar-material-line">
+              <input aria-label="Karigar material description" placeholder="Description" value={l.description} onChange={(e) => setKarigarMaterial((xs) => xs.map((x, j) => (j === i ? { ...x, description: e.target.value } : x)))} className="col-span-2 h-10 rounded-lg border border-zinc-300 bg-white px-2 text-sm sm:col-span-1 dark:bg-zinc-900 dark:border-zinc-600" />
+              <input aria-label="Karigar material quantity" inputMode="decimal" placeholder="Qty" value={l.quantity} onChange={(e) => setKarigarMaterial((xs) => xs.map((x, j) => (j === i ? { ...x, quantity: e.target.value } : x)))} className="h-10 rounded-lg border border-zinc-300 bg-white px-2 text-sm dark:bg-zinc-900 dark:border-zinc-600" />
+              <select aria-label="Karigar material unit" value={l.unit} onChange={(e) => setKarigarMaterial((xs) => xs.map((x, j) => (j === i ? { ...x, unit: e.target.value as "PCS" | "CT" | "GRAM" | "OTHER" } : x)))} className="h-10 rounded-lg border border-zinc-300 bg-white px-2 text-sm dark:bg-zinc-900 dark:border-zinc-600">
+                <option value="PCS">PCS</option>
+                <option value="CT">CT</option>
+                <option value="GRAM">GRAM</option>
+              </select>
+              <input aria-label="Karigar material charge" inputMode="decimal" placeholder="Charge ₹" value={l.charge} onChange={(e) => setKarigarMaterial((xs) => xs.map((x, j) => (j === i ? { ...x, charge: e.target.value } : x)))} className="h-10 rounded-lg border border-zinc-300 bg-white px-2 text-sm dark:bg-zinc-900 dark:border-zinc-600" />
+              <button type="button" className="h-10 text-xs text-red-600" onClick={() => setKarigarMaterial((xs) => xs.filter((_, j) => j !== i))}>Remove</button>
+            </div>
+          ))}
+          <button type="button" className="self-start text-xs font-medium underline" onClick={() => setKarigarMaterial((xs) => [...xs, { description: "", quantity: "1", unit: "PCS", charge: "" }])} data-testid="karigar-material-add">
+            + Add Karigar-supplied material
+          </button>
+          {karigarMaterialForSubmit.length ? (
+            <p className="text-xs text-zinc-600 dark:text-zinc-400">Paid to the Karigar once, inside “Other job expense”: total other expense ₹{otherExpenseTotal}.</p>
+          ) : null}
+        </div>
       </div>
       {!showMore && Number(enteredCharges.total) !== 0 ? (
         <p className="text-xs text-zinc-600 dark:text-zinc-400" data-testid="collapsed-charges-summary">

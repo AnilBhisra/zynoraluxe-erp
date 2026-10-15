@@ -36,6 +36,7 @@ import {
   type ReceiveWithCustodyInput,
 } from "@/lib/jewellery/receiptCustody";
 import { assertDisposableTestDb } from "../../../test/setup/dbGuard";
+import { seedLegacyOtherMaterial } from "../../../test/fixtures/legacyOtherMaterial";
 
 const FY = { fyStartMonth: 4, fyStartDay: 1 };
 const DATE = new Date("2026-09-29T00:00:00.000Z");
@@ -557,9 +558,11 @@ describe("direct gold issue is refused; diamonds and other materials still issue
     );
     await prisma.$transaction(
       (tx) =>
-        issueMaterialsToJewelleryJob(tx, { ...FY, jobId: job.id, issueDate: DATE, metalLines: [], polishedDiamondIds: [polished.outputs[0].id], otherMaterialLines: [{ description: "Findings", quantity: 2, unit: "PCS", cost: 150 }], createdByUserId: ownerId }),
+        issueMaterialsToJewelleryJob(tx, { ...FY, jobId: job.id, issueDate: DATE, metalLines: [], polishedDiamondIds: [polished.outputs[0].id], otherMaterialLines: [], createdByUserId: ownerId }),
       TX
     );
+    // A historical free-text entry (the app can no longer issue one — material is purchased first).
+    await seedLegacyOtherMaterial(prisma, { jobId: job.id, description: "Findings", quantity: 2, unit: "PCS", cost: 150, createdByUserId: ownerId });
     const j = await jobRow(job.id);
     expect([j.status, j.issuedDiamondCost.greaterThan(0)]).toEqual(["MATERIALS_ISSUED", true]);
     expect(await prisma.jewelleryMetalIssueLine.count({ where: { jobId: job.id } })).toBe(0);

@@ -194,6 +194,8 @@ type PieceInput = {
   diamondCost: Decimal;
   otherMaterialCost: Decimal;
   labourAllocated: Decimal;
+  /** Purchased Other Material carried in at receipt (posted; never revalued). */
+  materialCost: Decimal;
   totalCost: Decimal;
   metalCost: Decimal;
 };
@@ -204,8 +206,8 @@ function deriveTotals(p: PieceInput, metalCost: CarryingAmount): FinishedPieceCa
   }
   return {
     metalCost,
-    totalCost: round2(metalCost.plus(p.diamondCost).plus(p.otherMaterialCost).plus(p.labourAllocated)),
-    authoritativeCost: round2(metalCost.plus(p.diamondCost).plus(p.labourAllocated)),
+    totalCost: round2(metalCost.plus(p.diamondCost).plus(p.otherMaterialCost).plus(p.labourAllocated).plus(p.materialCost)),
+    authoritativeCost: round2(metalCost.plus(p.diamondCost).plus(p.labourAllocated).plus(p.materialCost)),
   };
 }
 
@@ -238,7 +240,7 @@ export async function carryingFinishedPieceCosts(tx: Tx, pieces: PieceInput[]): 
       continue;
     }
     if (entries.length === 0) {
-      result.set(p.id, { metalCost: p.metalCost, totalCost: p.totalCost, authoritativeCost: round2(p.metalCost.plus(p.diamondCost).plus(p.labourAllocated)) });
+      result.set(p.id, { metalCost: p.metalCost, totalCost: p.totalCost, authoritativeCost: round2(p.metalCost.plus(p.diamondCost).plus(p.labourAllocated).plus(p.materialCost)) });
       continue;
     }
 
@@ -264,7 +266,7 @@ export async function carryingFinishedPieceCosts(tx: Tx, pieces: PieceInput[]): 
       // None of the job's revalued purities produced this piece — its own
       // metal cost is untouched (e.g. an alloy-only or otherwise unaffected
       // output on an otherwise-revalued job).
-      result.set(p.id, { metalCost: p.metalCost, totalCost: p.totalCost, authoritativeCost: round2(p.metalCost.plus(p.diamondCost).plus(p.labourAllocated)) });
+      result.set(p.id, { metalCost: p.metalCost, totalCost: p.totalCost, authoritativeCost: round2(p.metalCost.plus(p.diamondCost).plus(p.labourAllocated).plus(p.materialCost)) });
       continue;
     }
     result.set(p.id, deriveTotals(p, round2(found)));

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createFakeJewelleryTx } from "../../../test/fixtures/fakeJewelleryTx";
+import { seedLegacyOtherMaterial } from "../../../test/fixtures/legacyOtherMaterial";
 import { SYSTEM_ACCOUNT_CODES } from "@/lib/accounting/accounts";
 import {
   adjustMetalStock,
@@ -876,10 +877,16 @@ describe("issueMaterialsToJewelleryJob", () => {
       issueDate: DATE,
       metalLines: [{ metalType: "GOLD", purityId: purity.id as string, grossWeight: 5 }],
       polishedDiamondIds: [],
-      otherMaterialLines: [{ description: "Alloy", quantity: 2, unit: "GRAM", cost: 100 }],
+      otherMaterialLines: [],
     });
+    // Free-text other material can no longer be issued (it must be purchased first) …
+    await expect(
+      issueMaterialsToJewelleryJob(fixture.tx as never, { ...common(), jobId: (await createDraftJob(fixture)).id as string, issueDate: DATE, metalLines: [], polishedDiamondIds: [], otherMaterialLines: [{ description: "Alloy", quantity: 2, unit: "GRAM", cost: 100 }] as never })
+    ).rejects.toThrow(/choose a purchased material from stock/);
+    // … but a job that already carries a historical free-text entry keeps it as a display-only figure.
+    const withLegacy = (await seedLegacyOtherMaterial(fixture.tx, { jobId: job.id as string, description: "Alloy", quantity: 2, unit: "GRAM", cost: 100, createdByUserId: "user-1" })) as Record<string, unknown>;
 
-    expect(Number(updated.otherMaterialCost)).toBe(100);
+    expect(Number(withLegacy.otherMaterialCost)).toBe(100);
     const lines = linesFor(fixture, updated.wipVoucherId as string);
     // Only metal touches the ledger — other material never gets its own Dr/Cr line.
     expect(sumBy(lines, "debit")).toBeCloseTo(25000, 2);
@@ -1763,8 +1770,9 @@ describe("receiveFinishedJewellery", () => {
       issueDate: DATE,
       metalLines: [{ metalType: "GOLD", purityId: purity.id as string, grossWeight: 10 }],
       polishedDiamondIds: [],
-      otherMaterialLines: [{ description: "Alloy", quantity: 1, unit: "GRAM", cost: 500 }],
+      otherMaterialLines: [],
     });
+    await seedLegacyOtherMaterial(fixture.tx, { jobId: issued.id as string, description: "Alloy", quantity: 1, unit: "GRAM", cost: 500, createdByUserId: "user-1" });
 
     const result = await receiveFinishedJewellery(fixture.tx as never, {
       ...common(),
@@ -2292,9 +2300,10 @@ describe("other-material cost allocation across outputs", () => {
       issueDate: DATE,
       metalLines: [{ metalType: "GOLD", purityId: purity.id as string, grossWeight }],
       polishedDiamondIds: [],
-      otherMaterialLines: [{ description: "Alloy + findings", quantity: 1, unit: "GRAM", cost: otherMaterialCost }],
+      otherMaterialLines: [],
     });
-    return { job: issued, purity };
+    const withLegacy = await seedLegacyOtherMaterial(fixture.tx, { jobId: issued.id as string, description: "Alloy + findings", quantity: 1, unit: "GRAM", cost: otherMaterialCost, createdByUserId: "user-1" });
+    return { job: withLegacy as typeof issued, purity };
   }
 
   it("allocates the full other-material cost to a single output", async () => {

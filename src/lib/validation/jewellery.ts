@@ -144,13 +144,14 @@ export const metalIssueLineSchema = z.object({
   grossWeight: z.coerce.number().positive("Each metal line's gross weight must be greater than zero."),
 });
 
+/**
+ * Purchased Other Material to issue: an item from stock and a quantity (kept
+ * as text — exact decimals, never a float). Free-text material with a typed
+ * cost can no longer be issued (purchase it first).
+ */
 export const otherMaterialLineSchema = z.object({
-  description: z.string().trim().min(1, "Enter a description.").max(200),
-  quantity: z.coerce.number().positive("Quantity must be greater than zero.").default(1),
-  unit: z.enum(["PCS", "CT", "GRAM", "OTHER"]).default("PCS"),
-  weight: z.coerce.number().nonnegative().optional(),
-  cost: z.coerce.number().min(0, "Cost cannot be negative."),
-  note: optionalString(300),
+  itemId: z.string().trim().min(1, "Choose a purchased material from stock."),
+  quantity: z.coerce.string().trim().regex(/^\d+(\.\d{1,3})?$/, "Quantity: a number with at most 3 decimals."),
 });
 
 /** Phase 7 — bulk polished stones taken from a packet, by pieces AND carat. */
@@ -209,8 +210,17 @@ export const metalReturnScrapLineSchema = z.object({
   grossWeight: z.coerce.number().positive("Each return/scrap line's weight must be greater than zero."),
 });
 
+/** Material the Karigar supplied himself on a receipt (never Company stock). */
+export const karigarMaterialLineSchema = z.object({
+  description: z.string().trim().min(2, "Describe the Karigar's material.").max(200),
+  quantity: z.coerce.string().trim().regex(/^\d+(\.\d{1,3})?$/, "Karigar material quantity: at most 3 decimals."),
+  unit: z.enum(["PCS", "CT", "GRAM", "OTHER"]),
+  charge: z.coerce.string().trim().regex(/^\d+(\.\d{1,2})?$/, "Karigar material charge: an amount with at most 2 decimals."),
+});
+
 export const receiveFinishedJewellerySchema = z.object({
   jobId: z.string().trim().min(1),
+  karigarMaterialLines: z.array(karigarMaterialLineSchema).default([]),
   receiveDate: DATE_ONLY,
   outputs: z.array(finishedOutputSchema).default([]),
   diamondResolutions: z.array(diamondResolutionSchema).default([]),

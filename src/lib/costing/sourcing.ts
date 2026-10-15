@@ -115,6 +115,7 @@ export async function listEligibleFinishedJewelleryOutputs(
       diamondCost: new Decimal(o.diamondCost),
       otherMaterialCost: new Decimal(o.otherMaterialCost),
       labourAllocated: new Decimal(o.labourAllocated),
+      materialCost: new Decimal(o.materialCost),
       totalCost: new Decimal(o.totalCost),
     }))
   );
@@ -206,6 +207,7 @@ export async function buildActualSourceSnapshot(tx: Tx, finishedJewelleryId: str
     diamondCost: new Decimal(output.diamondCost),
     otherMaterialCost: new Decimal(output.otherMaterialCost),
     labourAllocated: new Decimal(output.labourAllocated),
+    materialCost: new Decimal(output.materialCost),
     totalCost: new Decimal(output.totalCost),
   });
   if (isUnavailable(carrying.metalCost)) {
@@ -355,6 +357,7 @@ export async function getPhase5VsPhase6Comparison(
       metalCost: true,
       diamondCost: true,
       labourAllocated: true,
+      materialCost: true,
       totalCost: true,
       otherMaterialCost: true,
     },
@@ -376,6 +379,7 @@ export async function getPhase5VsPhase6Comparison(
     diamondCost: new Decimal(item.diamondCost),
     otherMaterialCost: new Decimal(item.otherMaterialCost),
     labourAllocated: new Decimal(item.labourAllocated),
+    materialCost: new Decimal(item.materialCost),
     totalCost: new Decimal(item.totalCost),
   });
   const authoritativeAccountingCost = carrying.authoritativeCost;

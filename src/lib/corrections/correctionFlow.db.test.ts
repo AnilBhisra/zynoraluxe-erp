@@ -57,6 +57,7 @@ import {
   verifyCorrectionBatch,
 } from "./verify";
 import { assertDisposableTestDb } from "../../../test/setup/dbGuard";
+import { seedLegacyOtherMaterial } from "../../../test/fixtures/legacyOtherMaterial";
 
 /** Every carrying-cost figure in this suite is a real Decimal, never the
  * fail-closed sentinel — narrows the type for `.toFixed()`. */
@@ -985,6 +986,7 @@ describe("R1 and R2 as one cumulative production correction batch", () => {
       diamondCost: new Decimal("20102.04"),
       otherMaterialCost: new Decimal("0"),
       labourAllocated: new Decimal("6571.00"),
+      materialCost: new Decimal("0.00"),
       totalCost: new Decimal("56971.05"),
     };
     const fj86Once = await carryingFinishedPieceCost(prisma, fj86Input);
@@ -1031,6 +1033,7 @@ describe("R1 and R2 as one cumulative production correction batch", () => {
         diamondCost: new Decimal("20102.04"),
         otherMaterialCost: new Decimal("0"),
         labourAllocated: new Decimal("6571.00"),
+        materialCost: new Decimal("0.00"),
         totalCost: new Decimal("56971.05"),
       },
       {
@@ -1040,6 +1043,7 @@ describe("R1 and R2 as one cumulative production correction batch", () => {
         diamondCost: new Decimal("11880.00"),
         otherMaterialCost: new Decimal("0"),
         labourAllocated: new Decimal("2075.00"),
+        materialCost: new Decimal("0.00"),
         totalCost: new Decimal("29623.63"),
       },
     ]);
@@ -1801,7 +1805,7 @@ describe("non-zero otherMaterialCost: authoritativeCost proven against the real 
   let jobId: string;
   let customerId: string;
   let receiptVoucherId: string;
-  let pieces: { id: string; netMetalWeight: string; metalCost: Decimal; diamondCost: Decimal; otherMaterialCost: Decimal; labourAllocated: Decimal; totalCost: Decimal }[];
+  let pieces: { id: string; netMetalWeight: string; metalCost: Decimal; diamondCost: Decimal; otherMaterialCost: Decimal; labourAllocated: Decimal; materialCost: Decimal; totalCost: Decimal }[];
 
   beforeAll(async () => {
     purityId = (
@@ -1855,12 +1859,14 @@ describe("non-zero otherMaterialCost: authoritativeCost proven against the real 
         issueDate: new Date("2026-09-23"),
         metalLines: [{ metalType: "GOLD", purityId, grossWeight: "30" }],
         polishedDiamondIds: [],
-        otherMaterialLines: [{ description: "Alloy + findings", quantity: 1, unit: "GRAM", cost: "450.00" }],
+        otherMaterialLines: [],
         ...FY,
         createdByUserId: ownerId,
         idempotencyKey: "phase8b-othermaterial-issue",
       })
     );
+    // A historical free-text entry (the app can no longer issue one — material is purchased first).
+    await seedLegacyOtherMaterial(prisma, { jobId, description: "Alloy + findings", quantity: 1, unit: "GRAM", cost: "450.00", createdByUserId: ownerId });
 
     // Three unequal-weight outputs in one receipt — the same shape
     // posting.test.ts already proves allocates without dropping a paisa —
@@ -1904,6 +1910,7 @@ describe("non-zero otherMaterialCost: authoritativeCost proven against the real 
       diamondCost: new Decimal(r.diamondCost),
       otherMaterialCost: new Decimal(r.otherMaterialCost),
       labourAllocated: new Decimal(r.labourAllocated),
+      materialCost: new Decimal(r.materialCost),
       totalCost: new Decimal(r.totalCost),
     }));
   }, 60_000);
@@ -1944,6 +1951,7 @@ describe("non-zero otherMaterialCost: authoritativeCost proven against the real 
         diamondCost: p.diamondCost,
         otherMaterialCost: p.otherMaterialCost,
         labourAllocated: p.labourAllocated,
+        materialCost: p.materialCost,
         totalCost: p.totalCost,
       });
       // Ledger-derived, per-piece PRODUCED_IN stock movement — the same
@@ -2017,6 +2025,7 @@ describe("non-zero otherMaterialCost: authoritativeCost proven against the real 
         diamondCost: piece10.diamondCost,
         otherMaterialCost: piece10.otherMaterialCost,
         labourAllocated: piece10.labourAllocated,
+        materialCost: piece10.materialCost,
         totalCost: piece10.totalCost,
       })).authoritativeCost
     ).plus(
@@ -2028,6 +2037,7 @@ describe("non-zero otherMaterialCost: authoritativeCost proven against the real 
           diamondCost: piece13.diamondCost,
           otherMaterialCost: piece13.otherMaterialCost,
           labourAllocated: piece13.labourAllocated,
+          materialCost: piece13.materialCost,
           totalCost: piece13.totalCost,
         })).authoritativeCost
       )

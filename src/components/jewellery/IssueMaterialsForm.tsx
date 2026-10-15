@@ -8,6 +8,7 @@ import { Alert } from "@/components/ui/Alert";
 import { Field } from "@/components/ui/Field";
 import { METAL_TYPES } from "@/lib/jewellery/types";
 import type { PurityOption } from "@/components/jewellery/CreateJobForm";
+import { MaterialStockPicker, materialLineProblem, type MaterialLineDraft, type MaterialStockOption } from "@/components/jewellery/MaterialStockPicker";
 
 export type AvailablePolishedDiamondOption = {
   id: string;
@@ -29,7 +30,6 @@ export type AvailablePacketOption = {
 };
 
 type MetalLineDraft = { metalType: string; purityId: string; grossWeight: string };
-type OtherMaterialDraft = { description: string; quantity: string; unit: "PCS" | "CT" | "GRAM" | "OTHER"; weight: string; cost: string; note: string };
 
 /**
  * Gold is never issued here: it goes to the Karigar through Karigar Metal and
@@ -42,9 +42,6 @@ const ISSUABLE_METAL_TYPES = METAL_TYPES.filter((m) => m.value !== "GOLD");
 function emptyMetalLine(): MetalLineDraft {
   return { metalType: ISSUABLE_METAL_TYPES[0]?.value ?? "SILVER", purityId: "", grossWeight: "" };
 }
-function emptyOtherMaterial(): OtherMaterialDraft {
-  return { description: "", quantity: "1", unit: "PCS", weight: "", cost: "", note: "" };
-}
 
 export function IssueMaterialsForm({
   jobId,
@@ -52,6 +49,7 @@ export function IssueMaterialsForm({
   purities,
   availableDiamonds,
   availablePackets = [],
+  materialOptions = [],
   isOwner,
   onDone,
 }: {
@@ -60,6 +58,8 @@ export function IssueMaterialsForm({
   purities: PurityOption[];
   availableDiamonds: AvailablePolishedDiamondOption[];
   availablePackets?: AvailablePacketOption[];
+  /** Purchased Other Material in stock (cost only for the Owner). */
+  materialOptions?: MaterialStockOption[];
   isOwner: boolean;
   onDone?: () => void;
 }) {
@@ -69,7 +69,7 @@ export function IssueMaterialsForm({
   const [diamondSearch, setDiamondSearch] = useState("");
   const [packetDrafts, setPacketDrafts] = useState<Record<string, { pieces: string; carat: string }>>({});
   const [showOtherMaterial, setShowOtherMaterial] = useState(false);
-  const [otherMaterialLines, setOtherMaterialLines] = useState<OtherMaterialDraft[]>([]);
+  const [otherMaterialLines, setOtherMaterialLines] = useState<MaterialLineDraft[]>([]);
   const [idempotencyKey] = useState(() => crypto.randomUUID());
 
   useEffect(() => {
@@ -86,15 +86,6 @@ export function IssueMaterialsForm({
     setMetalLines((prev) => prev.filter((_, i) => i !== index));
   }
 
-  function updateOtherLine(index: number, patch: Partial<OtherMaterialDraft>) {
-    setOtherMaterialLines((prev) => prev.map((l, i) => (i === index ? { ...l, ...patch } : l)));
-  }
-  function addOtherLine() {
-    setOtherMaterialLines((prev) => [...prev, emptyOtherMaterial()]);
-  }
-  function removeOtherLine(index: number) {
-    setOtherMaterialLines((prev) => prev.filter((_, i) => i !== index));
-  }
 
   const filteredDiamonds = useMemo(() => {
     const q = diamondSearch.trim().toLowerCase();
@@ -138,6 +129,12 @@ export function IssueMaterialsForm({
       event.preventDefault();
       return;
     }
+    const materialProblem = otherMaterialLines.map((l) => materialLineProblem(l, materialOptions)).find((m) => m !== null);
+    if (materialProblem) {
+      window.alert(materialProblem);
+      event.preventDefault();
+      return;
+    }
     if (
       validMetalLines.length === 0 &&
       selectedDiamondIds.length === 0 &&
@@ -161,16 +158,7 @@ export function IssueMaterialsForm({
     .filter((l) => l.purityId && Number(l.grossWeight) > 0)
     .map((l) => ({ metalType: l.metalType, purityId: l.purityId, grossWeight: l.grossWeight }));
 
-  const otherMaterialForSubmit = otherMaterialLines
-    .filter((l) => l.description.trim())
-    .map((l) => ({
-      description: l.description,
-      quantity: l.quantity || "1",
-      unit: l.unit,
-      weight: l.weight || undefined,
-      cost: l.cost || "0",
-      note: l.note || undefined,
-    }));
+  const otherMaterialForSubmit = otherMaterialLines.filter((l) => l.itemId).map((l) => ({ itemId: l.itemId, quantity: l.quantity.trim() }));
 
   return (
     <form
@@ -358,62 +346,16 @@ export function IssueMaterialsForm({
           aria-expanded={showOtherMaterial}
           className="text-sm font-medium text-zinc-700 underline underline-offset-4 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-zinc-100"
         >
-          {showOtherMaterial ? "Hide other material" : "More details (moissanite, findings, alloy, other material)"}
+          {showOtherMaterial ? "Hide other material" : "Other material from stock (moissanite, findings, enamel …)"}
         </button>
       </div>
 
       {showOtherMaterial ? (
-        <div className="flex flex-col gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-4">
+        <div className="flex flex-col gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-4" data-testid="issue-other-material">
           <p className="text-xs text-zinc-500 dark:text-zinc-400">
-            These are simple manual entries for cost/documentation only — not tracked against a real stock ledger.
+            Only purchased Other Material in stock can be issued — its cost comes from the stock, never typed here. It posts in its own voucher (Jewellery WIP / Other Material Inventory).
           </p>
-          {otherMaterialLines.map((line, index) => (
-            <div key={index} className="grid grid-cols-1 gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3 sm:grid-cols-5">
-              <input
-                aria-label="Description"
-                placeholder="Description"
-                value={line.description}
-                onChange={(e) => updateOtherLine(index, { description: e.target.value })}
-                className="h-9 rounded-lg border border-zinc-300 bg-white px-2 text-sm sm:col-span-2 dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
-              />
-              <input
-                aria-label="Quantity"
-                type="number"
-                step="0.001"
-                placeholder="Qty"
-                value={line.quantity}
-                onChange={(e) => updateOtherLine(index, { quantity: e.target.value })}
-                className="h-9 rounded-lg border border-zinc-300 bg-white px-2 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
-              />
-              <select
-                aria-label="Unit"
-                value={line.unit}
-                onChange={(e) => updateOtherLine(index, { unit: e.target.value as OtherMaterialDraft["unit"] })}
-                className="h-9 rounded-lg border border-zinc-300 bg-white px-2 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
-              >
-                <option value="PCS">PCS</option>
-                <option value="CT">CT</option>
-                <option value="GRAM">GRAM</option>
-                <option value="OTHER">OTHER</option>
-              </select>
-              <input
-                aria-label="Cost"
-                type="number"
-                step="0.01"
-                min="0"
-                placeholder="Cost (₹)"
-                value={line.cost}
-                onChange={(e) => updateOtherLine(index, { cost: e.target.value })}
-                className="h-9 rounded-lg border border-zinc-300 bg-white px-2 text-sm dark:bg-zinc-900 dark:border-zinc-600 dark:text-zinc-100"
-              />
-              <button type="button" onClick={() => removeOtherLine(index)} className="text-xs font-medium text-red-600 hover:underline dark:text-red-400">
-                Remove
-              </button>
-            </div>
-          ))}
-          <Button type="button" variant="secondary" size="md" onClick={addOtherLine} className="self-start">
-            + Add other material
-          </Button>
+          <MaterialStockPicker options={materialOptions} lines={otherMaterialLines} onChange={setOtherMaterialLines} />
         </div>
       ) : null}
 

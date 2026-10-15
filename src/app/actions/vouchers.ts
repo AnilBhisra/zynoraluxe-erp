@@ -612,6 +612,15 @@ export async function cancelVoucherAction(
         error: "This is a Polished Diamond Purchase — cancel it from the Diamond page's Polished Diamond tab instead, so packet stock stays in sync.",
       };
     }
+    const otherMaterialPurchase = await prisma.otherMaterialPurchase.findFirst({
+      where: { OR: [{ voucherId: parsed.data.voucherId }, { cancellationVoucherId: parsed.data.voucherId }] },
+      select: { id: true },
+    });
+    if (otherMaterialPurchase) {
+      return {
+        error: "This is an Other Material Purchase — cancel it from Jewellery Jobs → Other Material instead, so material stock stays in sync.",
+      };
+    }
     const roughLot = await prisma.roughLot.findUnique({
       where: { voucherId: parsed.data.voucherId },
       include: { pieces: { select: { costLocked: true } } },

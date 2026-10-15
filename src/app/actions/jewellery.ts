@@ -426,7 +426,9 @@ function toReceiptInput(
     makingCharge: data.makingCharge,
     settingCharge: data.settingCharge,
     platingCharge: data.platingCharge,
+    // Already includes the Karigar material charges (the form adds them).
     otherExpense: data.otherExpense,
+    karigarMaterialLines: data.karigarMaterialLines,
     markJobComplete: data.markJobComplete,
     isAbnormalLoss: data.isAbnormalLoss,
     abnormalLossReason: data.abnormalLossReason || null,
@@ -447,6 +449,7 @@ function parseReceiptForm(formData: FormData) {
     packetResolutions: readJsonArray(formData, "packetResolutionsJson"),
     returnedMetalLines: readJsonArray(formData, "returnedMetalLinesJson"),
     scrapMetalLines: readJsonArray(formData, "scrapMetalLinesJson"),
+    karigarMaterialLines: readJsonArray(formData, "karigarMaterialLinesJson"),
     karigarAddedFineWeight: formData.get("karigarAddedFineWeight") || "0",
     karigarAddedCost: formData.get("karigarAddedCost") || "0",
     companyAlloyGrossWeight: formData.get("companyAlloyGrossWeight") || "0",

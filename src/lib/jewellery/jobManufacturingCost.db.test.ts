@@ -22,6 +22,7 @@ import { createJewelleryJob, issueMaterialsToJewelleryJob, postOpeningMetalStock
 import { postReceiptChargeCorrection, reverseReceiptChargeCorrection } from "@/lib/jewellery/receiptChargeCorrection";
 import { getJewelleryJobDetail, listJewelleryJobs } from "@/lib/jewellery/reports";
 import { assertDisposableTestDb } from "../../../test/setup/dbGuard";
+import { seedLegacyOtherMaterial } from "../../../test/fixtures/legacyOtherMaterial";
 
 const FY = { fyStartMonth: 4, fyStartDay: 1 };
 const DATE = new Date("2026-09-30T00:00:00.000Z");
@@ -110,12 +111,14 @@ describe("Jewellery Job manufacturing cost — one shared figure, each part once
             { metalType: "ALLOY", purityId: copper, grossWeight: "2" },
           ],
           polishedDiamondIds: [],
-          otherMaterialLines: [{ description: "Enamel", quantity: 1, unit: "PCS", cost: "100.00" }],
+          otherMaterialLines: [],
           idempotencyKey: key("issue"),
           createdByUserId: ownerId,
         }),
       TX
     );
+    // A historical free-text entry (the app can no longer issue one — material is purchased first).
+    await seedLegacyOtherMaterial(prisma, { jobId: job.id, description: "Enamel", quantity: 1, unit: "PCS", cost: "100.00", createdByUserId: ownerId });
     const issued = await costPicture(job.id);
     // Company copper is already inside issuedMetalCost (70,020.00) -- never added a second time.
     expect([amount(issued.d.issuedMetalCost).toFixed(2), issued.d.issuedAlloyCost.toFixed(2), amount(issued.d.materialsSubtotal).toFixed(2)]).toEqual(["70020.00", "20.00", "70120.00"]);

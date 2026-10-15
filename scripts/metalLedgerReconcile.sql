@@ -4,9 +4,12 @@
 -- 1310 Scrap Metal          vs scrap stock
 -- 1320 Jewellery WIP        vs open jobs' metal/alloy WIP + unresolved stones
 --                              + unallocated Karigar custody (0 before the custody migration)
--- 1330 Finished Jewellery   vs AVAILABLE pieces at authoritative cost (metal + diamond + labour)
+--                              + purchased Other Material on open jobs (0 before the Other Material migration)
+-- 1330 Finished Jewellery   vs AVAILABLE pieces at authoritative cost (metal + diamond + labour + material)
 -- 1340 Customer Jewellery   vs Company cost in Customer-owned pieces awaiting delivery
 --                              (only once account 1340 exists: 4 lines before the Customer Gold migration, 5 after)
+-- 1230 Other Material       vs Other Material stock at carrying cost (only once account 1230 exists;
+--                              the new columns and table are read so the script runs before and after that migration)
 -- CGCR Customer gold credit  (Phase 8C, a 6th line, same 4-field shape): Accounts Payable lines of every
 --                              Customer Gold purchase/exchange voucher (+ its reversal) and of every bill's
 --                              "Gold-purchase credit applied" lines (+ their reversals), against the records:
@@ -34,7 +37,7 @@ reval as (
 led as (
   select a.code, round(coalesce(sum(j.debit), 0) - coalesce(sum(j.credit), 0), 2) as bal
   from accounts a left join journal_entries j on j."accountId" = a.id
-  where a.code in ('1300', '1310', '1320', '1330', '1340') group by a.code
+  where a.code in ('1230', '1300', '1310', '1320', '1330', '1340') group by a.code
 ),
 jobs as (select * from jewellery_jobs where status <> 'CANCELLED'),
 rec as (
@@ -46,14 +49,21 @@ rec as (
     + (select coalesce(sum(l."costAtIssue" - l."setCost" - l."returnedCost" - l."damagedCost"), 0) from jewellery_packet_issue_lines l join jobs on jobs.id = l."jobId")
     + coalesce((select d from reval where target = 'JOB_WIP'), 0)
     + (select coalesce(sum(k * "costValue"), 0) from eff)
+    -- Purchased Other Material on open jobs (0 before the Other Material migration).
+    + (select coalesce(sum(coalesce((row_to_json(jobs)->>'stockMaterialWipCost')::numeric, 0)), 0) from jobs)
   union all select '1330',
-      (select coalesce(sum("metalCost" + "diamondCost" + "labourAllocated"), 0) from finished_jewellery where status::text = 'AVAILABLE')
+      (select coalesce(sum("metalCost" + "diamondCost" + "labourAllocated" + coalesce((row_to_json(f)->>'materialCost')::numeric, 0)), 0) from finished_jewellery f where status::text = 'AVAILABLE')
     + coalesce((select d from reval where target = 'FINISHED_JEWELLERY'), 0)
   -- Customer Gold (reported only once account 1340 exists): Company cost in
   -- Customer-owned pieces awaiting delivery. Status compared as text so this
   -- script also runs, unchanged, on a database without that status value.
   union all select '1340',
-      (select coalesce(sum("metalCost" + "diamondCost" + "labourAllocated"), 0) from finished_jewellery where status::text = 'CUSTOMER_AWAITING_DELIVERY')
+      (select coalesce(sum("metalCost" + "diamondCost" + "labourAllocated" + coalesce((row_to_json(f)->>'materialCost')::numeric, 0)), 0) from finished_jewellery f where status::text = 'CUSTOMER_AWAITING_DELIVERY')
+  -- Other Material stock at carrying cost (reported only once account 1230 and
+  -- its movement ledger exist; the movement query runs only when the table does).
+  union all select '1230',
+      case when to_regclass('public.other_material_movements') is null then 0
+           else (xpath('/row/v/text()', query_to_xml('select coalesce(sum(m."costValue" * (case m.type::text when ''PURCHASE_IN'' then 1 when ''PURCHASE_CANCEL_OUT'' then -1 when ''JOB_ISSUE_OUT'' then -1 when ''JOB_RETURN_IN'' then 1 else 0 end) * (case when m."reversalOfMovementId" is null then 1 else -1 end)), 0) as v from other_material_movements m', false, true, '')))[1]::text::numeric end
 )
 select led.code || '|' || led.bal || '|' || round(rec.expected, 2) || '|' || round(led.bal - rec.expected, 2)
 from led join rec on rec.code = led.code order by led.code;

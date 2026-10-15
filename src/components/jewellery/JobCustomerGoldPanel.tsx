@@ -11,6 +11,7 @@ import {
   reverseCustomerJewelleryDeliveryAction,
 } from "@/app/actions/customerGold";
 import { Alert } from "@/components/ui/Alert";
+import { useOnceOnSuccess } from "@/components/ui/useOnceOnSuccess";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 
@@ -189,9 +190,7 @@ function BillSection({ data, isOwner, onDone }: { data: SerializedJobCustomerGol
   const [previewed, setPreviewed] = useState("");
   const current = JSON.stringify({ selected: [...selected].sort(), billDate, making, diamond, material, other, gst, rate, credit, description, after: savedCode });
   const preview = previewState?.preview && previewed === current ? previewState.preview : null;
-  useEffect(() => {
-    if (postState?.success) onDone();
-  }, [postState, onDone]);
+  useOnceOnSuccess(postState, onDone);
   const payload = (withFingerprint: boolean) => {
     const fd = new FormData();
     fd.set("jobId", data.jobId);

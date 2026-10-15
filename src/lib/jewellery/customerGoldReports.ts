@@ -292,7 +292,7 @@ export async function customerGoldStatement(tx: Tx, customerId: string, opts: { 
       netMetalWeight: new Decimal(p.netMetalWeight).toFixed(3),
       fineMetalWeight: new Decimal(p.fineMetalWeight).toFixed(3),
       customerGoldFineWeight: new Decimal(p.customerGoldFineWeight).toFixed(3),
-      companyCost: opts.includeValues ? new Decimal(p.metalCost).plus(p.diamondCost).plus(p.labourAllocated).toFixed(2) : null,
+      companyCost: opts.includeValues ? new Decimal(p.metalCost).plus(p.diamondCost).plus(p.labourAllocated).plus(p.materialCost).toFixed(2) : null,
     })),
     accountBalance,
     bills: bills
@@ -364,7 +364,7 @@ export async function customerJewelleryAwaitingDelivery(tx: Tx, opts: { includeV
     customerName: p.customer?.name ?? "",
     netMetalWeight: new Decimal(p.netMetalWeight).toFixed(3),
     customerGoldFineWeight: new Decimal(p.customerGoldFineWeight).toFixed(3),
-    companyCost: opts.includeValues ? new Decimal(p.metalCost).plus(p.diamondCost).plus(p.labourAllocated).toFixed(2) : null,
+    companyCost: opts.includeValues ? new Decimal(p.metalCost).plus(p.diamondCost).plus(p.labourAllocated).plus(p.materialCost).toFixed(2) : null,
   }));
 }
 

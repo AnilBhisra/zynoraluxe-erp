@@ -227,6 +227,7 @@ export function createFakeJewelleryTx() {
           consumedAlloyGrossWeight: "0",
           returnedAlloyGrossWeight: "0",
           remainingAlloyWipCost: "0",
+          stockMaterialWipCost: "0",
           wipVoucherId: null,
           ...data,
         };
@@ -352,7 +353,7 @@ export function createFakeJewelleryTx() {
     },
     finishedJewellery: {
       create: async ({ data }: { data: Row }) => {
-        const row = { id: nextId("fj"), status: "AVAILABLE", ...data };
+        const row = { id: nextId("fj"), status: "AVAILABLE", materialCost: "0", ...data };
         finishedJewelleryRows.set(row.id as string, row);
         return row;
       },

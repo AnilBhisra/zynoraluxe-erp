@@ -1,5 +1,7 @@
 "use client";
 
+import { JobOtherMaterialPanel, type SerializedJobMaterialPanel } from "@/components/jewellery/JobOtherMaterialPanel";
+import type { MaterialStockOption } from "@/components/jewellery/MaterialStockPicker";
 import { stickerHref } from "@/lib/jewellery/stickerLinks";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -228,7 +230,13 @@ export function JobDetailView({
   customerGold = null,
   entryHistory = [],
   backHref = "/jewellery-jobs?tab=jobs",
+  materialPanel = null,
+  materialStock = [],
 }: {
+  /** Purchased Other Material on this job (costs null for Staff). */
+  materialPanel?: SerializedJobMaterialPanel | null;
+  /** Purchased Other Material in stock (rate null for Staff). */
+  materialStock?: MaterialStockOption[];
 
   /** The filtered list this job was opened from (keeps view + filters). */
   backHref?: string;  job: SerializedJobDetail;
@@ -507,6 +515,7 @@ export function JobDetailView({
                 purities={purities}
                 availableDiamonds={availableDiamonds}
                 availablePackets={availablePackets}
+                materialOptions={materialStock}
                 isOwner={isOwner}
                 onDone={handleSaved}
               />
@@ -660,6 +669,8 @@ export function JobDetailView({
       ) : null}
 
       {customerGold ? <JobCustomerGoldPanel data={customerGold} isOwner={isOwner} onDone={() => router.refresh()} /> : null}
+
+      {materialPanel ? <JobOtherMaterialPanel jobId={job.id} panel={materialPanel} stock={materialStock} isOwner={isOwner} onDone={handleSaved} /> : null}
 
       {isOwner && transferPanel ? <MetalTransferPanel jobId={job.id} panel={transferPanel} onDone={() => router.refresh()} /> : null}
 

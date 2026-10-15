@@ -37,6 +37,7 @@ const ITEM = {
   metalCost: "50000.00",
   diamondCost: "20000.00",
   labourAllocated: "8000.00",
+  materialCost: "0.00",
   totalCost: "83000.00",
   otherMaterialCost: "5000.00", // display-only — the difference this comparison must explain
 };
