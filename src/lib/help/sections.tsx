@@ -876,15 +876,27 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
             બાકી રહેલું સોનું “loss” ગણાતું નથી — એ ગ્રાહકનું જ રહે છે. Authorised loss ફક્ત Owner જ, ચોક્કસ weight અને કારણ સાથે લખી શકે. Scrap પણ ગ્રાહકનો જ છે અને એને પાછો આપવાનો હોય છે.
           </Note>
 
-          <SubHeading>4. Bill અને Delivery</SubHeading>
+          <SubHeading id="task-customer-bill">4. Bill અને Delivery</SubHeading>
+          <BadgeRow>
+            <StaffCanBadge />
+          </BadgeRow>
+          <Steps>
+            <li>
+              Job page → <Btn>Bill the Customer</Btn>: કયા દાગીના (pieces) bill માં લેવા એ ✓ ટીક કરો (bill થઈ ગયેલા દાગીના ફરી ટીક થતા નથી), પછી making, diamonds, materials, બીજા charges અને GST ભરો. ગ્રાહકનું સોનું bill માં વેચાણ તરીકે ક્યારેય નથી આવતું.
+            </li>
+            <li>
+              Owner એ મંજૂર કરેલું ગ્રાહકનું gold-purchase credit હોય તો “Gold-purchase credit to apply” માં બાદ કરી શકાય — ઉપલબ્ધ credit કરતાં વધારે નહીં.
+            </li>
+            <li>
+              <Btn>Preview bill</Btn> → રકમ, GST, credit અને amount due તપાસો → <Btn>Post bill</Btn>. Preview પછી કંઈ બદલો તો ફરી Preview કરવું પડે. બે વાર click કરો તો પણ bill એક જ બને; એક દાગીનો એક જ ચાલુ bill માં જઈ શકે.
+            </li>
+            <li>Staff bill બનાવી શકે (bill પર Staff નું નામ save થાય); Staff ને ફક્ત ગ્રાહકને બતાવવાની રકમો દેખાય છે, Company નો અંદરનો હિસાબ નહીં.</li>
+          </Steps>
           <BadgeRow>
             <OwnerOnlyBadge />
           </BadgeRow>
           <Steps>
-            <li>
-              Job page → <Btn>Bill the Customer</Btn>: making, diamonds, materials, બીજા charges અને GST. ગ્રાહકનું સોનું bill માં વેચાણ તરીકે ક્યારેય નથી આવતું. Company એ ગ્રાહકનું સોનું
-              ખરીદ્યું હોય તો એનું credit અહીં bill માં બાદ કરી શકાય.
-            </li>
+            <li>Posted bill edit કે delete થતું નથી. ભૂલ હોય તો Owner bill <Btn>Reverse</Btn> કરે; પછી એ દાગીનાનું સાચું bill ફરી બની શકે. Credit મંજૂર કરવું / ઉમેરવું પણ Owner જ કરે.</li>
           </Steps>
           <BadgeRow>
             <StaffCanBadge />

@@ -261,9 +261,7 @@ describe("Company stones and charges: costed at receipt, billed once, moved to C
   });
 
   it("bill: making + diamond + GST, ₹5,000 of the gold-purchase credit applied in the same voucher; the Customer's gold is not a line", async () => {
-    await expect(
-      prisma.$transaction((tx) => billCustomerJewellery(tx, { jobId, billDate: DATE, makingCharge: "1200", gstTreatment: "NONE", idempotencyKey: key("sb"), actor: staff(), ...FY }), TX)
-    ).rejects.toThrow(/Only the Owner can bill/);
+    // Staff may bill too (customerBillPieces.db.test.ts); a reversal stays Owner-only.
     await expect(
       prisma.$transaction((tx) => billCustomerJewellery(tx, { jobId, billDate: DATE, makingCharge: "1200", gstTreatment: "NONE", creditToApply: "20000", idempotencyKey: key("b0"), actor: owner(), ...FY }), TX)
     ).rejects.toThrow(/has only ₹14000\.00 of gold-purchase credit/);
@@ -385,7 +383,7 @@ describe("Reports — statement, reconciliation, exceptions; Staff get weights o
     expect(exceptions.some((x) => x.kind === "UNBILLED")).toBe(true);
   });
 
-  it("job page panel: the gold source and pieces for everyone; piece cost, bills, credit and delivery cost only for the Owner", async () => {
+  it("job page panel: gold source, pieces, bills and available credit for everyone; the Company's piece and delivery cost only for the Owner", async () => {
     const { getJobCustomerGoldPanel } = await import("@/lib/jewellery/customerGoldJobPanel");
     const job = await prisma.jewelleryJob.findFirstOrThrow({ where: { designName: "Customer diamond ring" } });
     const ownerView = (await prisma.$transaction((tx) => getJobCustomerGoldPanel(tx, job.id, { includeValues: true }), TX))!;
@@ -398,9 +396,10 @@ describe("Reports — statement, reconciliation, exceptions; Staff get weights o
     // A delivered, completed job offers no receipt source and no delivery.
     expect(ownerView.receiveSources).toEqual([]);
     expect(staffView.panel.pieces.map((p) => [p.finishedCode, p.customerGoldFineWeight, p.companyCost])).toEqual(ownerView.panel.pieces.map((p) => [p.finishedCode, p.customerGoldFineWeight, null]));
-    expect([staffView.panel.bills, staffView.panel.creditAvailable]).toEqual([null, null]);
+    // Customer-facing: the bill and the Owner-approved credit Staff may apply.
+    expect([staffView.panel.bills, staffView.panel.creditAvailable]).toEqual([ownerView.panel.bills, ownerView.panel.creditAvailable]);
     expect(staffView.panel.deliveries.every((d) => !d.canReverse)).toBe(true);
     const staffJson = JSON.stringify(staffView);
-    for (const money of ["14000", "10506", "5506", ownerView.panel.pieces[0].companyCost!]) expect(staffJson).not.toContain(money);
+    for (const money of [ownerView.panel.pieces[0].companyCost!]) expect(staffJson).not.toContain(money);
   });
 });

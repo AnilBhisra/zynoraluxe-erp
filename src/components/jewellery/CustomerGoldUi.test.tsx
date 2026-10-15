@@ -129,9 +129,12 @@ const PANEL: SerializedJobCustomerGold = {
   pieces: [{ id: "f1", finishedCode: "ZL-FJ-1", status: "CUSTOMER_AWAITING_DELIVERY", netMetalWeight: "4.000", customerGoldFineWeight: "3.000", companyCost: null }],
   deliveryBlock: null,
   deliveries: [],
-  bills: null,
-  creditAvailable: null,
+  bills: [],
+  creditAvailable: "0.00",
+  billable: [{ id: "f1", finishedCode: "ZL-FJ-1", netMetalWeight: "4.000", billCode: null }],
+  wholeJobBillCode: null,
 };
+const POSTED_BILL = { id: "b1", billCode: "ZL-CJB-1", date: "2026-10-10T00:00:00.000Z", status: "POSTED", taxableValue: "3000.00", taxAmount: "90.00", grandTotal: "3090.00", creditApplied: "0.00", amountDue: "3090.00", pieces: ["ZL-FJ-1"], createdBy: "Staff User" };
 
 describe("Job Customer Gold panel", () => {
   it("labels the gold source and the Customer gold as excluded from Company material cost", () => {
@@ -140,12 +143,33 @@ describe("Job Customer Gold panel", () => {
     expect(screen.getByTestId("job-customer-gold-used").textContent).toContain("Customer-owned — excluded from Company material cost");
   });
 
-  it("Staff can open the delivery form but see no bill and no money", () => {
+  it("Staff can deliver and bill (piece choice, Customer-facing figures) but see no Company cost and cannot reverse a bill", () => {
     const { container } = render(<JobCustomerGoldPanel data={PANEL} isOwner={false} onDone={() => {}} />);
-    expect(screen.queryByTestId("job-customer-bill")).toBeNull();
+    expect(screen.getByTestId("job-customer-bill")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("bill-open"));
+    expect(screen.getByTestId("bill-form")).toBeTruthy();
+    expect((screen.getByTestId("bill-piece") as HTMLInputElement).checked).toBe(true);
+    expect(container.textContent).not.toMatch(/Company work cost/);
     fireEvent.click(screen.getByRole("button", { name: "Deliver to the Customer" }));
     expect(screen.getByTestId("deliver-form")).toBeTruthy();
-    expect(container.textContent).not.toMatch(/₹/);
+  });
+
+  it("a piece already on a live bill cannot be ticked; the bill lists its pieces and who posted it; only the Owner gets Reverse", () => {
+    const billed = { ...PANEL, bills: [POSTED_BILL], billable: [{ ...PANEL.billable[0], billCode: "ZL-CJB-1" }] };
+    const { unmount } = render(<JobCustomerGoldPanel data={billed} isOwner={false} onDone={() => {}} />);
+    expect(screen.getByTestId("bill-row").textContent).toContain("ZL-FJ-1");
+    expect(screen.getByTestId("bill-row").textContent).toContain("by Staff User");
+    expect(screen.queryByTestId("bill-open")).toBeNull(); // nothing left to bill
+    expect(screen.queryByRole("button", { name: /Reverse/ })).toBeNull();
+    unmount();
+    render(<JobCustomerGoldPanel data={billed} isOwner={true} onDone={() => {}} />);
+    expect(screen.getByTestId("bill-row").querySelector("button")).toBeTruthy();
+  });
+
+  it("an older whole-job bill blocks piece-wise billing until the Owner reverses it", () => {
+    render(<JobCustomerGoldPanel data={{ ...PANEL, bills: [{ ...POSTED_BILL, pieces: [] }], billable: [{ ...PANEL.billable[0], billCode: "ZL-CJB-1" }], wholeJobBillCode: "ZL-CJB-1" }} isOwner={false} onDone={() => {}} />);
+    expect(screen.getByTestId("bill-row").textContent).toContain("whole job");
+    expect(screen.queryByTestId("bill-open")).toBeNull();
   });
 
   it("an unreconciled job shows why delivery is refused instead of the form", () => {

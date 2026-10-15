@@ -1,7 +1,7 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { Decimal } from "@/lib/accounting/money";
 import { getJobGoldSources } from "@/lib/jewellery/customerGold";
-import { availableCustomerCreditInTx, customerDeliveryBlock } from "@/lib/jewellery/customerGoldCommercial";
+import { availableCustomerCreditInTx, billablePiecesInTx, customerDeliveryBlock } from "@/lib/jewellery/customerGoldCommercial";
 import { listCustomerGoldPools } from "@/lib/jewellery/customerGoldReports";
 import type { SerializedJobCustomerGold } from "@/components/jewellery/JobCustomerGoldPanel";
 import type { CustomerGoldSourceOption } from "@/components/jewellery/ReceiveFinishedForm";
@@ -9,10 +9,11 @@ import type { CustomerGoldSourceOption } from "@/components/jewellery/ReceiveFin
 type Tx = Prisma.TransactionClient;
 
 /**
- * Everything the job page shows about Customer-owned gold. SECURITY: every
- * money figure (piece cost, bills, credit) is read from the database only
- * when includeValues is true (the Owner) — a Staff payload never carries it.
- * Returns null for a job with no Customer.
+ * Everything the job page shows about Customer-owned gold. SECURITY: the
+ * Company's cost in the pieces is read from the database only when
+ * includeValues is true (the Owner) — a Staff payload never carries it. Bills
+ * and the available credit are Customer-facing figures and reach Staff too
+ * (Staff can bill). Returns null for a job with no Customer.
  */
 export async function getJobCustomerGoldPanel(
   tx: Tx,
@@ -22,7 +23,7 @@ export async function getJobCustomerGoldPanel(
   const job = await tx.jewelleryJob.findUnique({ where: { id: jobId }, select: { id: true, jobCode: true, customerId: true, karigarId: true, status: true, customer: { select: { name: true } } } });
   if (!job || !job.customerId) return null;
   const customerId = job.customerId;
-  const [sources, pieces, deliveries, deliveryBlock, pools, bills, credit] = await Promise.all([
+  const [sources, pieces, deliveries, deliveryBlock, pools, bills, credit, billable] = await Promise.all([
     getJobGoldSources(tx, jobId),
     tx.finishedJewellery.findMany({
       where: { jobId, ownership: "CUSTOMER" },
@@ -52,8 +53,13 @@ export async function getJobCustomerGoldPanel(
     }),
     customerDeliveryBlock(tx, jobId),
     listCustomerGoldPools(tx, customerId),
-    opts.includeValues ? tx.customerJewelleryBill.findMany({ where: { jobId }, orderBy: { billDate: "desc" } }) : Promise.resolve(null),
-    opts.includeValues ? availableCustomerCreditInTx(tx, customerId) : Promise.resolve(null),
+    tx.customerJewelleryBill.findMany({
+      where: { jobId },
+      orderBy: [{ billDate: "desc" }, { createdAt: "desc" }],
+      include: { createdBy: { select: { name: true } }, pieces: { select: { finishedJewellery: { select: { finishedCode: true } } } } },
+    }),
+    availableCustomerCreditInTx(tx, customerId),
+    billablePiecesInTx(tx, jobId),
   ]);
 
   const receiveSources: CustomerGoldSourceOption[] = ["DRAFT", "MATERIALS_ISSUED", "IN_PROGRESS", "PARTIALLY_RECEIVED", "NEEDS_CORRECTION"].includes(job.status)
@@ -121,9 +127,13 @@ export async function getJobCustomerGoldPanel(
           grandTotal: new Decimal(String(b.grandTotal)).toFixed(2),
           creditApplied: new Decimal(String(b.creditApplied)).toFixed(2),
           amountDue: new Decimal(String(b.amountDue)).toFixed(2),
+          pieces: b.pieces.map((x) => x.finishedJewellery.finishedCode).sort(),
+          createdBy: b.createdBy.name,
         }))
       : null,
-    creditAvailable: credit ? credit.toFixed(2) : null,
+    creditAvailable: credit.toFixed(2),
+    billable: billable.pieces.map((p) => ({ id: p.id, finishedCode: p.finishedCode, netMetalWeight: p.netMetalWeight, billCode: p.billCode })),
+    wholeJobBillCode: billable.wholeJobBillCode,
   };
   return { panel, receiveSources };
 }

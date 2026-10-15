@@ -16,8 +16,9 @@ import { Field } from "@/components/ui/Field";
 
 /**
  * A job's Customer-owned gold (CUSTOMER_GOLD_DESIGN.md): where its gold came
- * from, the Customer's pieces, bill (Owner) and delivery (Owner or Staff).
- * Money fields arrive as null for Staff — the server never sends them.
+ * from, the Customer's pieces, bill (Owner or Staff; reversal Owner) and
+ * delivery (Owner or Staff). Company cost arrives as null for Staff — the
+ * server never sends it; bills carry Customer-facing figures only.
  */
 export type SerializedJobCustomerGold = {
   jobId: string;
@@ -35,10 +36,14 @@ export type SerializedJobCustomerGold = {
   pieces: { id: string; finishedCode: string; status: string; netMetalWeight: string; customerGoldFineWeight: string; companyCost: string | null }[];
   deliveryBlock: string | null;
   deliveries: { id: string; deliveryCode: string; date: string; status: string; receivedByName: string; deliveredBy: string; reference: string | null; pieces: string[]; canReverse: boolean }[];
-  /** Owner only. */
-  bills: { id: string; billCode: string; date: string; status: string; taxableValue: string; taxAmount: string; grandTotal: string; creditApplied: string; amountDue: string }[] | null;
-  /** Owner only. */
+  /** Customer-facing bill figures (Owner and Staff). `pieces` empty = an older bill covering the whole job. */
+  bills: { id: string; billCode: string; date: string; status: string; taxableValue: string; taxAmount: string; grandTotal: string; creditApplied: string; amountDue: string; pieces: string[]; createdBy: string }[] | null;
+  /** Owner-approved gold-purchase credit the Customer can still apply. */
   creditAvailable: string | null;
+  /** Customer pieces and the live bill each is on (null = not billed yet). */
+  billable: { id: string; finishedCode: string; netMetalWeight: string; billCode: string | null }[];
+  /** An older live bill that covers the whole job (no piece lines). */
+  wholeJobBillCode: string | null;
 };
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -91,7 +96,7 @@ export function JobCustomerGoldPanel({ data, isOwner, onDone }: { data: Serializ
         </div>
       ) : null}
 
-      {isOwner && data.bills !== null && data.pieces.length > 0 ? <BillSection data={data} onDone={onDone} /> : null}
+      {data.bills !== null && data.pieces.length > 0 ? <BillSection data={data} isOwner={isOwner} onDone={onDone} /> : null}
 
       {awaiting.length > 0 ? (
         data.deliveryBlock ? (
@@ -157,12 +162,21 @@ function MixApproval({ jobId, onDone }: { jobId: string; onDone: () => void }) {
   );
 }
 
-function BillSection({ data, onDone }: { data: SerializedJobCustomerGold; onDone: () => void }) {
+function BillSection({ data, isOwner, onDone }: { data: SerializedJobCustomerGold; isOwner: boolean; onDone: () => void }) {
   const [previewState, previewAction, previewPending] = useActionState(previewCustomerJewelleryBillAction, undefined);
   const [postState, postAction, postPending] = useActionState(billCustomerJewelleryAction, undefined);
   const [, startTransition] = useTransition();
-  const [idempotencyKey] = useState(() => crypto.randomUUID());
-  const [open, setOpen] = useState(false);
+  // A fresh key after every saved bill (salted with the last bill code): a
+  // second bill from the same panel must never be answered as a repeat of the
+  // first, while a double-click before the save returns still replays.
+  const [baseKey] = useState(() => crypto.randomUUID());
+  const savedCode = postState?.success ? postState.code ?? null : null;
+  const idempotencyKey = savedCode ? `${baseKey}-after-${savedCode}` : baseKey;
+  // The form is open for the result it was opened at; a successful save closes it.
+  const [openFor, setOpenFor] = useState<typeof postState | "closed">("closed");
+  const open = openFor !== "closed" && (openFor === postState || !postState?.success);
+  const unbilled = data.billable.filter((p) => !p.billCode);
+  const [selected, setSelected] = useState<string[]>(() => unbilled.map((p) => p.id));
   const [billDate, setBillDate] = useState(today());
   const [making, setMaking] = useState("");
   const [diamond, setDiamond] = useState("");
@@ -173,14 +187,15 @@ function BillSection({ data, onDone }: { data: SerializedJobCustomerGold; onDone
   const [credit, setCredit] = useState("");
   const [description, setDescription] = useState("");
   const [previewed, setPreviewed] = useState("");
-  const current = JSON.stringify({ billDate, making, diamond, material, other, gst, rate, credit, description });
+  const current = JSON.stringify({ selected: [...selected].sort(), billDate, making, diamond, material, other, gst, rate, credit, description, after: savedCode });
   const preview = previewState?.preview && previewed === current ? previewState.preview : null;
   useEffect(() => {
     if (postState?.success) onDone();
-  }, [postState?.success, onDone]);
-  const payload = () => {
+  }, [postState, onDone]);
+  const payload = (withFingerprint: boolean) => {
     const fd = new FormData();
     fd.set("jobId", data.jobId);
+    fd.set("pieceIdsJson", JSON.stringify(selected));
     fd.set("billDate", billDate);
     fd.set("makingCharge", making);
     fd.set("diamondCharge", diamond);
@@ -191,29 +206,46 @@ function BillSection({ data, onDone }: { data: SerializedJobCustomerGold; onDone
     fd.set("creditToApply", credit);
     fd.set("description", description);
     fd.set("idempotencyKey", idempotencyKey);
+    if (withFingerprint && preview) fd.set("fingerprint", preview.fingerprint);
     return fd;
   };
-  const posted = (data.bills ?? []).filter((b) => b.status === "POSTED");
+  const canBill = !data.wholeJobBillCode && unbilled.length > 0;
   return (
     <div data-testid="job-customer-bill">
-      <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Bill (Owner)</h3>
+      <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Bill</h3>
       <ul className="mt-1 flex flex-col gap-1 text-xs">
         {(data.bills ?? []).map((b) => (
-          <li key={b.id}>
-            {b.billCode} · {new Date(b.date).toLocaleDateString("en-IN")} · taxable ₹{b.taxableValue} + GST ₹{b.taxAmount} = ₹{b.grandTotal} · gold credit ₹{b.creditApplied} · billed after credit ₹
-            {b.amountDue} · {b.status === "POSTED" ? "Posted" : "Reversed"}
-            {b.status === "POSTED" ? <ReverseButton kind="bill" id={b.id} onDone={onDone} /> : null}
+          <li key={b.id} data-testid="bill-row" className="break-words">
+            {b.billCode} · {new Date(b.date).toLocaleDateString("en-IN")} · {b.pieces.length ? b.pieces.join(", ") : "whole job"} · taxable ₹{b.taxableValue} + GST ₹{b.taxAmount} = ₹{b.grandTotal} · gold credit ₹
+            {b.creditApplied} · amount due ₹{b.amountDue} · by {b.createdBy} · {b.status === "POSTED" ? "Posted" : "Reversed"}
+            {isOwner && b.status === "POSTED" ? <ReverseButton kind="bill" id={b.id} onDone={onDone} /> : null}
           </li>
         ))}
       </ul>
-      {postState?.success ? <Alert tone="success">Bill posted — {postState.code}.</Alert> : null}
-      {posted.length === 0 && !postState?.success ? (
+      {savedCode && !open ? <Alert tone="success">Bill posted — {savedCode}.</Alert> : null}
+      {data.wholeJobBillCode ? <p className="mt-1 text-xs text-zinc-500">{data.wholeJobBillCode} covers the whole job (billed before piece-wise bills).</p> : null}
+      {canBill ? (
         open ? (
-          <form className="mt-2 flex flex-col gap-3" onSubmit={(e) => e.preventDefault()}>
+          <form className="mt-2 flex flex-col gap-3" onSubmit={(e) => e.preventDefault()} data-testid="bill-form">
             <p className="text-xs text-zinc-600 dark:text-zinc-400">
               Bill making, Company diamonds, materials and other charges. The Customer&apos;s own gold is never billed as sold gold. Gold-purchase credit available: ₹
-              {data.creditAvailable}.
+              {data.creditAvailable ?? "0.00"}.
             </p>
+            <fieldset className="flex flex-col gap-1 text-xs">
+              <legend className="mb-1 font-medium text-zinc-700 dark:text-zinc-300">Pieces on this bill</legend>
+              {data.billable.map((p) => (
+                <label key={p.id} className="flex min-h-9 items-center gap-2">
+                  <input
+                    type="checkbox"
+                    disabled={!!p.billCode}
+                    checked={!p.billCode && selected.includes(p.id)}
+                    onChange={(e) => setSelected((xs) => (e.target.checked ? [...xs, p.id] : xs.filter((x) => x !== p.id)))}
+                    data-testid="bill-piece"
+                  />
+                  {p.finishedCode} · net {p.netMetalWeight}g{p.billCode ? ` · already billed (${p.billCode})` : ""}
+                </label>
+              ))}
+            </fieldset>
             {previewState?.error ? <Alert tone="error">{previewState.error}</Alert> : null}
             {postState?.error ? <Alert tone="error">{postState.error}</Alert> : null}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -237,7 +269,7 @@ function BillSection({ data, onDone }: { data: SerializedJobCustomerGold; onDone
             {preview ? (
               <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm dark:border-emerald-900 dark:bg-emerald-950/30" data-testid="bill-preview">
                 <p>
-                  {preview.customerName} · {preview.jobCode}: taxable ₹{preview.taxableValue} + GST ₹{preview.taxAmount} = <strong>₹{preview.grandTotal}</strong>
+                  {preview.customerName} · {preview.jobCode} · {preview.pieces.join(", ")}: taxable ₹{preview.taxableValue} + GST ₹{preview.taxAmount} = <strong>₹{preview.grandTotal}</strong>
                 </p>
                 <p>
                   Gold-purchase credit applied ₹{preview.creditApplied} → amount due <strong>₹{preview.amountDue}</strong>
@@ -249,23 +281,33 @@ function BillSection({ data, onDone }: { data: SerializedJobCustomerGold; onDone
               <Button
                 type="button"
                 variant="secondary"
-                disabled={previewPending || postPending}
+                disabled={previewPending || postPending || selected.length === 0}
                 onClick={() => {
                   setPreviewed(current);
-                  startTransition(() => previewAction(payload()));
+                  startTransition(() => previewAction(payload(false)));
                 }}
+                data-testid="bill-preview-btn"
               >
                 {previewPending ? "Checking…" : "Preview bill"}
               </Button>
               {preview ? (
-                <Button type="button" disabled={postPending} onClick={() => startTransition(() => postAction(payload()))}>
+                <Button type="button" disabled={postPending} onClick={() => startTransition(() => postAction(payload(true)))} data-testid="bill-post-btn">
                   {postPending ? "Posting…" : "Post bill"}
                 </Button>
               ) : null}
             </div>
           </form>
         ) : (
-          <Button type="button" variant="secondary" className="mt-2" onClick={() => setOpen(true)}>
+          <Button
+            type="button"
+            variant="secondary"
+            className="mt-2"
+            onClick={() => {
+              setSelected(unbilled.map((p) => p.id));
+              setOpenFor(postState);
+            }}
+            data-testid="bill-open"
+          >
             Bill the Customer
           </Button>
         )

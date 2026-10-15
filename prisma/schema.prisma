@@ -1943,6 +1943,7 @@ model FinishedJewellery {
   metalRevaluations     MetalRevaluation[]
   customerGoldEntries   CustomerGoldEntry[]              @relation("CustomerGoldEntryPiece")
   customerDeliveryItems CustomerJewelleryDeliveryItem[]
+  customerBillPieces    CustomerJewelleryBillPiece[]     @relation("CustomerJewelleryBillPiece")
 
   @@index([jobId])
   @@index([receiptId])
@@ -3866,9 +3867,30 @@ model CustomerJewelleryBill {
   createdBy       User     @relation("CustomerJewelleryBillCreatedBy", fields: [createdByUserId], references: [id])
   createdAt       DateTime @default(now())
 
+  /// The pieces this bill covers. A bill posted before piece lines existed has none and covers the whole job.
+  pieces CustomerJewelleryBillPiece[]
+
   @@index([customerId])
   @@index([jobId])
   @@map("customer_jewellery_bills")
+}
+
+/// One Customer-owned piece on one bill. `activeFinishedJewelleryId` equals
+/// `finishedJewelleryId` while the bill is POSTED and is cleared when it is
+/// reversed, so the unique index lets a piece sit on at most ONE live bill
+/// (a reversed bill keeps its history and frees the piece).
+model CustomerJewelleryBillPiece {
+  id                        String                @id @default(cuid())
+  billId                    String
+  bill                      CustomerJewelleryBill @relation(fields: [billId], references: [id])
+  finishedJewelleryId       String
+  finishedJewellery         FinishedJewellery     @relation("CustomerJewelleryBillPiece", fields: [finishedJewelleryId], references: [id])
+  activeFinishedJewelleryId String?               @unique
+  createdAt                 DateTime              @default(now())
+
+  @@index([billId])
+  @@index([finishedJewelleryId])
+  @@map("customer_jewellery_bill_pieces")
 }
 
 /// Hand-over of Customer-owned finished jewellery to the Customer.

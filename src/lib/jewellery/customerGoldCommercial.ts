@@ -30,10 +30,12 @@ import { createMetalPurchase } from "@/lib/jewellery/posting";
  *  - Purchase / exchange (Owner-approved): Dr 1300 at the approved value /
  *    Cr 2000 to the Customer, through createMetalPurchase — the only way a
  *    Customer's gold ever becomes Company stock.
- *  - Bill (Owner): Dr 1100 AR / Cr 4000 / Cr GST for making, Company stones,
- *    Company materials and other charges — never the Customer's own gold.
- *    Credit from a purchase/exchange can be applied in the same voucher:
- *    Dr 2000 / Cr 1100 (both the Customer).
+ *  - Bill (Owner or Staff; reversal Owner only): Dr 1100 AR / Cr 4000 / Cr GST
+ *    for making, Company stones, Company materials and other charges — never
+ *    the Customer's own gold. It names the pieces it covers; a piece sits on
+ *    at most one live bill (DB-unique). Credit from an Owner-approved
+ *    purchase/exchange can be applied in the same voucher: Dr 2000 / Cr 1100
+ *    (both the Customer), re-checked live under the Customer's row lock.
  *  - Delivery (Owner or Staff): FINISHED → DELIVERED in the Customer Gold
  *    ledger and Dr 5200 COGS / Cr 1340 for the Company's own cost in the pieces.
  *  - Every one of them is reversed by an audited mirror, never edited.
@@ -258,11 +260,43 @@ export async function availableCustomerCreditInTx(tx: Tx, customerId: string): P
 }
 
 // ---------------------------------------------------------------------------
-// Bill (Owner)
+// Bill (Owner or Staff — reversal Owner only)
 // ---------------------------------------------------------------------------
+
+export type BillablePiece = { id: string; finishedCode: string; status: string; netMetalWeight: string; billCode: string | null };
+
+/**
+ * The job's Customer-owned pieces and which live bill (if any) each sits on.
+ * A bill posted before piece lines existed (no lines) covers the whole job.
+ * Weights and bill codes only — safe for Staff.
+ */
+export async function billablePiecesInTx(tx: Tx, jobId: string): Promise<{ pieces: BillablePiece[]; wholeJobBillCode: string | null }> {
+  const [pieces, live] = await Promise.all([
+    tx.finishedJewellery.findMany({
+      where: { jobId, ownership: "CUSTOMER", status: { not: "RECEIPT_REVERSED" } },
+      orderBy: { finishedCode: "asc" },
+      select: { id: true, finishedCode: true, status: true, netMetalWeight: true },
+    }),
+    tx.customerJewelleryBill.findMany({ where: { jobId, status: "POSTED" }, select: { billCode: true, pieces: { select: { finishedJewelleryId: true } } } }),
+  ]);
+  const wholeJob = live.find((b) => b.pieces.length === 0) ?? null;
+  const onBill = new Map(live.flatMap((b) => b.pieces.map((p) => [p.finishedJewelleryId, b.billCode] as const)));
+  return {
+    wholeJobBillCode: wholeJob?.billCode ?? null,
+    pieces: pieces.map((p) => ({
+      id: p.id,
+      finishedCode: p.finishedCode,
+      status: p.status,
+      netMetalWeight: new Decimal(p.netMetalWeight).toFixed(3),
+      billCode: wholeJob ? wholeJob.billCode : onBill.get(p.id) ?? null,
+    })),
+  };
+}
 
 export type CustomerJewelleryBillInput = {
   jobId: string;
+  /** The Customer-owned pieces to bill; default: every piece of the job not yet on a live bill. */
+  finishedJewelleryIds?: string[] | null;
   billDate: Date;
   makingCharge?: DecimalInput | null;
   diamondCharge?: DecimalInput | null;
@@ -287,14 +321,30 @@ export type CustomerJewelleryBillPlan = {
   creditApplied: Decimal;
   amountDue: Decimal;
   creditAvailable: Decimal;
+  pieces: { id: string; finishedCode: string }[];
+  /** Pieces, figures and available credit as previewed; posting refuses a different one. */
+  fingerprint: string;
 };
 
 export async function planCustomerJewelleryBill(tx: Tx, input: CustomerJewelleryBillInput): Promise<CustomerJewelleryBillPlan> {
   const job = await tx.jewelleryJob.findUnique({ where: { id: input.jobId }, include: { customer: true } });
   if (!job) throw new CustomerGoldError("Job not found.");
   if (!job.customerId || !job.customer) throw new CustomerGoldError(`${job.jobCode} has no Customer to bill.`);
-  const customerPieces = await tx.finishedJewellery.count({ where: { jobId: job.id, ownership: "CUSTOMER", status: { not: "RECEIPT_REVERSED" } } });
-  if (customerPieces === 0) throw new CustomerGoldError(`${job.jobCode} has no Customer-owned jewellery to bill yet. (Company-owned pieces are sold through Finished Stock.)`);
+  if (job.status === "NEEDS_CORRECTION") throw new CustomerGoldError(`${job.jobCode} needs a correction first — bill it after the correction is done.`);
+  const billable = await billablePiecesInTx(tx, job.id);
+  if (billable.pieces.length === 0) throw new CustomerGoldError(`${job.jobCode} has no Customer-owned jewellery to bill yet. (Company-owned pieces are sold through Finished Stock.)`);
+  if (billable.wholeJobBillCode) {
+    throw new CustomerGoldError(`${job.jobCode} is already billed as a whole by ${billable.wholeJobBillCode}. The Owner must reverse that bill before its pieces can be billed again.`);
+  }
+  const wanted = input.finishedJewelleryIds?.length ? [...new Set(input.finishedJewelleryIds)] : billable.pieces.filter((p) => !p.billCode).map((p) => p.id);
+  if (wanted.length === 0) throw new CustomerGoldError(`Every Customer-owned piece of ${job.jobCode} is already on a live bill.`);
+  const chosen = wanted.map((id) => {
+    const p = billable.pieces.find((x) => x.id === id);
+    if (!p) throw new CustomerGoldError("A selected piece is not a Customer-owned piece of this job (or its receipt was reversed).");
+    if (p.billCode) throw new CustomerGoldError(`${p.finishedCode} is already billed (${p.billCode}).`);
+    return { id: p.id, finishedCode: p.finishedCode };
+  });
+  chosen.sort((a, b) => a.finishedCode.localeCompare(b.finishedCode));
   const charges = [input.makingCharge, input.diamondCharge, input.materialCharge, input.otherCharge].map(money);
   if (charges.some((c) => c.isNegative())) throw new CustomerGoldError("Charges cannot be negative.");
   const taxableValue = round2(charges.reduce((s, c) => s.plus(c), ZERO));
@@ -309,6 +359,13 @@ export async function planCustomerJewelleryBill(tx: Tx, input: CustomerJewellery
   if (creditApplied.isNegative()) throw new CustomerGoldError("Credit cannot be negative.");
   if (creditApplied.greaterThan(creditAvailable)) throw new CustomerGoldError(`${job.customer.name} has only ₹${creditAvailable.toFixed(2)} of gold-purchase credit available.`);
   if (creditApplied.greaterThan(grandTotal)) throw new CustomerGoldError("Credit applied cannot exceed the bill total.");
+  const fingerprint = opaqueFingerprint("customer-bill", [
+    job.id,
+    chosen.map((p) => p.id),
+    [taxableValue, taxAmount, grandTotal, creditApplied, creditAvailable].map((d) => d.toFixed(2)),
+    input.gstTreatment,
+    input.billDate.toISOString().slice(0, 10),
+  ]);
   return {
     customerId: job.customerId,
     customerName: job.customer.name,
@@ -322,11 +379,16 @@ export async function planCustomerJewelleryBill(tx: Tx, input: CustomerJewellery
     creditApplied,
     amountDue: round2(grandTotal.minus(creditApplied)),
     creditAvailable,
+    pieces: chosen,
+    fingerprint,
   };
 }
 
-export async function billCustomerJewellery(tx: Tx, input: CustomerJewelleryBillInput & { idempotencyKey: string; actor: Actor; fyStartMonth: number; fyStartDay: number }) {
-  requireOwner(input.actor, "bill a Customer");
+export async function billCustomerJewellery(
+  tx: Tx,
+  input: CustomerJewelleryBillInput & { idempotencyKey: string; expectedFingerprint?: string | null; actor: Actor; fyStartMonth: number; fyStartDay: number }
+) {
+  if (input.actor.role !== "OWNER" && input.actor.role !== "STAFF") throw new CustomerGoldError("You are not allowed to bill a Customer.");
   if (!input.idempotencyKey?.trim()) throw new CustomerGoldError("Missing submission key — reload the page and try again.");
   const existing = await tx.customerJewelleryBill.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
   if (existing) return { bill: existing, replayed: true as const };
@@ -335,6 +397,9 @@ export async function billCustomerJewellery(tx: Tx, input: CustomerJewelleryBill
   await tx.$queryRawUnsafe(`SELECT id FROM "parties" WHERE id = $1 FOR UPDATE`, jobRow.customerId);
   await tx.$queryRawUnsafe(`SELECT id FROM "jewellery_jobs" WHERE id = $1 FOR UPDATE`, input.jobId);
   const plan = await planCustomerJewelleryBill(tx, input);
+  if (input.expectedFingerprint !== undefined && input.expectedFingerprint !== plan.fingerprint) {
+    throw new CustomerGoldError("The pieces, amounts, GST or available credit changed after this preview. Preview again and confirm. Nothing was saved.");
+  }
   const billCode = await nextJewelleryCode(tx, "CUSTOMER_JEWELLERY_BILL");
   const lines: JournalLineInput[] = [
     { accountCode: SYSTEM_ACCOUNT_CODES.ACCOUNTS_RECEIVABLE, partyId: plan.customerId, debit: plan.grandTotal, description: `Bill ${billCode} (${plan.jobCode})` },
@@ -386,6 +451,7 @@ export async function billCustomerJewellery(tx: Tx, input: CustomerJewelleryBill
       voucherId: voucher.id,
       idempotencyKey: input.idempotencyKey,
       createdByUserId: input.actor.id,
+      pieces: { create: plan.pieces.map((p) => ({ finishedJewelleryId: p.id, activeFinishedJewelleryId: p.id })) },
     },
   });
   return { bill, replayed: false as const, plan };
@@ -400,6 +466,8 @@ export async function reverseCustomerJewelleryBill(tx: Tx, input: { billId: stri
   const fresh = await tx.customerJewelleryBill.findUniqueOrThrow({ where: { id: bill.id } });
   if (fresh.status !== "POSTED") throw new CustomerGoldError(`${bill.billCode} is already reversed.`);
   const reversal = await cancelVoucher(tx, { voucherId: bill.voucherId, cancelledByUserId: input.actor.id, cancellationReason: reason, fyStartMonth: input.fyStartMonth, fyStartDay: input.fyStartDay });
+  // Frees its pieces for a corrected bill; the lines stay as history.
+  await tx.customerJewelleryBillPiece.updateMany({ where: { billId: bill.id }, data: { activeFinishedJewelleryId: null } });
   return tx.customerJewelleryBill.update({
     where: { id: bill.id },
     data: { status: "REVERSED", reversedAt: new Date(), reversedByUserId: input.actor.id, reversalReason: reason, reversalVoucherId: reversal.id },

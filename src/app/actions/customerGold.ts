@@ -49,8 +49,9 @@ import { CorrectionError } from "@/lib/corrections/types";
 /**
  * Customer Gold server actions. Every permission is enforced HERE (and again
  * in the library): intake, movements, reversals, mix approval, purchase and
- * billing are Owner-only; delivery is Owner or Staff. Staff-reachable replies
- * carry codes and weights only.
+ * bill reversal are Owner-only; billing and delivery are Owner or Staff.
+ * Staff-reachable replies carry codes, weights and Customer-facing bill
+ * figures only — never a Company cost.
  */
 
 const TX = { timeout: 30000, maxWait: 15000 } as const;
@@ -495,12 +496,15 @@ export async function reverseCustomerGoldPurchaseAction(_prev: CustomerGoldFormS
 }
 
 // ---------------------------------------------------------------------------
-// Bill (Owner) and delivery (Owner or Staff)
+// Bill (Owner or Staff; reversal Owner) and delivery (Owner or Staff)
 // ---------------------------------------------------------------------------
 
+/** Customer-facing figures only (safe for Staff). */
 export type CustomerJewelleryBillPreview = {
   customerName: string;
   jobCode: string;
+  pieces: string[];
+  fingerprint: string;
   taxableValue: string;
   taxAmount: string;
   grandTotal: string;
@@ -512,8 +516,16 @@ export type CustomerJewelleryBillPreview = {
 function billInput(fd: FormData): CustomerJewelleryBillInput {
   const gst = str(fd, "gstTreatment") as GstTreatment;
   if (!["NONE", "CGST_SGST", "IGST"].includes(gst)) throw new CustomerGoldError("Choose the GST treatment.");
+  let pieceIds: string[] = [];
+  try {
+    const raw = str(fd, "pieceIdsJson");
+    pieceIds = raw ? (JSON.parse(raw) as unknown[]).filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    throw new CustomerGoldError("Choose the pieces to bill.");
+  }
   return {
     jobId: str(fd, "jobId"),
+    finishedJewelleryIds: pieceIds,
     billDate: date(fd, "billDate"),
     makingCharge: opt(fd, "makingCharge"),
     diamondCharge: opt(fd, "diamondCharge"),
@@ -527,13 +539,15 @@ function billInput(fd: FormData): CustomerJewelleryBillInput {
 }
 
 export async function previewCustomerJewelleryBillAction(_prev: { error?: string; preview?: CustomerJewelleryBillPreview } | undefined, fd: FormData) {
-  await requireOwner();
+  await requireUser();
   try {
     const p = await planCustomerJewelleryBill(prisma, billInput(fd));
     return {
       preview: {
         customerName: p.customerName,
         jobCode: p.jobCode,
+        pieces: p.pieces.map((x) => x.finishedCode),
+        fingerprint: p.fingerprint,
         taxableValue: p.taxableValue.toFixed(2),
         taxAmount: p.taxAmount.toFixed(2),
         grandTotal: p.grandTotal.toFixed(2),
@@ -547,12 +561,16 @@ export async function previewCustomerJewelleryBillAction(_prev: { error?: string
   }
 }
 
+/** Owner or Staff, recorded as the actual user. Saving needs the fresh preview's fingerprint. */
 export async function billCustomerJewelleryAction(_prev: CustomerGoldFormState, fd: FormData): Promise<CustomerGoldFormState> {
-  const user = await requireOwner();
+  const user = await requireUser();
   const idempotencyKey = str(fd, "idempotencyKey");
   const fy = await getCompanyFySettings();
   try {
-    const r = await prisma.$transaction((tx) => billCustomerJewellery(tx, { ...billInput(fd), idempotencyKey, actor: { id: user.id, role: user.role }, ...fy }), TX);
+    const r = await prisma.$transaction(
+      (tx) => billCustomerJewellery(tx, { ...billInput(fd), idempotencyKey, expectedFingerprint: str(fd, "fingerprint"), actor: { id: user.id, role: user.role }, ...fy }),
+      TX
+    );
     revalidateAll();
     return { success: true, code: r.bill.billCode, replayed: r.replayed };
   } catch (error) {
