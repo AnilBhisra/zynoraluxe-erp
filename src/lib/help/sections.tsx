@@ -223,6 +223,21 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
             <OwnerOnlyBadge />
             <CautionBadge />
           </BadgeRow>
+
+          <SubHeading id="task-customer-finished-jewellery">Customer ના તૈયાર દાગીના (Finished Jewellery) જોવા</SubHeading>
+          <BadgeRow>
+            <StaffCanBadge />
+          </BadgeRow>
+          <Steps>
+            <li>Accounting → Party Ledger માં Customer પસંદ કરો. નીચે <strong>Finished Jewellery</strong> ભાગ દેખાશે.</li>
+            <li>ઉપર ગણતરી: તૈયાર / હજી આપ્યા નથી, Bill બાકી, Bill થયું પણ આપ્યા નથી, Delivered. સાથે Customer નું સોનું ક્યાં છે (safe, Karigar, jobs, તૈયાર દાગીનામાં).</li>
+            <li>દરેક દાગીનામાં: piece code, job, receipt, વજન (gross / net / fine), purity, કોનું સોનું (Customer / Company / Mixed), bill નંબર-તારીખ, delivery સ્થિતિ.</li>
+            <li>All, Ready for billing, Unbilled, Billed, Ready for delivery, Delivered, Receipt reversed — બટનથી filter કરો.</li>
+            <li>Customer ના પોતાના સોનાનો દાગીનો bill બાકી હોય તો <Btn>Create bill</Btn> દબાવી job page પર bill બનાવો. Company ના સોનાનો દાગીનો Finished Stock માંથી વેચાય છે.</li>
+          </Steps>
+          <Note>
+            અહીં ફક્ત એ જ Customer ની jobs ના દાગીના દેખાય છે (records પરથી, નામ પરથી નહીં). Delivered દાગીના stock ની ગણતરીમાં નથી, પણ “Delivered” filter માં જોઈ શકાય. Receipt reverse થયેલો દાગીનો “Receipt reversed” તરીકે અલગ દેખાય છે. અહીં Company નો ખર્ચ કે નફો કોઈને દેખાતો નથી.
+          </Note>
         </div>
       ),
     },

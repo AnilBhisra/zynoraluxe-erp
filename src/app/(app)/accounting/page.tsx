@@ -38,6 +38,9 @@ import { AccountingSettingsPanel } from "@/components/accounting/AccountingSetti
 import { LedgerPartyPicker, LedgerTable } from "@/components/accounting/LedgerView";
 import { CashBankBookView } from "@/components/accounting/CashBankBookView";
 import { PartySummaryPanel } from "@/components/accounting/PartySummaryPanel";
+import { CustomerFinishedJewelleryPanel } from "@/components/accounting/CustomerFinishedJewelleryPanel";
+import { customerFinishedJewellery } from "@/lib/jewellery/customerFinishedJewellery";
+import { isCustomerPieceFilter, type CustomerPieceFilter } from "@/lib/jewellery/customerFinishedJewelleryRules";
 import { ReceivablePayableView } from "@/components/accounting/ReceivablePayableView";
 import {
   CashBankReportView,
@@ -143,7 +146,13 @@ export default async function AccountingPage({
           userRole={user.role}
         />
       ) : null}
-      {tab === "ledger" ? <LedgerTabContent partyId={typeof params.partyId === "string" ? params.partyId : ""} userRole={user.role} /> : null}
+      {tab === "ledger" ? (
+        <LedgerTabContent
+          partyId={typeof params.partyId === "string" ? params.partyId : ""}
+          userRole={user.role}
+          pieceFilter={typeof params.fj === "string" && isCustomerPieceFilter(params.fj) ? params.fj : "ALL"}
+        />
+      ) : null}
       {tab === "cash-bank" ? (
         // Owner only, decided on the server before any Cash/Bank row is read.
         user.role === "OWNER" ? (
@@ -339,7 +348,7 @@ async function PartiesTabContent({
   );
 }
 
-async function LedgerTabContent({ partyId, userRole }: { partyId: string; userRole: "OWNER" | "STAFF" }) {
+async function LedgerTabContent({ partyId, userRole, pieceFilter }: { partyId: string; userRole: "OWNER" | "STAFF"; pieceFilter: CustomerPieceFilter }) {
   const parties = await prisma.party.findMany({
     where: { isActive: true },
     orderBy: { name: "asc" },
@@ -355,6 +364,8 @@ async function LedgerTabContent({ partyId, userRole }: { partyId: string; userRo
         listVouchers({ partyId, viewerRole: userRole, take: 30 }),
       ])
     : [[], null, null, []];
+  // Customer → their Finished Jewellery (weights, codes, bill / delivery state; no cost — same for Owner and Staff).
+  const pieces = party?.type === "CUSTOMER" ? await customerFinishedJewellery(prisma, party.id, pieceFilter) : null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -362,6 +373,9 @@ async function LedgerTabContent({ partyId, userRole }: { partyId: string; userRo
       {partyId && party ? (
         <>
           <PartySummaryPanel party={party} position={book?.parties[0] ?? null} recentVouchers={recentVouchers} isOwner={userRole === "OWNER"} />
+          {pieces ? (
+            <CustomerFinishedJewelleryPanel partyId={party.id} rows={pieces.rows} total={pieces.total} summary={pieces.summary} gold={pieces.gold} filter={pieces.filter} />
+          ) : null}
           <LedgerTable rows={rows} partyType={party.type} />
         </>
       ) : (
