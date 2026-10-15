@@ -565,6 +565,7 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
         "metal", "purity", "jewellery job", "set", "returned", "needs correction",
         "24k", "18k", "14k", "9k", "alloy", "copper", "scrap", "process loss",
         "rate basis", "fine gram", "gross gram", "effective rate", "history", "karigar metal", "sticker", "qr", "print",
+        "filter", "customer filter", "gold source", "customer gold", "company gold", "mixed gold", "review required",
         "મેટલ", "જ્વેલરી જોબ", "શુદ્ધતા", "ભાવ", "સ્ટીકર",
       ],
       body: (
@@ -648,6 +649,21 @@ export function getHelpSections(role: "OWNER" | "STAFF"): HelpSection[] {
             <li>Design નામ, Karigar, Customer (જો હોય તો), Issue date, Quantity ભરો.</li>
             <li><Btn>Create Jewellery Job</Btn> દબાવો.</li>
           </Steps>
+
+          <SubHeading id="task-job-list-filters">Jobs ની યાદીમાં Customer, Karigar અને Gold source થી શોધવું</SubHeading>
+          <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+            દરેક job માં લખેલું દેખાય છે: <strong>Customer</strong> (ન હોય તો “No customer selected”), <strong>Karigar</strong>, <strong>Gold source</strong>, Status અને બાકી metal. Job ખોલ્યા વગર જ ખબર પડે કે job કોની છે અને કયું gold વપરાયું.
+          </p>
+          <Steps>
+            <li>ઉપર <strong>Customer</strong> અને <strong>Karigar</strong> ના ખાનામાં નામ લખવાનું શરૂ કરો અને યાદીમાંથી પસંદ કરો (archived નામો પણ મળે છે).</li>
+            <li><strong>Gold source</strong> પસંદ કરો: Customer Gold, Company Gold, Mixed Gold, No Gold / Not allocated yet, અથવા Review required.</li>
+            <li><strong>Search</strong> માં job code, design, item (Ring…), Customer, Karigar, finished piece code કે receipt code લખી શકો.</li>
+            <li><Btn>Apply</Btn> દબાવો. ઉપરના Pending / In Progress / Completed / Cancelled / All Jobs બટન filters સાથે જ કામ કરે છે.</li>
+            <li><Btn>Clear filters</Btn> થી Customer, Karigar, Gold source અને search એક સાથે ખાલી થાય (પસંદ કરેલો status રહે).</li>
+          </Steps>
+          <Note>
+            Gold source ખરેખરના gold movements પરથી નક્કી થાય છે, notes પરથી નહીં: Customer નું gold job માં ગયું હોય તો Customer Gold (cost ₹0 હોય તો પણ), Company નું gold (Karigar Metal કે સીધું issue) હોય તો Company Gold, બંને હોય તો Mixed. Reverse થયેલી entries કે cancel થયેલી job ગણાતી નથી. જૂના records પરથી ચોક્કસ ખબર ન પડે તો “Review required” બતાવે છે — અનુમાન કરતું નથી. Filter કરેલી link copy કરીને મોકલી શકાય; refresh કે Back પછી પણ filters રહે છે.
+          </Note>
 
           <SubHeading>Metal, Polished Diamond અને બીજો સામાન Issue કરવો</SubHeading>
           <Steps>

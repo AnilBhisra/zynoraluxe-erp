@@ -227,8 +227,11 @@ export function JobDetailView({
   customerGoldSources = [],
   customerGold = null,
   entryHistory = [],
+  backHref = "/jewellery-jobs?tab=jobs",
 }: {
-  job: SerializedJobDetail;
+
+  /** The filtered list this job was opened from (keeps view + filters). */
+  backHref?: string;  job: SerializedJobDetail;
   isOwner: boolean;
   /** Correct-entry history of the job and its receipts (money fields only for the Owner). */
   entryHistory?: EntryHistoryItem[];
@@ -301,7 +304,7 @@ export function JobDetailView({
   return (
     <div className="flex flex-col gap-5">
       <a
-        href="/jewellery-jobs?tab=jobs"
+        href={backHref}
         className="text-sm font-medium text-zinc-700 underline underline-offset-4 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-zinc-100"
       >
         ← Back to jobs

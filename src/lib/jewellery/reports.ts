@@ -1,11 +1,14 @@
 import "server-only";
 
+import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { Decimal, type DecimalInput, round2, ZERO } from "@/lib/accounting/money";
 import { round3 } from "@/lib/diamond/allocation";
 import { shapeLabel } from "@/lib/diamond/shapes";
 import { getAuthoritativeInventoryCost } from "@/lib/jewellery/finishedSalesPosting";
+import { goldSourcesForJobs, type GoldSource } from "@/lib/jewellery/jobGoldSource";
 import { jobManufacturingCost } from "@/lib/jewellery/jobIssuedCost";
+import { JEWELLERY_TYPES } from "@/lib/jewellery/types";
 import { canStillIssueMaterials, pendingFineWeightOf, sumMetalPool } from "@/lib/jewellery/posting";
 import {
   CARRYING_COST_UNAVAILABLE,
@@ -172,27 +175,84 @@ function sumKarigarAlloyCost(receipts: { karigarAlloyCost: Decimal | string | nu
   return round2(receipts.reduce((sum, r) => sum.plus(r.karigarAlloyCost), new Decimal(0)));
 }
 
-export async function listJewelleryJobs(filters?: {
+/** Item types whose label or code contains the search text ("ring" finds RING). */
+function jewelleryTypesMatching(q: string) {
+  const t = q.toLowerCase();
+  return JEWELLERY_TYPES.filter((x) => x.label.toLowerCase().includes(t) || x.value.toLowerCase().includes(t)).map((x) => x.value);
+}
+
+export type JewelleryJobFilters = {
   status?: JewelleryJobStatus[];
   karigarId?: string;
+  customerId?: string;
+  goldSource?: GoldSource;
   search?: string;
-}): Promise<JewelleryJobRow[]> {
+};
+
+export type JewelleryJobListRow = JewelleryJobRow & { customerId: string | null; karigarId: string; goldSource: GoldSource };
+
+export const JOB_LIST_LIMIT = 300;
+
+function jobListWhere(filters: JewelleryJobFilters | undefined): Prisma.JewelleryJobWhereInput {
+  const q = filters?.search?.trim();
+  return {
+    status: filters?.status ? { in: filters.status } : undefined,
+    karigarId: filters?.karigarId,
+    customerId: filters?.customerId,
+    OR: q
+      ? [
+          { jobCode: { contains: q, mode: "insensitive" } },
+          { designName: { contains: q, mode: "insensitive" } },
+          { karigar: { name: { contains: q, mode: "insensitive" } } },
+          { customer: { name: { contains: q, mode: "insensitive" } } },
+          { receipts: { some: { receiptCode: { contains: q, mode: "insensitive" } } } },
+          { finishedJewellery: { some: { finishedCode: { contains: q, mode: "insensitive" } } } },
+          ...jewelleryTypesMatching(q).map((t) => ({ jewelleryType: t })),
+        ]
+      : undefined,
+  };
+}
+
+/**
+ * The Jewellery Jobs list: one filter definition for the rows and the total.
+ * A Gold-source filter is applied over every job that matches the other
+ * filters (one classification query for all of them), then the newest
+ * JOB_LIST_LIMIT are loaded — never one query per job.
+ */
+export async function listJewelleryJobsPage(filters?: JewelleryJobFilters): Promise<{ rows: JewelleryJobListRow[]; total: number; limit: number }> {
+  const where = jobListWhere(filters);
+  let ids: string[];
+  let total: number;
+  let sources: Map<string, GoldSource>;
+  if (filters?.goldSource) {
+    const all = await prisma.jewelleryJob.findMany({ where, select: { id: true }, orderBy: [{ issueDate: "desc" }, { jobCode: "desc" }] });
+    sources = await goldSourcesForJobs(prisma, all.map((j) => j.id));
+    const matching = all.filter((j) => sources.get(j.id) === filters.goldSource).map((j) => j.id);
+    total = matching.length;
+    ids = matching.slice(0, JOB_LIST_LIMIT);
+  } else {
+    const [page, count] = await Promise.all([
+      prisma.jewelleryJob.findMany({ where, select: { id: true }, orderBy: [{ issueDate: "desc" }, { jobCode: "desc" }], take: JOB_LIST_LIMIT }),
+      prisma.jewelleryJob.count({ where }),
+    ]);
+    ids = page.map((j) => j.id);
+    total = count;
+    sources = await goldSourcesForJobs(prisma, ids);
+  }
+  const rows = await jobRows(ids);
+  return { rows: rows.map((r) => ({ ...r, goldSource: sources.get(r.id) ?? "NONE" })), total, limit: JOB_LIST_LIMIT };
+}
+
+export async function listJewelleryJobs(filters?: JewelleryJobFilters): Promise<JewelleryJobListRow[]> {
+  return (await listJewelleryJobsPage(filters)).rows;
+}
+
+async function jobRows(ids: string[]) {
+  if (ids.length === 0) return [];
   const jobs = await prisma.jewelleryJob.findMany({
-    where: {
-      status: filters?.status ? { in: filters.status } : undefined,
-      karigarId: filters?.karigarId,
-      OR: filters?.search
-        ? [
-            { jobCode: { contains: filters.search, mode: "insensitive" } },
-            { designName: { contains: filters.search, mode: "insensitive" } },
-            { karigar: { name: { contains: filters.search, mode: "insensitive" } } },
-            { customer: { name: { contains: filters.search, mode: "insensitive" } } },
-          ]
-        : undefined,
-    },
+    where: { id: { in: ids } },
     include: { karigar: true, customer: true, receipts: { where: { reversedAt: null }, select: { karigarAlloyCost: true } } },
-    orderBy: { issueDate: "desc" },
-    take: 300,
+    orderBy: [{ issueDate: "desc" }, { jobCode: "desc" }],
   });
 
   // A correction never rewrites issuedMetalCost itself — the current figure
@@ -211,6 +271,8 @@ export async function listJewelleryJobs(filters?: {
     return {
       id: j.id,
       jobCode: j.jobCode,
+      customerId: j.customerId,
+      karigarId: j.karigarId,
       customerName: j.customer?.name ?? null,
       karigarName: j.karigar.name,
       jewelleryType: j.jewelleryType,

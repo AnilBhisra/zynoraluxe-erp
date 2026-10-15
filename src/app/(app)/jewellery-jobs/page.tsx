@@ -12,12 +12,14 @@ import {
   getMetalStockSummary,
   listFinishedJewelleryStock,
   listFinishedJewellerySalesForManagement,
-  listJewelleryJobs,
+  listJewelleryJobsPage,
   listMetalPurchases,
   listMetalPurities,
 } from "@/lib/jewellery/reports";
 import { listPolishedDiamonds } from "@/lib/diamond/reports";
 import { resolveJewelleryAssetUrl } from "@/lib/storage/jewelleryMedia";
+import { isGoldSource } from "@/lib/jewellery/jobGoldSource";
+import { jobListHref } from "@/lib/jewellery/jobListHref";
 import { ownerOnly } from "@/lib/security/ownerOnly";
 import { serializeJobCostSummary, serializeJobPacketLines } from "@/lib/jewellery/jobDetailSerializers";
 import { JobsTab, type SerializedJewelleryJob } from "@/components/jewellery/JobsTab";
@@ -79,6 +81,9 @@ type SearchParams = {
   custodyOp?: string;
   custodyJobId?: string;
   customerId?: string;
+  jobCustomer?: string;
+  jobKarigar?: string;
+  goldSource?: string;
 };
 
 const TABS = ["jobs", "karigar", "customer-gold", "metal", "finished"] as const;
@@ -125,8 +130,11 @@ export default async function JewelleryJobsPage({ searchParams }: { searchParams
       {tab === "jobs" ? (
         <JobsTabContent
           search={params.jobSearch ?? ""}
-          view={params.view ?? "PENDING"}
+          view={JOB_VIEWS.includes(params.view as JobView) ? (params.view as JobView) : "PENDING"}
           jobId={params.jobId ?? ""}
+          customerFilter={params.jobCustomer ?? ""}
+          karigarFilter={params.jobKarigar ?? ""}
+          goldSourceFilter={params.goldSource ?? ""}
           isOwner={isOwner}
           initialShowForm={params.issue === "1"}
         />
@@ -183,16 +191,25 @@ function toMetalPurityOptions(
   }));
 }
 
+const JOB_VIEWS = ["PENDING", "IN_PROGRESS", "COMPLETED", "CANCELLED", "ALL"] as const;
+type JobView = (typeof JOB_VIEWS)[number];
+
 async function JobsTabContent({
   search,
   view,
   jobId,
+  customerFilter,
+  karigarFilter,
+  goldSourceFilter,
   isOwner,
   initialShowForm,
 }: {
   search: string;
-  view: string;
+  view: JobView;
   jobId: string;
+  customerFilter: string;
+  karigarFilter: string;
+  goldSourceFilter: string;
   isOwner: boolean;
   initialShowForm?: boolean;
 }) {
@@ -404,6 +421,7 @@ async function JobsTabContent({
       <JobDetailView
         job={serialized}
         isOwner={isOwner}
+        backHref={jobListHref(view, { customerId: customerFilter, karigarId: karigarFilter, goldSource: goldSourceFilter, search })}
         entryHistory={entryHistory}
         purities={toMetalPurityOptions(purities)}
         availableDiamonds={availableDiamonds}
@@ -429,19 +447,37 @@ async function JobsTabContent({
             ? undefined
             : ["DRAFT", "MATERIALS_ISSUED"];
 
-  const [jobs, customers, karigars, karigarBalances, purities] = await Promise.all([
-    listJewelleryJobs({ status: statusList, search: search || undefined }),
-    prisma.party.findMany({ where: { type: "CUSTOMER", isActive: true }, orderBy: { name: "asc" } }),
-    prisma.party.findMany({ where: { type: "KARIGAR", isActive: true }, orderBy: { name: "asc" } }),
+  // Filter parties include archived ones (old jobs stay findable); an unknown,
+  // deleted or wrong-type id is dropped and reported as "Unavailable" instead
+  // of failing the page or silently matching nothing.
+  const [allCustomers, allKarigars] = await Promise.all([
+    prisma.party.findMany({ where: { type: "CUSTOMER" }, orderBy: [{ isActive: "desc" }, { name: "asc" }], select: { id: true, name: true, type: true, stateCode: true, isActive: true } }),
+    prisma.party.findMany({ where: { type: "KARIGAR" }, orderBy: [{ isActive: "desc" }, { name: "asc" }], select: { id: true, name: true, type: true, stateCode: true, isActive: true } }),
+  ]);
+  const customerId = allCustomers.some((c) => c.id === customerFilter) ? customerFilter : "";
+  const karigarId = allKarigars.some((k) => k.id === karigarFilter) ? karigarFilter : "";
+  const goldSource = isGoldSource(goldSourceFilter) ? goldSourceFilter : undefined;
+  const unavailable = [
+    customerFilter && !customerId ? "Customer" : null,
+    karigarFilter && !karigarId ? "Karigar" : null,
+    goldSourceFilter && !goldSource ? "Gold source" : null,
+  ].filter((x): x is string => x !== null);
+
+  const [jobPage, karigarBalances, purities] = await Promise.all([
+    listJewelleryJobsPage({ status: statusList, search: search || undefined, customerId: customerId || undefined, karigarId: karigarId || undefined, goldSource }),
     getKarigarJewelleryMaterialBalances(),
     puritiesPromise,
   ]);
+  const jobs = jobPage.rows;
+  const customers = allCustomers.filter((c) => c.isActive);
+  const karigars = allKarigars.filter((k) => k.isActive);
 
   const serializedJobs: SerializedJewelleryJob[] = jobs.map((j) => ({
     id: j.id,
     jobCode: j.jobCode,
     customerName: j.customerName,
     karigarName: j.karigarName,
+    goldSource: j.goldSource,
     jewelleryType: j.jewelleryType,
     designName: j.designName,
     issueDate: j.issueDate.toISOString(),
@@ -485,6 +521,12 @@ async function JobsTabContent({
         search={search}
         view={view}
         initialShowForm={initialShowForm}
+        filters={{ customerId, karigarId, goldSource: goldSource ?? "" }}
+        filterCustomers={allCustomers.map((c) => ({ id: c.id, name: c.name, archived: !c.isActive }))}
+        filterKarigars={allKarigars.map((k) => ({ id: k.id, name: k.name, archived: !k.isActive }))}
+        unavailableFilters={unavailable}
+        total={jobPage.total}
+        limit={jobPage.limit}
       />
     </div>
   );
