@@ -17,11 +17,36 @@ Living document for whoever releases, checks or supports the system. Older
 | Owner "Correct entry" framework (+ migration 30) — see `CORRECTIONS_MATRIX.md` | `1ea7c27`…`4b71cab` | live (2026-10-06) — **production = `4b71cab`, 30 migrations** |
 | Payment balances: a second payment in an open form, refresh loop, advance labels, IST dates — see `PAYMENT_BALANCE_AUDIT.md` | `f3f9238`, `d7b1a75` | live (2026-10-11) — **production = `d7b1a75`, 30 migrations** |
 | Cash & Bank Book, Receivable & Payable (લેવાનું / આપવાનું), party summary, voucher page — see `CASH_BANK_BOOK.md` | `b4aca43`, `366e5ce` | live (2026-10-11) — **production = `366e5ce`, 30 migrations** |
-| Clearing settlement (marketplace / provider payouts, reserve, FX, reclassification, audited sale gross-up) — see `CLEARING_SETTLEMENT_DESIGN.md` | branch `feature/clearing-settlement` | **not deployed** — needs migration 31 |
+| Clearing settlement (marketplace / provider payouts, reserve, FX, reclassification, audited sale gross-up) — see `CLEARING_SETTLEMENT_DESIGN.md` | `5522fb1` | live (2026-10-12) — **production = `5522fb1`, 31 migrations**; nothing posted by the release (ETSY not marked clearing, `SAL/2026-27/0003` not yet grossed up) |
+| Job list filters + labels, Staff piece-wise Customer billing, Customer Account finished jewellery, Other Material stock, Diamond-only Sale — see `JOB_LIST_BILLING_MATERIAL_DIAMOND_SALE.md` | `dfd5196`…`02ca557` (branch `feature/job-list-billing-materials-diamond-sale`) | **not deployed** — needs migrations 32–34 |
 
 ## 2. Migrations
 
-31 in `prisma/migrations/` on the clearing branch; production has 30. The 31st,
+34 in `prisma/migrations/` on the job-list branch; production has 31. The three new ones
+are additive and must be applied **before** the code, in order:
+
+| # | Migration | sha256 (LF) | What it adds |
+|---|---|---|---|
+| 32 | `20261015090000_customer_bill_pieces` | `9b5014348e8c7ff98b01d8e5cc59d399dbea862e4ef7f558cf7b9e201ba4ba9e` | table `customer_jewellery_bill_pieces` (UNIQUE `activeFinishedJewelleryId` + CHECK: one live bill per piece) |
+| 33 | `20261015090100_other_material_stock` | `8165b93dcc62e90b5a971076bcd78f74e87d304bc126e600970ae612646a8922` | 6 Other Material tables, `jewellery_jobs."stockMaterialWipCost"` and `finished_jewellery."materialCost"` (default 0), 3 sequence values, guarded account **1230** Other Material Inventory |
+| 34 | `20261015090200_diamond_sale` | `890c6b82c1f97954ede92625e7824107963460c135ee70b1c77616ea2e174946` | `diamond_sales`, `diamond_sale_lines` (CHECK: exactly one stone or packet), `diamond_sale_returns`; enum values (stone SOLD, sale / cancel / return movements, sequences); guarded account **5210** Polished Diamond Cost of Sales |
+
+Rehearsed on a restore of `zynoraluxe-prod-20261012T083905-release-5522fb1-pre-migration.dump`
+with migrations 31–34 (production's real path):
+
+* **Unchanged:** all 69 pre-existing tables are byte-identical. The comparison leaves out
+  only the three new defaulted columns.
+* **Changed:**
+  * `accounts` +13 (11 from migration 31, plus 1230 and 5210);
+  * `_prisma_migrations` +4;
+  * 15 new empty tables.
+* **Checks:**
+  * no drift;
+  * a second deploy is a no-op;
+  * every reconciliation line (section 3) is 0.00;
+  * the recorded checksums equal the table above.
+
+The 31st,
 `20261012090000_clearing_settlement` (checksum
 `784fffad7debf8d7a4b89608d8db9b6ddf4337db3dcf273fbb27490698adf46e`, LF), is additive:
 a guard that refuses any conflicting account code, 7 new enums, 4 VoucherType values
@@ -61,6 +86,7 @@ prints `code|ledger|records|difference`:
 | 1320 Jewellery WIP | account balance | open jobs' metal/alloy WIP + unresolved stones + unallocated Karigar custody |
 | 1330 Finished Jewellery | account balance | AVAILABLE Company pieces at authoritative cost |
 | 1340 Customer Jewellery | account balance | Company cost in Customer-owned pieces awaiting delivery |
+| 1230 Other Material (after migration 33) | account balance | Σ Other Material stock movements at cost (purchased − issued + returned − cancelled) |
 | CGCR Customer gold credit | AP on purchase/exchange vouchers (+ reversals) and bills' credit-applied lines (+ reversals) | approved value of live purchases − credit applied by live bills |
 
 Also check: no voucher with Σdebit ≠ Σcredit; Customer Gold tab "Difference"
@@ -95,7 +121,37 @@ Also check: no voucher with Σdebit ≠ Σcredit; Customer Gold tab "Difference"
 
 ## 5. Release order
 
-The clearing-settlement release (migration 31, then code):
+The job-list / billing / Other Material / Diamond Sale release (migrations 32–34, then code)
+needs the Owner's explicit approval first; nothing has been pushed or migrated.
+
+1. **Pre-checks, read-only.** Verify `origin/main` and Vercel Production are still
+   `5522fb1` and the branch fast-forwards it. Check identity, 31 migrations, no
+   unbalanced voucher, reconciliation (section 3, five lines + CGCR).
+2. **Maintenance and backup.** Maintenance on. Take a fresh `pg_dump`, restore-test it on
+   the scratch cluster, and fingerprint every table.
+3. **Migrate.** Print `DATABASE_URL` / `DIRECT_URL` and confirm the production project.
+   Run `prisma migrate deploy` (32, 33, 34) and compare the three checksums with
+   section 2.
+4. **Re-fingerprint.** Every pre-existing table must be identical (ignoring the two new
+   defaulted cost columns), apart from `accounts` +2 (1230, 5210) and
+   `_prisma_migrations` +3.
+5. **Deploy the code.** Fast-forward push, then wait for Vercel Production Ready at the
+   new SHA.
+6. **Read-only smoke test — post nothing:**
+   * The Jewellery Jobs list shows Customer / Karigar / Gold source on each row, and its
+     filters work.
+   * Customer Account → Finished Jewellery lists the Customer's pieces.
+   * The Other Material tab shows the 1 legacy manual line.
+   * The Diamond Sales tab lists the available stones.
+   * Staff see no cost.
+7. **Close.** Run the reconciliation again; it now includes 1230, which must be 0.00.
+   Maintenance off.
+
+Rollback: code to `5522fb1` is safe only until the first piece-wise bill, Other Material
+purchase or Diamond Sale is posted (the old code ignores those rows). Never roll the
+migrations back.
+
+The clearing-settlement release (migration 31, then code) — executed 2026-10-12:
 
 1. Verify `origin/main` and Vercel Production are still `366e5ce` and the branch
    fast-forwards it. Read-only checks: identity, 30 migrations, no unbalanced voucher,
@@ -141,6 +197,8 @@ The Correct-entry release below was executed on 2026-10-06 and is kept for refer
 
 ## 6. Rollback limits
 
+* Job-list release: see section 5 — fix forward once the first new-type document is posted.
+
 * Clearing release: code rollback to `366e5ce` is safe only until the first clearing
   posting (party flag, settlement, reserve move, reclassification). Never roll the
   migration back.
@@ -183,6 +241,9 @@ unless the Owner explicitly asks.
   the whole list).
 * Sticker reprints are not audit-logged (there is no general audit table).
 * QR codes on stickers point at the host that printed them.
+* Diamond Sale returns are whole lines only (no partial packet-line return); Other
+  Material purchases cannot be edited (Owner cancels while nothing is issued, then
+  re-enters); the job list shows the newest 300 matches.
 * "Correct entry" covers details, processed-rough returned pieces and processed-rough
   receipt reversal. Polished receipts and Company jewellery receipts cannot be
   reversed; see `CORRECTIONS_MATRIX.md` for every type.
